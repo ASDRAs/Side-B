@@ -1,0 +1,17 @@
+﻿# ── 웹 프레임워크 ──────────────────────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.6   # ASGI 서버 (핫 리로드 포함)
+pydantic-settings==2.12.0
+
+# ── Last.fm API ────────────────────────────────────────────────
+pylast==5.3.0               # 유사곡, 태그, 태그별 인기 트랙 수집
+
+# ── 비동기 HTTP / 외부 카탈로그 ───────────────────────────────
+httpx==0.28.1               # iTunes / Deezer / Gemini 호출
+google-genai==1.45.0        # Gemini structured-output client package
+
+# ── 유틸리티 ──────────────────────────────────────────────────
+python-dotenv==1.0.1        # .env 로드
+pydantic==2.12.5            # 요청/응답 스키마 검증
+pytest==8.3.3
+pytest-asyncio==0.25.3

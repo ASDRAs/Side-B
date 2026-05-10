@@ -1,0 +1,1 @@
+"""KH-Hackathon backend package."""
