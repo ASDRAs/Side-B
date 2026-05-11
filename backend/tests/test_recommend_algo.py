@@ -109,6 +109,25 @@ class SimilarFakeLastFm:
         return FakeSimilarTrack(self.similar_items)
 
 
+class AliasSimilarFakeLastFm:
+    def __init__(self, similar_by_pair):
+        self.similar_by_pair = similar_by_pair
+        self.track_calls = []
+
+    def get_track(self, artist, track_name):
+        self.track_calls.append((artist, track_name))
+        return FakeSimilarTrack(self.similar_by_pair.get((artist, track_name), []))
+
+
+class CombinedFakeLastFm(SimilarFakeLastFm):
+    def __init__(self, similar_items, similar_artists):
+        super().__init__(similar_items)
+        self.similar_artists = similar_artists
+
+    def get_artist(self, artist):
+        return FakeSeedArtist(self.similar_artists)
+
+
 class FakeTopTrackResult:
     def __init__(self, artist, title):
         self.item = FakeTrack(artist, title)
@@ -315,6 +334,56 @@ async def test_reverse_top100_skips_visible_similar_and_prefers_low_exposure(mon
     assert reverse_names
     assert reverse_names.isdisjoint(similar_names)
     assert reverse_names <= {f"Track {index}" for index in range(10, 16)}
+
+
+async def test_similar_listening_pattern_uses_track_alias_when_primary_is_empty(monkeypatch):
+    lastfm = AliasSimilarFakeLastFm(
+        {
+            ("Younha", "혜성"): [],
+            ("Younha", "ほうき星"): [
+                FakeSimilarResult("Yena", "SMILEY", 1.0),
+                FakeSimilarResult("Younha", "Event Horizon", 0.13),
+            ],
+        }
+    )
+
+    async def fake_enrich_metadata(http, tracks):
+        for track in tracks:
+            track.album_art_url = "https://example.com/art.jpg"
+        return tracks
+
+    monkeypatch.setattr("recommend_algo._enrich_metadata", fake_enrich_metadata)
+
+    result = await similar_listening_pattern("혜성", "Younha", EmptyHttp(), lastfm, top_n=2)
+
+    assert [track.name for track in result] == ["SMILEY", "Event Horizon"]
+    assert lastfm.track_calls[:2] == [("Younha", "혜성"), ("Younha", "ほうき星")]
+
+
+async def test_reverse_top100_fills_top_n_after_artist_diversity_cap(monkeypatch):
+    similar_artists = [
+        FakeSimilarArtistResult(
+            FakeSimilarArtist(f"Artist {artist_index}", [
+                f"Track {artist_index}-{track_index}" for track_index in range(8)
+            ]),
+            0.9 - artist_index * 0.02,
+        )
+        for artist_index in range(8)
+    ]
+    lastfm = CombinedFakeLastFm([], similar_artists)
+
+    async def fake_enrich_metadata(http, tracks):
+        for track in tracks:
+            track.album_art_url = "https://example.com/art.jpg"
+            track.popularity = 40
+        return tracks
+
+    monkeypatch.setattr("recommend_algo._enrich_metadata", fake_enrich_metadata)
+
+    result = await reverse_top100("혜성", "Younha", EmptyHttp(), lastfm, top_n=10)
+
+    assert len(result) == 10
+    assert len({track.artist for track in result}) >= 5
 
 
 async def test_hidden_discovery_excludes_seed_artist_and_expands_to_similar_artists(monkeypatch):

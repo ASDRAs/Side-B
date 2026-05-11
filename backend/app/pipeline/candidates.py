@@ -1,6 +1,8 @@
 import asyncio
 import re
 
+from app.config.rules import SIMPLE_TAG_RULES
+from app.utils.text import normalize_tag
 from app.schemas.search import CandidateTrack, LastFmLookup, ParsedQuery, Tag
 from app.services.lastfm import LastFmClient
 from app.services.catalog import CatalogClient
@@ -101,11 +103,19 @@ async def _collect_mood_candidates(
     catalog: CatalogClient,
     lastfm: LastFmClient,
 ) -> list[CandidateTrack]:
-    for tag in parsed.tags[:3]:
-        top_tracks = await lastfm.tag_top_tracks(tag, limit=5)
-        if not top_tracks:
-            continue
+    tags = parsed.tags[:3]
+    if not tags:
+        return []
 
+    tag_track_lists = await asyncio.gather(
+        *[lastfm.tag_top_tracks(tag, limit=5) for tag in tags],
+        return_exceptions=True,
+    )
+
+    all_candidates: list[CandidateTrack] = []
+    for tag, top_tracks in zip(tags, tag_track_lists, strict=False):
+        if isinstance(top_tracks, Exception) or not top_tracks:
+            continue
         top_tracks_to_map = top_tracks[:5]
         results = await asyncio.gather(
             *[
@@ -114,13 +124,12 @@ async def _collect_mood_candidates(
             ],
             return_exceptions=True,
         )
-        candidates: list[CandidateTrack] = []
         for item, result in zip(top_tracks_to_map, results, strict=False):
             if isinstance(result, Exception) or result is None:
                 continue
             candidate = catalog.normalize_track(result)
             if candidate:
-                candidates.append(
+                all_candidates.append(
                     _with_lookup_context(
                         candidate,
                         lastfm_candidates=[LastFmLookup(artist=item["artist"], title=item["title"])],
@@ -129,10 +138,8 @@ async def _collect_mood_candidates(
                         parsed_type=parsed.type,
                     )
                 )
-        if candidates:
-            return _dedupe(candidates)[:5]
 
-    return []
+    return _dedupe(all_candidates)[:5] if all_candidates else []
 
 
 async def _catalog_candidates(
@@ -200,7 +207,7 @@ def _with_language_tags(
     parsed_type: str,
     candidate_artist: str = "",
 ) -> list[str]:
-    normalized = [_normalize_tag(tag) for tag in tags if _normalize_tag(tag)]
+    normalized = [normalize_tag(tag) for tag in tags if normalize_tag(tag)]
     for language_tag in _infer_language_tags(
         raw=raw,
         parsed_type=parsed_type,
@@ -219,7 +226,7 @@ def _infer_language_tags(
     candidate_artist: str = "",
 ) -> list[str]:
     lowered = raw.lower()
-    normalized_tags = {_normalize_tag(tag) for tag in tags}
+    normalized_tags = {normalize_tag(tag) for tag in tags}
     inferred: list[str] = []
 
     has_ko_signal = (
@@ -243,18 +250,6 @@ def _infer_language_tags(
         inferred.append("japanese")
 
     return inferred
-
-
-def _normalize_tag(tag: str) -> str:
-    return re.sub(r"\s+", "-", str(tag).strip().lower())
-
-
-def _contains_hangul(value: str) -> bool:
-    return any("\uac00" <= char <= "\ud7a3" for char in value)
-
-
-def _contains_kana(value: str) -> bool:
-    return any("\u3040" <= char <= "\u30ff" for char in value)
 
 
 def _clean_query(query: str) -> str:
@@ -304,18 +299,7 @@ def _should_try_mood_fallback(raw: str, fallback_tags: list[str]) -> bool:
 
 def _simple_tags(raw: str) -> list[str]:
     lowered = raw.lower()
-    if any(word in lowered for word in ["study", "studying", "programming", "coding", "work", "집중", "공부", "코딩", "프로그래밍"]):
-        return ["focus", "instrumental", "lo-fi"]
-    if any(word in lowered for word in ["workout", "run", "running", "gym", "exercise", "운동", "헬스", "러닝"]):
-        return ["workout", "energetic", "dance"]
-    if any(word in lowered for word in ["drive", "driving", "road", "commute", "드라이브", "운전", "출근", "퇴근"]):
-        return ["road-trip", "indie", "feel-good"]
-    if any(word in lowered for word in ["sleep", "relax", "relaxing", "잠", "수면", "휴식"]):
-        return ["sleep", "ambient", "calm"]
-    if any(word in lowered for word in ["새벽", "밤", "chill", "calm", "잔잔", "감성"]):
-        return ["late-night", "chill", "acoustic"]
-    if any(word in lowered for word in ["sad", "슬픈", "우울", "이별"]):
-        return ["sad", "ballad", "emotional"]
-    if any(word in lowered for word in ["happy", "신나는", "기분좋", "파티"]):
-        return ["happy", "upbeat", "pop"]
+    for keywords, tags in SIMPLE_TAG_RULES:
+        if any(word in lowered for word in keywords):
+            return tags
     return [token for token in re.split(r"\W+", lowered) if token][:3] or ["chill"]

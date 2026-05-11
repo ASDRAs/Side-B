@@ -1,10 +1,10 @@
 import asyncio
 import re
-from difflib import SequenceMatcher
 
 from app.pipeline.errors import ServiceUnavailableError
 from app.schemas.search import CandidateTrack, ParsedQuery
 from app.services.llm import GeminiClient
+from app.utils.text import compact_normalized, normalize_tag, normalize_text, sim
 
 
 LLM_SCORE_TIMEOUT_SECONDS = 2.0
@@ -21,7 +21,7 @@ async def score_and_select(
     if deterministic_index is not None:
         return deterministic_index
 
-    if not use_llm or parsed_query.type == "mood":
+    if not use_llm or parsed_query.type == "mood" or parsed_query.confidence >= 0.75:
         overlap_index = _tag_overlap_index(parsed_query, candidates)
         return overlap_index if overlap_index is not None else _highest_popularity_index(candidates)
 
@@ -83,7 +83,7 @@ def _deterministic_rerank(parsed_query: ParsedQuery, candidates: list[CandidateT
 
 
 def _query_tokens(query: str) -> list[str]:
-    normalized = _normalize_text(query)
+    normalized = normalize_text(query)
     return [token for token in normalized.split() if token]
 
 
@@ -98,47 +98,22 @@ def _best_artist_index(artist: str, candidates: list[CandidateTrack]) -> int | N
     best_score = 0.0
     best_index: int | None = None
     for index, candidate in enumerate(candidates[:5]):
-        score = _sim(artist, candidate.artist)
+        score = sim(artist, candidate.artist)
         if score > best_score:
             best_score = score
             best_index = index
     return best_index if best_score >= 0.80 else None
 
 
-def _normalize_text(value: str) -> str:
-    lowered = value.lower().replace("&", " and ")
-    lowered = re.sub(r"[\(\)\[\]\{\},.:;!?'\"`~]", " ", lowered)
-    lowered = re.sub(r"\s+", " ", lowered).strip()
-    return lowered
-
-
-def _compact_text(value: str) -> str:
-    return re.sub(r"\s+", "", _normalize_text(value))
-
-
-def _sim(a: str, b: str) -> float:
-    normalized_a = _normalize_text(a)
-    normalized_b = _normalize_text(b)
-    compact_a = _compact_text(a)
-    compact_b = _compact_text(b)
-    if not normalized_a or not normalized_b:
-        return 0.0
-    if compact_a and compact_b and compact_a == compact_b:
-        return 1.0
-    if min(len(compact_a), len(compact_b)) >= 4 and (compact_a in compact_b or compact_b in compact_a):
-        return 1.0
-    return SequenceMatcher(None, normalized_a, normalized_b).ratio()
-
-
 def _best_token_similarity(tokens: list[str], value: str) -> float:
-    return max((_sim(token, value) for token in tokens), default=0.0)
+    return max((sim(token, value) for token in tokens), default=0.0)
 
 
 def _lastfm_lookup_score(parsed_query: ParsedQuery, candidate: CandidateTrack) -> float:
     best_score = 0.0
     for lookup in parsed_query.lastfm_candidates:
-        title_score = _sim(lookup.title, candidate.title)
-        artist_score = _sim(lookup.artist, candidate.artist)
+        title_score = sim(lookup.title, candidate.title)
+        artist_score = sim(lookup.artist, candidate.artist)
         best_score = max(best_score, title_score * 0.7 + artist_score * 0.3)
     return best_score
 
@@ -154,24 +129,20 @@ def _is_artist_only(tokens: list[str], candidate: CandidateTrack) -> bool:
         return False
     best_title = _best_token_similarity(tokens, candidate.title)
     query_text = " ".join(tokens)
-    return _sim(query_text, candidate.artist) >= 0.85 and best_title < 0.40
+    return sim(query_text, candidate.artist) >= 0.85 and best_title < 0.40
 
 
 def _tag_overlap_index(parsed_query: ParsedQuery, candidates: list[CandidateTrack]) -> int | None:
-    query_tags = {_normalize_tag(tag) for tag in parsed_query.tags}
+    query_tags = {normalize_tag(tag) for tag in parsed_query.tags}
     if not query_tags:
         return None
 
     best_score = 0
     best_index: int | None = None
     for index, candidate in enumerate(candidates):
-        candidate_tags = {_normalize_tag(tag.name) for tag in candidate.tags}
+        candidate_tags = {normalize_tag(tag.name) for tag in candidate.tags}
         score = len(query_tags & candidate_tags)
         if score > best_score:
             best_score = score
             best_index = index
     return best_index
-
-
-def _normalize_tag(tag: str) -> str:
-    return re.sub(r"\s+", "-", tag.strip().lower())

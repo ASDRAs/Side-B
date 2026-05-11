@@ -13,11 +13,14 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
 import pylast
+
+from app.config.rules import MOOD_QUERY_RULES as _MOOD_QUERY_RULES
+from app.services.catalog import CatalogClient, DeezerRateLimitError
+from app.utils.text import compact_text, text_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -40,28 +43,36 @@ def _mark_dz_rate_limited(headers: dict) -> None:
     logger.warning("[Deezer] 429 — %d초 차단", retry_after)
 
 
-_BAD_VERSION_MARKERS = (
-    "karaoke",
-    "instrumental",
-    "instrumental karaoke",
-    "inst.",
-    "originally performed",
-    "originally perfomed",
-    "tribute",
-    "cover",
-    "cover version",
-    "sped up",
-    "slowed",
-    "nightcore",
-    "musicmaru",
-    "뮤직마루",
-    "노래방",
-    "반주",
-)
+_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _cache_get(key: str, ttl: float) -> tuple[bool, Any]:
+    entry = _cache.get(key)
+    if entry and time.monotonic() - entry[0] < ttl:
+        return True, entry[1]
+    return False, None
+
+
+def _cache_set(key: str, value: Any) -> None:
+    _cache[key] = (time.monotonic(), value)
+
+
+async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
+    hit, cached = _cache_get(key, ttl)
+    if hit:
+        return cached
+    result = await asyncio.to_thread(fn, *args)
+    _cache_set(key, result)
+    return result
+
 
 _QUERY_ALIASES = (
     (("윤하", "사건의지평선"), "Event Horizon", "Younha"),
 )
+
+_TRACK_SIMILAR_ALIASES = {
+    (compact_text("Younha"), compact_text("혜성")): [("ほうき星", "Younha")],
+}
 
 _KNOWN_KOREAN_ARTISTS = {
     "younha",
@@ -100,15 +111,6 @@ _TAG_QUERY_RULES = (
     (("재즈", "jazz"), ["jazz", "vocal jazz"]),
     (("락", "록", "rock"), ["rock", "alternative"]),
     (("로파이", "lofi", "lo-fi"), ["lo-fi", "chill", "instrumental"]),
-)
-
-_MOOD_QUERY_RULES = (
-    (("감성", "감성적", "emotional"), ["emotional", "chill"]),
-    (("잔잔", "차분", "calm"), ["calm", "chill"]),
-    (("신나는", "신나", "energetic", "upbeat"), ["upbeat", "dance"]),
-    (("새벽", "밤", "late night"), ["late-night", "chill"]),
-    (("몽환", "dreamy"), ["dreamy", "synth-pop"]),
-    (("집중", "공부", "코딩", "focus", "study"), ["focus", "instrumental"]),
 )
 
 
@@ -158,7 +160,11 @@ async def normalize_input(
 
     try:
         search = lastfm.search_for_track("", query)
-        results = await asyncio.to_thread(search.get_next_page)
+        results = await _lf_call(
+            f"lf:search_track:{compact_text(query)}",
+            300,
+            search.get_next_page,
+        )
         for track in results or []:
             name = str(track.get_name() or "").strip()
             artist = str(track.get_artist().get_name() or "").strip()
@@ -203,75 +209,32 @@ async def _itunes_search(
     term = f"{track_name} {artist}".strip()
     if not term:
         return None
-
-    try:
-        async with _API_SEMAPHORE:
-            response = await http.get(
-                ITUNES_URL,
-                params={"term": term, "entity": "song", "limit": max(1, min(limit, 25))},
-                timeout=5.0,
-            )
-            response.raise_for_status()
-        results = response.json().get("results", [])
-    except Exception as exc:
-        logger.warning("[iTunes] search failed for %r: %s", term, exc)
-        return None
-
-    best: tuple[float, dict[str, Any]] | None = None
-    for item in results if isinstance(results, list) else []:
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("trackName") or "")
-        item_artist = str(item.get("artistName") or "")
-        if _looks_like_bad_version(title) or _looks_like_bad_version(item_artist):
-            continue
-        score = _catalog_match_score(
-            title,
-            item_artist,
-            track_name,
-            artist,
-        )
-        if best is None or score > best[0]:
-            best = (score, item)
-
-    if not best or best[0] < min_score:
-        return None
-    return best[1]
+    cache_key = f"itunes:{term}:{limit}:{min_score}"
+    hit, cached = _cache_get(cache_key, 300)
+    if hit:
+        return cached
+    result = await CatalogClient(http).itunes_search_best(track_name, artist, limit, min_score)
+    _cache_set(cache_key, result)
+    return result
 
 
 async def _dz_search(http: httpx.AsyncClient, track_name: str, artist: str) -> dict[str, Any] | None:
     if _is_dz_rate_limited():
         return None
-
-    clean_name = _clean_title(track_name)
-    queries = [
-        f'track:"{clean_name}" artist:"{artist}"',
-        f"{clean_name} {artist}".strip(),
-        clean_name,  # 3차 폴백: 곡명만
-    ]
-
-    for query in queries:
-        if _is_dz_rate_limited():
-            return None
-        try:
-            async with _API_SEMAPHORE:
-                response = await http.get(
-                    f"{DEEZER_URL}/search",
-                    params={"q": query},
-                    timeout=8.0,
-                )
-            if response.status_code == 429:
-                _mark_dz_rate_limited(dict(response.headers))
-                return None
-            items = response.json().get("data", [])
-        except Exception as exc:
-            logger.warning("[Deezer] 요청 실패 (%s) q=%r — %s", type(exc).__name__, query[:70], exc)
-            continue
-
-        best = _select_deezer_item(items, clean_name, artist)
-        if best:
-            return best
-    return None
+    clean_name = re.sub(r"\(.*?\)|\[.*?\]", " ", track_name)
+    clean_name = re.sub(r"\s+-\s+(remaster(?:ed)?|live|radio edit|single version).*$", " ", clean_name, flags=re.I)
+    clean_name = re.sub(r"\s+", " ", clean_name).strip()
+    cache_key = f"deezer:{compact_text(clean_name)}:{compact_text(artist)}"
+    hit, cached = _cache_get(cache_key, 300)
+    if hit:
+        return cached
+    try:
+        result = await CatalogClient(http).deezer_search_best(track_name, artist)
+    except DeezerRateLimitError as e:
+        _mark_dz_rate_limited({"Retry-After": str(e.retry_after)})
+        return None
+    _cache_set(cache_key, result)
+    return result
 
 
 async def _enrich_metadata(http: httpx.AsyncClient, tracks: list[TrackInfo]) -> list[TrackInfo]:
@@ -302,67 +265,10 @@ async def _enrich_metadata(http: httpx.AsyncClient, tracks: list[TrackInfo]) -> 
     return list(await asyncio.gather(*[_fetch(t) for t in tracks]))
 
 
-def _select_deezer_item(items: Any, track_name: str, artist: str) -> dict[str, Any] | None:
-    if not isinstance(items, list):
-        return None
-
-    best: tuple[float, dict[str, Any]] | None = None
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("title") or "")
-        item_artist = str((item.get("artist") or {}).get("name") or "")
-        if _looks_like_bad_version(title) or _looks_like_bad_version(item_artist):
-            continue
-        score = _catalog_match_score(title, item_artist, track_name, artist)
-        artist_score = _text_ratio(item_artist, artist) if artist else 1.0
-        if artist and artist_score < 0.52:
-            continue
-        if best is None or score > best[0]:
-            best = (score, item)
-
-    if not best or best[0] < 0.72:
-        return None
-    return best[1]
-
-
-def _catalog_match_score(title: str, artist: str, expected_title: str, expected_artist: str = "") -> float:
-    title_score = _text_ratio(_clean_title(title), _clean_title(expected_title))
-    artist_score = _text_ratio(artist, expected_artist) if expected_artist else 1.0
-    return (title_score * 0.68) + (artist_score * 0.32)
-
-
-def _text_ratio(left: str, right: str) -> float:
-    left_norm = _compact_text(left)
-    right_norm = _compact_text(right)
-    if not left_norm or not right_norm:
-        return 0.0
-    if left_norm == right_norm:
-        return 1.0
-    if left_norm in right_norm or right_norm in left_norm:
-        return 0.9
-    return SequenceMatcher(None, left_norm, right_norm).ratio()
-
-
-def _compact_text(value: str) -> str:
-    return re.sub(r"[^0-9a-z가-힣ぁ-ゟ゠-ヿ一-鿿]+", "", value.lower())
-
-
-def _clean_title(value: str) -> str:
-    cleaned = re.sub(r"\(.*?\)|\[.*?\]", " ", value)
-    cleaned = re.sub(r"\s+-\s+(remaster(?:ed)?|live|radio edit|single version).*$", " ", cleaned, flags=re.I)
-    return re.sub(r"\s+", " ", cleaned).strip()
-
-
-def _looks_like_bad_version(value: str) -> bool:
-    lowered = value.lower()
-    return any(marker in lowered for marker in _BAD_VERSION_MARKERS)
-
-
 def _known_query_alias(query: str) -> tuple[str, str] | None:
-    compact_query = _compact_text(query)
+    compact_query = compact_text(query)
     for tokens, title, artist in _QUERY_ALIASES:
-        if all(_compact_text(token) in compact_query for token in tokens):
+        if all(compact_text(token) in compact_query for token in tokens):
             return title, artist
     return None
 
@@ -422,6 +328,47 @@ def _diverse_top_n(
     return [t for t, _ in scored[:top_n]]
 
 
+def _balanced_candidate_slice(
+    tracks: list[TrackInfo],
+    limit: int,
+    *,
+    score_fn=lambda t: t.match_score or 0,
+) -> list[TrackInfo]:
+    sorted_pool = sorted(tracks, key=score_fn, reverse=True)
+    if len(sorted_pool) <= limit:
+        return sorted_pool
+
+    artist_count = len({compact_text(track.artist) for track in sorted_pool if track.artist})
+    per_artist = max(2, math.ceil(limit / max(artist_count, 1)))
+    balanced = _cap_per_artist(sorted_pool, max_per=per_artist)
+    selected_keys = {_track_key(track) for track in balanced}
+    if len(balanced) < limit:
+        balanced.extend(
+            track for track in sorted_pool if _track_key(track) not in selected_keys
+        )
+    return balanced[:limit]
+
+
+def _fill_from_ranked_pool(
+    primary: list[TrackInfo],
+    fallback_pool: list[TrackInfo],
+    top_n: int,
+) -> list[TrackInfo]:
+    selected = list(primary[:top_n])
+    if len(selected) >= top_n:
+        return selected
+    selected_keys = {_track_key(track) for track in selected}
+    for track in fallback_pool:
+        key = _track_key(track)
+        if key in selected_keys:
+            continue
+        selected.append(track)
+        selected_keys.add(key)
+        if len(selected) >= top_n:
+            break
+    return selected
+
+
 def _dedupe_tracks(tracks: list[TrackInfo]) -> list[TrackInfo]:
     seen: set[str] = set()
     deduped: list[TrackInfo] = []
@@ -435,21 +382,74 @@ def _dedupe_tracks(tracks: list[TrackInfo]) -> list[TrackInfo]:
 
 
 def _track_key(track: TrackInfo) -> str:
-    return f"{_compact_text(track.artist)}::{_compact_text(track.name)}"
+    return f"{compact_text(track.artist)}::{compact_text(track.name)}"
+
+
+def _track_similar_lookup_pairs(track_name: str, artist: str) -> list[tuple[str, str]]:
+    pairs = [(track_name, artist)]
+    aliases = _TRACK_SIMILAR_ALIASES.get((compact_text(artist), compact_text(track_name)), [])
+    seen = {(compact_text(artist), compact_text(track_name))}
+    for alias_name, alias_artist in aliases:
+        key = (compact_text(alias_artist), compact_text(alias_name))
+        if key not in seen:
+            seen.add(key)
+            pairs.append((alias_name, alias_artist))
+    return pairs
+
+
+async def _track_similar_tracks(
+    track_name: str,
+    artist: str,
+    lastfm: pylast.LastFMNetwork,
+    limit: int,
+) -> list:
+    last_error: Exception | None = None
+    for lookup_name, lookup_artist in _track_similar_lookup_pairs(track_name, artist):
+        try:
+            lf_track = lastfm.get_track(lookup_artist, lookup_name)
+            raw = await _lf_call(
+                f"lf:track_similar:{compact_text(lookup_artist)}:{compact_text(lookup_name)}:{limit}",
+                600,
+                lf_track.get_similar,
+                limit,
+            )
+        except Exception as exc:
+            last_error = exc
+            logger.info(
+                "[TrackSimilar] lookup failed for %s - %s: %s",
+                lookup_artist,
+                lookup_name,
+                exc,
+            )
+            continue
+        if raw:
+            if (lookup_name, lookup_artist) != (track_name, artist):
+                logger.info(
+                    "[TrackSimilar] alias used: %s - %s -> %s - %s",
+                    artist,
+                    track_name,
+                    lookup_artist,
+                    lookup_name,
+                )
+            return list(raw)
+
+    if last_error:
+        logger.info("[TrackSimilar] no usable lookup after error: %s", last_error)
+    return []
 
 
 def tags_from_query(query: str) -> list[str]:
     """Map free-form genre/mood text to Last.fm tags without calling an LLM."""
-    compact_query = _compact_text(query)
+    compact_query = compact_text(query)
     lowered_query = query.lower()
     tags: list[str] = []
 
     for keywords, rule_tags in _TAG_QUERY_RULES:
-        if any(keyword.lower() in lowered_query or _compact_text(keyword) in compact_query for keyword in keywords):
+        if any(keyword.lower() in lowered_query or compact_text(keyword) in compact_query for keyword in keywords):
             tags.extend(rule_tags)
 
     for keywords, rule_tags in _MOOD_QUERY_RULES:
-        if any(keyword.lower() in lowered_query or _compact_text(keyword) in compact_query for keyword in keywords):
+        if any(keyword.lower() in lowered_query or compact_text(keyword) in compact_query for keyword in keywords):
             tags.extend(rule_tags)
 
     return _unique_preserve_order(tags)[:8]
@@ -540,7 +540,13 @@ async def _collect_tag_tracks(
 ) -> list[list[TrackInfo]]:
     async def _fetch(tag: str, tag_index: int) -> list[TrackInfo]:
         try:
-            raw = await asyncio.to_thread(lastfm.get_tag(tag).get_top_tracks, limit=limit)
+            tag_obj = lastfm.get_tag(tag)
+            raw = await _lf_call(
+                f"lf:tag_top:{compact_text(tag)}:{limit}",
+                600,
+                tag_obj.get_top_tracks,
+                limit,
+            )
         except Exception as exc:
             logger.warning("[TagFallback] tag.get_top_tracks failed (%s): %s", tag, exc)
             return []
@@ -573,37 +579,46 @@ async def _fill_lastfm_album_art(
     lastfm: pylast.LastFMNetwork,
     tracks: list[TrackInfo],
 ) -> list[TrackInfo]:
-    async def _fetch(track: TrackInfo) -> TrackInfo:
-        if track.album_art_url:
-            return track
+    missing = [t for t in tracks if not t.album_art_url]
+    if not missing:
+        return tracks
+
+    async def _fetch(track: TrackInfo) -> None:
         try:
-            async with _API_SEMAPHORE:
-                artwork = await asyncio.to_thread(
-                    lastfm.get_track(track.artist, track.name).get_cover_image
-                )
+            lf_track_obj = lastfm.get_track(track.artist, track.name)
+            artwork = await _lf_call(
+                f"lf:cover:{compact_text(track.artist)}:{compact_text(track.name)}",
+                600,
+                lf_track_obj.get_cover_image,
+            )
         except Exception:
-            return track
+            return
         if artwork:
             track.album_art_url = str(artwork)
-        return track
 
-    return list(await asyncio.gather(*[_fetch(track) for track in tracks]))
+    await asyncio.gather(*[_fetch(t) for t in missing])
+    return tracks
 
 
-async def reverse_top100(track_name, artist, http, lastfm, top_n=10) -> list[TrackInfo]:
+async def reverse_top100(track_name, artist, http, lastfm, top_n=10, *, prefetched=None) -> list[TrackInfo]:
     """Discover less-mainstream tracks via direct similarity (A) and similar-artist networks (B)."""
     try:
-        lf_track = lastfm.get_track(artist, track_name)
-
         # ── 소스 A + 유사 아티스트 목록 병렬 수집 ──────────────────
-        raw_similar_tracks = await asyncio.to_thread(
-            lf_track.get_similar,
-            limit=max(60, top_n * 6),
-        )
+        if prefetched is not None:
+            raw_similar_tracks = prefetched
+        else:
+            _limit = max(60, top_n * 6)
+            raw_similar_tracks = await _track_similar_tracks(track_name, artist, lastfm, _limit)
         raw_similar_artists: list | Exception = []
         try:
             lf_artist = lastfm.get_artist(artist)
-            raw_similar_artists = await asyncio.to_thread(lf_artist.get_similar, limit=3)
+            _artist_limit = max(3, min(top_n, 8))
+            raw_similar_artists = await _lf_call(
+                f"lf:artist_similar:{compact_text(artist)}:{_artist_limit}",
+                600,
+                lf_artist.get_similar,
+                _artist_limit,
+            )
         except Exception as exc:
             logger.info("[Reverse] similar artist expansion unavailable: %s", exc)
 
@@ -627,7 +642,13 @@ async def reverse_top100(track_name, artist, http, lastfm, top_n=10) -> list[Tra
         async def _fetch_artist_tracks(src, artist_rank: int) -> list[TrackInfo]:
             synthetic_match = max(0.3, 0.70 - (artist_rank - 1) * 0.1)
             try:
-                raw = await asyncio.to_thread(src.get_top_tracks, limit=20)
+                src_name = compact_text(str(src.get_name()))
+                raw = await _lf_call(
+                    f"lf:artist_top:{src_name}:20",
+                    600,
+                    src.get_top_tracks,
+                    20,
+                )
                 return [
                     TrackInfo(
                         name=item.item.get_name(),
@@ -662,9 +683,8 @@ async def reverse_top100(track_name, artist, http, lastfm, top_n=10) -> list[Tra
 
         logger.info("[Reverse] 후보 A=%d B=%d 합계=%d", len(pool_a), len(pool_b), len(merged))
 
-        # match_score 상위 top_n×8만 보강 (Deezer 호출 최소화)
-        merged.sort(key=lambda t: t.match_score or 0, reverse=True)
-        merged = merged[: top_n * 8]
+        # match_score 상위 후보를 보강하되 특정 아티스트 쏠림은 줄인다.
+        merged = _balanced_candidate_slice(merged, top_n * 3)
         merged = _dedupe_tracks(await _enrich_metadata(http, merged))
         merged = await _fill_lastfm_album_art(lastfm, merged)
 
@@ -688,7 +708,8 @@ async def reverse_top100(track_name, artist, http, lastfm, top_n=10) -> list[Tra
             t.reverse_score = (obscurity * 0.55) + (middle_similarity * 0.30) + (rank_novelty * 0.15)
 
         sorted_pool = sorted(discovery_pool, key=lambda t: t.reverse_score or 0, reverse=True)
-        ranked = _diverse_top_n(_cap_per_artist(sorted_pool, max_per=2), top_n)
+        ranked = _diverse_top_n(_cap_per_artist(sorted_pool, max_per=2), top_n, diversity=0.0)
+        ranked = _fill_from_ranked_pool(ranked, sorted_pool, top_n)
         for t in ranked:
             t.algo, t.label = "reverse_top100", "당신만 모르는 숨겨진 명곡"
         logger.info("[Reverse] 최종 선정 %d개", len(ranked))
@@ -698,27 +719,29 @@ async def reverse_top100(track_name, artist, http, lastfm, top_n=10) -> list[Tra
         return []
 
 
-async def similar_listening_pattern(track_name, artist, http, lastfm, top_n=10) -> list[TrackInfo]:
+async def similar_listening_pattern(track_name, artist, http, lastfm, top_n=10, *, prefetched=None) -> list[TrackInfo]:
     """Recommend tracks with the strongest Last.fm similarity."""
     try:
-        lf_track = lastfm.get_track(artist, track_name)
-        raw_similar = await asyncio.to_thread(lf_track.get_similar, limit=50)
-        pool = [
+        if prefetched is not None:
+            raw_similar = prefetched
+        else:
+            raw_similar = await _track_similar_tracks(track_name, artist, lastfm, 50)
+        pool = _dedupe_tracks([
             TrackInfo(
                 name=item.item.get_name(),
                 artist=item.item.get_artist().get_name(),
                 match_score=float(item.match),
             )
             for item in raw_similar
-        ]
-        pool = _dedupe_tracks(await _enrich_metadata(http, pool))
+        ])
+        pool.sort(key=lambda t: t.match_score or 0, reverse=True)
+        pool = pool[:top_n]
+        pool = await _enrich_metadata(http, pool)
         pool = await _fill_lastfm_album_art(lastfm, pool)
         for track in pool:
             track.reverse_score = track.match_score or 0
-        ranked = sorted(pool, key=lambda item: item.reverse_score or 0, reverse=True)[:top_n]
-        for track in ranked:
             track.algo, track.label = "similar_listening_pattern", "비슷한 취향의 사람들이 들어요"
-        return ranked
+        return pool
     except Exception as exc:
         logger.warning("[similar_listening_pattern] failed: %s", exc)
         return []
@@ -732,7 +755,13 @@ async def opposite_emotion(track_name, artist, http, lastfm, top_n=10) -> list[T
         collected: list[TrackInfo] = []
 
         for tag in query_tags:
-            raw = await asyncio.to_thread(lastfm.get_tag(tag).get_top_tracks, limit=top_n * 4)
+            tag_obj = lastfm.get_tag(tag)
+            raw = await _lf_call(
+                f"lf:tag_top:{compact_text(tag)}:{top_n * 4}",
+                600,
+                tag_obj.get_top_tracks,
+                top_n * 4,
+            )
             for item in raw or []:
                 name = item.item.get_name()
                 item_artist = item.item.get_artist().get_name()
@@ -747,7 +776,12 @@ async def opposite_emotion(track_name, artist, http, lastfm, top_n=10) -> list[T
 
         if not collected:
             lf_track = lastfm.get_track(artist, track_name)
-            raw_similar = await asyncio.to_thread(lf_track.get_similar, limit=top_n * 4)
+            raw_similar = await _lf_call(
+                f"lf:track_similar:{compact_text(artist)}:{compact_text(track_name)}:{top_n * 4}",
+                600,
+                lf_track.get_similar,
+                top_n * 4,
+            )
             collected = [
                 TrackInfo(
                     name=item.item.get_name(),
@@ -773,9 +807,15 @@ async def opposite_emotion(track_name, artist, http, lastfm, top_n=10) -> list[T
 async def hidden_discovery(track_name, artist, http, lastfm, top_n=10) -> list[TrackInfo]:
     """Discover tracks by similar artists while excluding the seed artist."""
     try:
-        seed_artist_key = _compact_text(artist)
+        seed_artist_key = compact_text(artist)
         lf_artist = lastfm.get_artist(artist)
-        raw_artists = await asyncio.to_thread(lf_artist.get_similar, limit=max(top_n * 3, 18))
+        _hidden_limit = max(top_n * 3, 18)
+        raw_artists = await _lf_call(
+            f"lf:artist_similar:{compact_text(artist)}:{_hidden_limit}",
+            600,
+            lf_artist.get_similar,
+            _hidden_limit,
+        )
         artist_rows = []
         for artist_rank, item in enumerate(raw_artists or []):
             try:
@@ -784,14 +824,19 @@ async def hidden_discovery(track_name, artist, http, lastfm, top_n=10) -> list[T
                 artist_match = float(getattr(item, "match", 0) or 0)
             except Exception:
                 continue
-            if not similar_artist_name or _compact_text(similar_artist_name) == seed_artist_key:
+            if not similar_artist_name or compact_text(similar_artist_name) == seed_artist_key:
                 continue
             artist_rows.append((artist_rank, similar_artist, similar_artist_name, artist_match))
 
         async def _fetch_artist_tracks(row):
             artist_rank, similar_artist, similar_artist_name, artist_match = row
             try:
-                raw_tracks = await asyncio.to_thread(similar_artist.get_top_tracks, limit=4)
+                raw_tracks = await _lf_call(
+                    f"lf:artist_top:{compact_text(similar_artist_name)}:4",
+                    600,
+                    similar_artist.get_top_tracks,
+                    4,
+                )
             except Exception as exc:
                 logger.info("[hidden_discovery] similar artist tracks unavailable (%s): %s", similar_artist_name, exc)
                 return []
@@ -803,7 +848,7 @@ async def hidden_discovery(track_name, artist, http, lastfm, top_n=10) -> list[T
                     item_artist = str(item.item.get_artist().get_name() or "").strip()
                 except Exception:
                     continue
-                if not name or not item_artist or _compact_text(item_artist) == seed_artist_key:
+                if not name or not item_artist or compact_text(item_artist) == seed_artist_key:
                     continue
                 rows.append(
                     (
@@ -825,13 +870,25 @@ async def hidden_discovery(track_name, artist, http, lastfm, top_n=10) -> list[T
         if not candidate_rows:
             return []
 
+        # popularity 없이 artist_affinity + track_depth 사전 점수로 top_n*3 선별
+        n_rows = max(len(artist_rows), 1)
+        pre_scored = []
+        for row in candidate_rows:
+            artist_rank, track_rank, artist_match, _ = row
+            affinity = artist_match if artist_match > 0 else max(0.0, 1 - (artist_rank / n_rows))
+            affinity = max(0.0, min(1.0, affinity))
+            depth = min(1.0, max(0.0, (track_rank - 1) / 3))
+            pre_scored.append((affinity * 0.55 + depth * 0.45, row))
+        pre_scored.sort(key=lambda x: x[0], reverse=True)
+        candidate_rows = [row for _, row in pre_scored[: top_n * 3]]
+
         tracks = await _enrich_metadata(http, [row[3] for row in candidate_rows])
         tracks = await _fill_lastfm_album_art(lastfm, tracks)
         for row, track in zip(candidate_rows, tracks):
             artist_rank, track_rank, artist_match, _ = row
             popularity = track.popularity if track.popularity is not None else 55
             obscurity = max(0.0, min(1.0, (80 - popularity) / 80))
-            artist_affinity = artist_match if artist_match > 0 else max(0.0, 1 - (artist_rank / max(len(artist_rows), 1)))
+            artist_affinity = artist_match if artist_match > 0 else max(0.0, 1 - (artist_rank / n_rows))
             artist_affinity = max(0.0, min(1.0, artist_affinity))
             track_depth = min(1.0, max(0.0, (track_rank - 1) / 3))
             track.reverse_score = (artist_affinity * 0.35) + (obscurity * 0.45) + (track_depth * 0.20)
@@ -856,7 +913,11 @@ async def _seed_tags(track_name: str, artist: str, lastfm: pylast.LastFMNetwork)
     tags: list[str] = []
     try:
         lf_track = lastfm.get_track(artist, track_name)
-        raw_tags = await asyncio.to_thread(lf_track.get_top_tags)
+        raw_tags = await _lf_call(
+            f"lf:track_tags:{compact_text(artist)}:{compact_text(track_name)}",
+            600,
+            lf_track.get_top_tags,
+        )
         tags.extend(_tag_names(raw_tags))
     except Exception as exc:
         logger.info("[opposite_emotion] track tags unavailable: %s", exc)
@@ -864,12 +925,16 @@ async def _seed_tags(track_name: str, artist: str, lastfm: pylast.LastFMNetwork)
     if not tags:
         try:
             lf_artist = lastfm.get_artist(artist)
-            raw_tags = await asyncio.to_thread(lf_artist.get_top_tags)
+            raw_tags = await _lf_call(
+                f"lf:artist_tags:{compact_text(artist)}",
+                600,
+                lf_artist.get_top_tags,
+            )
             tags.extend(_tag_names(raw_tags))
         except Exception as exc:
             logger.info("[opposite_emotion] artist tags unavailable: %s", exc)
 
-    if _compact_text(artist) in {_compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
+    if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
         tags.extend(["k-pop", "pop", "female vocalists"])
 
     if not tags:
@@ -898,7 +963,7 @@ def _opposite_tag_candidates(seed_tags: list[str], artist: str) -> list[str]:
             if key.replace("-", " ") in normalized:
                 candidates.extend(alternatives)
 
-    if _compact_text(artist) in {_compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
+    if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
         candidates.extend(["k-pop", "indie pop", "female vocalists"])
 
     candidates.extend(["pop", "indie", "alternative", "electronic"])
@@ -917,4 +982,4 @@ def _unique_preserve_order(values: list[str]) -> list[str]:
 
 
 def _is_same_track(name: str, artist: str, seed_name: str, seed_artist: str) -> bool:
-    return _text_ratio(name, seed_name) > 0.88 and _text_ratio(artist, seed_artist) > 0.75
+    return text_ratio(name, seed_name) > 0.88 and text_ratio(artist, seed_artist) > 0.75

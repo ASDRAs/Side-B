@@ -1,13 +1,14 @@
 ﻿from app.routers.recommend import RecommendRequest, RecommendResponse
-from main import _pick_representative_track, app
+from app.services.recommend_service import _pick_representative_track
+from main import app
 from recommend_algo import TrackInfo
 
 
-def test_recommend_route_is_registered():
+def test_search_route_is_registered():
     paths = {route.path for route in app.routes}
 
     assert "/health" in paths
-    assert "/recommend" in paths
+    assert "/search" in paths
 
 
 def test_recommend_contract_uses_query_source_and_hidden_bucket():

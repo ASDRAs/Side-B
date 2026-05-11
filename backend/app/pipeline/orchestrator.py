@@ -62,6 +62,10 @@ async def _search_pipeline(
     best_idx = await score_and_select(query, parsed, scoring_candidates, llm, use_llm=use_llm)
     selected = candidates[best_idx]
 
+    if parsed.type == "mood":
+        enriched = selected.model_copy(update={"tags": selected.fallback_tags})
+        return enriched.to_track()
+
     [enriched] = await enrich_all([selected], lastfm)
     return enriched.to_track()
 
