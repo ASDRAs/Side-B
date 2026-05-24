@@ -67,11 +67,11 @@ PYTHON_CMD="$(find_python)" || {
 }
 if ! "$PYTHON_CMD" - <<'PY'
 import sys
-raise SystemExit(0 if sys.version_info[:2] == (3, 14) else 1)
+raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)
 PY
 then
   error "Python 3.14가 필요합니다. 현재: $($PYTHON_CMD --version)"
-  echo "       현재 고정 의존성은 Python 3.14 기준으로 설치합니다."
+  echo "       현재 고정 의존성은 Python 3.12 기준으로 설치합니다."
   exit 1
 fi
 success "$($PYTHON_CMD --version)"
