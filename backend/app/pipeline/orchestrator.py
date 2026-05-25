@@ -1,13 +1,17 @@
 import asyncio
 
 from app.pipeline.candidates import collect_candidates
-from app.pipeline.errors import NoResultsError, SearchTimeoutError, ServiceUnavailableError
+from app.pipeline.errors import (
+    NoResultsError,
+    SearchTimeoutError,
+    ServiceUnavailableError,
+)
 from app.pipeline.parser import parse_query
 from app.pipeline.scorer import score_and_select
 from app.schemas.search import CandidateTrack, LastFmLookup, ParsedQuery, Tag, Track
+from app.services.catalog import CatalogClient
 from app.services.lastfm import LastFmClient
 from app.services.llm import GeminiClient
-from app.services.catalog import CatalogClient
 
 LASTFM_TAG_TIMEOUT_SECONDS = 1.5
 
@@ -48,7 +52,9 @@ async def _search_pipeline(
     if use_llm:
         parsed = await parse_query(query, llm, use_deterministic=use_deterministic)
     else:
-        parsed = ParsedQuery(type="direct", query=query, tags=[], lastfm_candidates=[], raw=query)
+        parsed = ParsedQuery(
+            type="direct", query=query, tags=[], lastfm_candidates=[], raw=query
+        )
 
     candidates = await collect_candidates(parsed, catalog, lastfm)
     if not candidates:
@@ -59,7 +65,9 @@ async def _search_pipeline(
         candidate.model_copy(update={"tags": candidate.tags or candidate.fallback_tags})
         for candidate in candidates
     ]
-    best_idx = await score_and_select(query, parsed, scoring_candidates, llm, use_llm=use_llm)
+    best_idx = await score_and_select(
+        query, parsed, scoring_candidates, llm, use_llm=use_llm
+    )
     selected = candidates[best_idx]
 
     if parsed.type == "mood":
@@ -70,7 +78,9 @@ async def _search_pipeline(
     return enriched.to_track()
 
 
-async def enrich_all(candidates: list[CandidateTrack], lastfm: LastFmClient) -> list[CandidateTrack]:
+async def enrich_all(
+    candidates: list[CandidateTrack], lastfm: LastFmClient
+) -> list[CandidateTrack]:
     results = await asyncio.gather(
         *[_track_top_tags_with_fallback(candidate, lastfm) for candidate in candidates],
         return_exceptions=True,
@@ -87,7 +97,9 @@ async def enrich_all(candidates: list[CandidateTrack], lastfm: LastFmClient) -> 
     return enriched
 
 
-async def _track_top_tags_with_fallback(candidate: CandidateTrack, lastfm: LastFmClient):
+async def _track_top_tags_with_fallback(
+    candidate: CandidateTrack, lastfm: LastFmClient
+):
     lookup_pairs = [
         *candidate.lastfm_candidates,
         *[

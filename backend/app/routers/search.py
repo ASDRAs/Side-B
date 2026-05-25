@@ -3,7 +3,11 @@ import logging
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
-from app.pipeline.errors import NoResultsError, SearchTimeoutError, ServiceUnavailableError
+from app.pipeline.errors import (
+    NoResultsError,
+    SearchTimeoutError,
+    ServiceUnavailableError,
+)
 from app.pipeline.orchestrator import search_pipeline
 from app.schemas.search import SearchRequest, Track
 

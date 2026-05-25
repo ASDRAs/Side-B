@@ -13,7 +13,9 @@ class RecordingLlm:
 
     async def parse_query(self, raw):
         self.calls.append(raw)
-        return ParsedQuery(type="direct", query="Gemini IU You and I", tags=["k-pop"], raw=raw)
+        return ParsedQuery(
+            type="direct", query="Gemini IU You and I", tags=["k-pop"], raw=raw
+        )
 
 
 async def test_parser_lets_llm_handle_known_direct_query_when_available():

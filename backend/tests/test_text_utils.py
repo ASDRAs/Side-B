@@ -1,4 +1,10 @@
-from app.utils.text import compact_text, compact_normalized, text_ratio, sim, normalize_text
+from app.utils.text import (
+    compact_normalized,
+    compact_text,
+    normalize_text,
+    sim,
+    text_ratio,
+)
 
 
 def test_compact_text_removes_dash():

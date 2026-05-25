@@ -24,6 +24,7 @@ _DEEZER_SEARCH = "https://api.deezer.com/search"
 
 # ── 내부 유틸 ────────────────────────────────────────────────────
 
+
 async def _fetch_preview(
     http: httpx.AsyncClient,
     track_name: str,
@@ -48,7 +49,9 @@ async def _fetch_preview(
         try:
             resp = await http.get(_DEEZER_SEARCH, params={"q": query}, timeout=8.0)
         except Exception as exc:
-            logger.warning("[Preview] Deezer 요청 실패 (%s): %s", type(exc).__name__, exc)
+            logger.warning(
+                "[Preview] Deezer 요청 실패 (%s): %s", type(exc).__name__, exc
+            )
             continue
 
         if resp.status_code == 429:
@@ -59,7 +62,9 @@ async def _fetch_preview(
             preview = item.get("preview") or ""
             if preview:
                 deezer_id = str(item.get("id", ""))
-                logger.info("[Preview] 발견: %s - %s (id=%s)", track_name, artist, deezer_id)
+                logger.info(
+                    "[Preview] 발견: %s - %s (id=%s)", track_name, artist, deezer_id
+                )
                 return preview, deezer_id
 
     logger.info("[Preview] 미리 듣기 없음: %s - %s", track_name, artist)
@@ -67,6 +72,7 @@ async def _fetch_preview(
 
 
 # ── GET /preview ─────────────────────────────────────────────────
+
 
 @router.get("/preview")
 async def get_preview_url(
@@ -97,6 +103,7 @@ async def get_preview_url(
 
 
 # ── GET /preview/stream ──────────────────────────────────────────
+
 
 @router.get("/preview/stream")
 async def stream_preview(

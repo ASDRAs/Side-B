@@ -27,7 +27,14 @@ def test_parser_prompt_encodes_verified_mood_policy():
 
 
 def test_parser_prompt_keeps_tags_lastfm_friendly():
-    for tag in ["late-night", "focus", "instrumental", "k-pop", "city-pop", "female-vocalists"]:
+    for tag in [
+        "late-night",
+        "focus",
+        "instrumental",
+        "k-pop",
+        "city-pop",
+        "female-vocalists",
+    ]:
         assert tag in PARSER_SYSTEM_PROMPT
     assert "japanese" in PARSER_SYSTEM_PROMPT
     assert "korean" in PARSER_SYSTEM_PROMPT

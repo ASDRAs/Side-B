@@ -1,6 +1,5 @@
-﻿import logging
+import logging
 
-import pylast
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 

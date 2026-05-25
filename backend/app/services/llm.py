@@ -7,7 +7,6 @@ import httpx
 from app.pipeline.errors import ServiceUnavailableError
 from app.schemas.search import CandidateTrack, LastFmLookup, ParsedQuery
 
-
 PARSER_SYSTEM_PROMPT = """
 You classify a user's music search query for a iTunes, Deezer, and Last.fm discovery app.
 Return JSON only. No prose.
@@ -84,7 +83,9 @@ Scoring rules:
 class GeminiClient:
     API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    def __init__(self, api_key: str | None, model: str, http: httpx.AsyncClient) -> None:
+    def __init__(
+        self, api_key: str | None, model: str, http: httpx.AsyncClient
+    ) -> None:
         self.api_key = api_key
         self.model = model
         self.http = http
@@ -143,7 +144,9 @@ class GeminiClient:
             raw=raw,
         )
 
-    async def score_candidates(self, raw_query: str, candidates: list[CandidateTrack]) -> int:
+    async def score_candidates(
+        self, raw_query: str, candidates: list[CandidateTrack]
+    ) -> int:
         candidate_lines = []
         for index, candidate in enumerate(candidates[:5]):
             tag_names = ", ".join(tag.name for tag in candidate.tags[:5])
@@ -211,7 +214,9 @@ def _extract_text(payload: dict[str, Any]) -> str:
 
 
 def _loads_json_object(text: str) -> dict[str, Any]:
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(
+        r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE | re.DOTALL
+    )
     try:
         value = json.loads(cleaned)
     except json.JSONDecodeError:

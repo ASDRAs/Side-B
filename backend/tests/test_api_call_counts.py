@@ -4,6 +4,7 @@ API 호출 계측 테스트.
 Phase 1 (Lazy Enrichment) 적용 전에는 실패하는 것이 정상.
 Phase 1 적용 후 전부 통과해야 한다.
 """
+
 from recommend_algo import hidden_discovery, reverse_top100, similar_listening_pattern
 
 TOP_N = 10
@@ -150,7 +151,9 @@ async def test_reverse_enrich_count_is_at_most_top_n_times_3(monkeypatch):
         FakeSimilarResult(f"Artist{i}", f"Track{i}", 1.0 - i * 0.01) for i in range(80)
     ]
     similar_artists = [
-        FakeSimilarArtistResult(FakeSimilarArtistItem(f"SimilarArtist{i}", 4), 0.8 - i * 0.1)
+        FakeSimilarArtistResult(
+            FakeSimilarArtistItem(f"SimilarArtist{i}", 4), 0.8 - i * 0.1
+        )
         for i in range(3)
     ]
     lastfm = CombinedFakeLastFm(similar_tracks, similar_artists)

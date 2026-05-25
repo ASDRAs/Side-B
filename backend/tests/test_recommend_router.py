@@ -1,4 +1,4 @@
-﻿from app.routers.recommend import RecommendRequest, RecommendResponse
+from app.routers.recommend import RecommendRequest, RecommendResponse
 from app.services.recommend_service import _pick_representative_track
 from main import app
 from recommend_algo import TrackInfo
