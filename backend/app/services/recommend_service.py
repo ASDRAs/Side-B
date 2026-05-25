@@ -21,7 +21,12 @@ logger = logging.getLogger(__name__)
 
 def _pick_representative_track(tag_results: dict):
     return next(
-        (track for tracks in tag_results.values() for track in tracks if track.album_art_url),
+        (
+            track
+            for tracks in tag_results.values()
+            for track in tracks
+            if track.album_art_url
+        ),
         None,
     ) or next((track for tracks in tag_results.values() for track in tracks), None)
 
@@ -63,14 +68,22 @@ async def run_recommend(
 
     try:
         _prefetch_limit = max(60, top_n * 6)
-        prefetched_similar = await _track_similar_tracks(name, artist, lastfm, _prefetch_limit)
+        prefetched_similar = await _track_similar_tracks(
+            name, artist, lastfm, _prefetch_limit
+        )
     except Exception as exc:
-        logger.warning("[Prefetch] get_similar failed, running algorithms independently: %s", exc)
+        logger.warning(
+            "[Prefetch] get_similar failed, running algorithms independently: %s", exc
+        )
         prefetched_similar = None
 
     raw_results = await asyncio.gather(
-        similar_listening_pattern(name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar),
-        reverse_top100(name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar),
+        similar_listening_pattern(
+            name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
+        ),
+        reverse_top100(
+            name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
+        ),
         opposite_emotion(name, artist, http, lastfm, top_n=top_n),
         hidden_discovery(name, artist, http, lastfm, top_n=top_n),
         return_exceptions=True,

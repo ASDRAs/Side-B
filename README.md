@@ -65,3 +65,29 @@ poetry add pytest --group dev
 
 1. **`poetry.lock` 파일은 반드시 Git에 커밋**해야 합니다. 이 파일이 있어야 모든 팀원이 소수점 자리까지 완벽히 일치하는 동일한 환경에서 버그 없이 개발할 수 있습니다.
 2. 다른 팀원이 패키지를 추가하여 내가 레포지토리를 `git pull` 받았을 때는, `backend/` 폴더에서 다시 한번 **`poetry install`**만 입력해 주면 새 패키지가 내 로컬 가상환경에 즉시 반영됩니다.
+
+### Ruff 설정 방법
+
+python formatter인데 원래 isort+black으로 했었는데 poetry랑 연동 + 요즘 ruff가 좋다는 것 같아서 추가해봤음. ruff 세팅은(최대 줄 길이, 린터 등등..)은 project.toml에서 하면 됨. 기본적인건 추가해서 그냥 쓰면 될듯
+
+#### 설치방법
+1. extension에서 ruff 설치
+2. poetry init해서 ruff install
+3. setting.json에 추가
+```json
+{
+    "[python]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.codeActionsOnSave": {
+            "source.fixAll": "explicit",
+            "source.organizeImports": "explicit"
+        }
+    },
+    "ruff.importStrategy": "fromEnvironment"
+}
+```
+4. ctrl + s로 formatting 되는지 확인
+5. 전체 파일에 formatting 적용하고 싶은 경우에는
+`poetry run ruff check --fix . && poetry run ruff format .`
+> ruff format은 코드 스타일 전체 적용 / check --fux는 immport 순서 수정 및 논리적 오류 수정

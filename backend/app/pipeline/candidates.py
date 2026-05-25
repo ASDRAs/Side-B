@@ -2,10 +2,10 @@ import asyncio
 import re
 
 from app.config.rules import SIMPLE_TAG_RULES
-from app.utils.text import normalize_tag
 from app.schemas.search import CandidateTrack, LastFmLookup, ParsedQuery, Tag
-from app.services.lastfm import LastFmClient
 from app.services.catalog import CatalogClient
+from app.services.lastfm import LastFmClient
+from app.utils.text import normalize_tag
 
 KO_MUSIC_SIGNALS = {
     "아이유",
@@ -94,7 +94,13 @@ async def collect_candidates(
     fallback_tags = _simple_tags(parsed.raw)
     if not _should_try_mood_fallback(parsed.raw, fallback_tags):
         return []
-    mood = ParsedQuery(type="mood", query=None, tags=fallback_tags, lastfm_candidates=[], raw=parsed.raw)
+    mood = ParsedQuery(
+        type="mood",
+        query=None,
+        tags=fallback_tags,
+        lastfm_candidates=[],
+        raw=parsed.raw,
+    )
     return await _collect_mood_candidates(mood, catalog, lastfm)
 
 
@@ -132,7 +138,9 @@ async def _collect_mood_candidates(
                 all_candidates.append(
                     _with_lookup_context(
                         candidate,
-                        lastfm_candidates=[LastFmLookup(artist=item["artist"], title=item["title"])],
+                        lastfm_candidates=[
+                            LastFmLookup(artist=item["artist"], title=item["title"])
+                        ],
                         fallback_tags=parsed.tags,
                         raw_query=parsed.raw,
                         parsed_type=parsed.type,
@@ -229,13 +237,11 @@ def _infer_language_tags(
     normalized_tags = {normalize_tag(tag) for tag in tags}
     inferred: list[str] = []
 
-    has_ko_signal = (
-        any(signal in lowered for signal in KO_MUSIC_SIGNALS)
-        or bool(normalized_tags & {"k-pop", "k-ballad", "k-hip-hop", "korean"})
+    has_ko_signal = any(signal in lowered for signal in KO_MUSIC_SIGNALS) or bool(
+        normalized_tags & {"k-pop", "k-ballad", "k-hip-hop", "korean"}
     )
-    has_ja_signal = (
-        any(signal in lowered for signal in JA_MUSIC_SIGNALS)
-        or bool(normalized_tags & {"j-pop", "j-rock", "anime", "city-pop", "japanese"})
+    has_ja_signal = any(signal in lowered for signal in JA_MUSIC_SIGNALS) or bool(
+        normalized_tags & {"j-pop", "j-rock", "anime", "city-pop", "japanese"}
     )
 
     if parsed_type == "direct":

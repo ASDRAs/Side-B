@@ -41,6 +41,8 @@ def sim(a: str, b: str) -> float:
         return 0.0
     if compact_a and compact_b and compact_a == compact_b:
         return 1.0
-    if min(len(compact_a), len(compact_b)) >= 4 and (compact_a in compact_b or compact_b in compact_a):
+    if min(len(compact_a), len(compact_b)) >= 4 and (
+        compact_a in compact_b or compact_b in compact_a
+    ):
         return 1.0
     return SequenceMatcher(None, normalized_a, normalized_b).ratio()

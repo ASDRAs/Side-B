@@ -4,8 +4,7 @@ import re
 from app.pipeline.errors import ServiceUnavailableError
 from app.schemas.search import CandidateTrack, ParsedQuery
 from app.services.llm import GeminiClient
-from app.utils.text import compact_normalized, normalize_tag, normalize_text, sim
-
+from app.utils.text import normalize_tag, normalize_text, sim
 
 LLM_SCORE_TIMEOUT_SECONDS = 2.0
 
@@ -23,7 +22,11 @@ async def score_and_select(
 
     if not use_llm or parsed_query.type == "mood" or parsed_query.confidence >= 0.75:
         overlap_index = _tag_overlap_index(parsed_query, candidates)
-        return overlap_index if overlap_index is not None else _highest_popularity_index(candidates)
+        return (
+            overlap_index
+            if overlap_index is not None
+            else _highest_popularity_index(candidates)
+        )
 
     try:
         index = await asyncio.wait_for(
@@ -34,19 +37,29 @@ async def score_and_select(
         raise
     except Exception:
         overlap_index = _tag_overlap_index(parsed_query, candidates)
-        return overlap_index if overlap_index is not None else _highest_popularity_index(candidates)
+        return (
+            overlap_index
+            if overlap_index is not None
+            else _highest_popularity_index(candidates)
+        )
 
     if 0 <= index < len(candidates):
         return index
     overlap_index = _tag_overlap_index(parsed_query, candidates)
-    return overlap_index if overlap_index is not None else _highest_popularity_index(candidates)
+    return (
+        overlap_index
+        if overlap_index is not None
+        else _highest_popularity_index(candidates)
+    )
 
 
 def _highest_popularity_index(candidates: list[CandidateTrack]) -> int:
     return max(range(len(candidates)), key=lambda idx: candidates[idx].popularity)
 
 
-def _deterministic_rerank(parsed_query: ParsedQuery, candidates: list[CandidateTrack]) -> int | None:
+def _deterministic_rerank(
+    parsed_query: ParsedQuery, candidates: list[CandidateTrack]
+) -> int | None:
     if parsed_query.type != "direct" or not candidates:
         return None
 
@@ -132,7 +145,9 @@ def _is_artist_only(tokens: list[str], candidate: CandidateTrack) -> bool:
     return sim(query_text, candidate.artist) >= 0.85 and best_title < 0.40
 
 
-def _tag_overlap_index(parsed_query: ParsedQuery, candidates: list[CandidateTrack]) -> int | None:
+def _tag_overlap_index(
+    parsed_query: ParsedQuery, candidates: list[CandidateTrack]
+) -> int | None:
     query_tags = {normalize_tag(tag) for tag in parsed_query.tags}
     if not query_tags:
         return None

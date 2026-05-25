@@ -1,10 +1,9 @@
 import pytest
 
-from app.pipeline.errors import NoResultsError
 from app.pipeline.candidates import collect_candidates
+from app.pipeline.errors import NoResultsError
 from app.pipeline.orchestrator import enrich_all, search_pipeline
 from app.schemas.search import CandidateTrack, LastFmLookup, ParsedQuery, Tag, Track
-
 
 CATALOG_TRACK = {
     "id": "catalog-track-1",
@@ -132,7 +131,11 @@ async def test_search_pipeline_returns_track_for_direct_query():
         "아이유의 너랑나",
         catalog=FakeCatalog(),
         lastfm=FakeLastFm(),
-        llm=FakeLlm(ParsedQuery(type="direct", query="너랑나 IU", tags=[], raw="아이유의 너랑나")),
+        llm=FakeLlm(
+            ParsedQuery(
+                type="direct", query="너랑나 IU", tags=[], raw="아이유의 너랑나"
+            )
+        ),
     )
 
     Track.model_validate(result.model_dump())
@@ -184,7 +187,9 @@ async def test_search_pipeline_uses_lastfm_tag_path_for_mood_query():
         "새벽감성 음악",
         catalog=catalog,
         lastfm=FakeLastFm(),
-        llm=FakeLlm(ParsedQuery(type="mood", query=None, tags=["chill"], raw="새벽감성 음악")),
+        llm=FakeLlm(
+            ParsedQuery(type="mood", query=None, tags=["chill"], raw="새벽감성 음악")
+        ),
     )
 
     assert result.artist == "IU"
@@ -228,7 +233,9 @@ async def test_search_pipeline_raises_no_results_when_all_fallbacks_fail():
             "asdfqwer",
             catalog=EmptyCatalog(),
             lastfm=EmptyLastFm(),
-            llm=FakeLlm(ParsedQuery(type="direct", query="asdfqwer", tags=[], raw="asdfqwer")),
+            llm=FakeLlm(
+                ParsedQuery(type="direct", query="asdfqwer", tags=[], raw="asdfqwer")
+            ),
         )
 
 
@@ -306,7 +313,9 @@ async def test_japanese_context_adds_japanese_fallback_tag():
             type="direct",
             query="Merry-Go-Round of Life Joe Hisaishi",
             tags=["soundtrack"],
-            lastfm_candidates=[LastFmLookup(artist="Joe Hisaishi", title="Merry-Go-Round of Life")],
+            lastfm_candidates=[
+                LastFmLookup(artist="Joe Hisaishi", title="Merry-Go-Round of Life")
+            ],
             raw="지브리 인생의 회전목마",
         ),
         catalog=FakeCatalog(),

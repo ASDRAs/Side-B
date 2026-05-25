@@ -1,11 +1,11 @@
-﻿import math
+import math
 import re
 from typing import Any
 
 import httpx
 
 from app.schemas.search import CandidateTrack
-from app.utils.text import compact_text, text_ratio
+from app.utils.text import text_ratio
 
 
 class DeezerRateLimitError(Exception):
@@ -25,7 +25,9 @@ class CatalogClient:
         payload = await self._itunes_search(query, safe_limit)
         return payload
 
-    async def search_track_by_artist_title(self, artist: str, title: str) -> dict[str, Any] | None:
+    async def search_track_by_artist_title(
+        self, artist: str, title: str
+    ) -> dict[str, Any] | None:
         items = await self.search_tracks(f"{title} {artist}", limit=5)
         return _select_best_item(items, title, artist)
 
@@ -70,7 +72,11 @@ class CatalogClient:
         try:
             response = await self.http.get(
                 self.ITUNES_URL,
-                params={"term": term, "entity": "song", "limit": max(1, min(limit, 25))},
+                params={
+                    "term": term,
+                    "entity": "song",
+                    "limit": max(1, min(limit, 25)),
+                },
                 timeout=5.0,
             )
             response.raise_for_status()
@@ -111,7 +117,9 @@ class CatalogClient:
                     timeout=8.0,
                 )
                 if response.status_code == 429:
-                    raise DeezerRateLimitError(int(response.headers.get("Retry-After", 60)))
+                    raise DeezerRateLimitError(
+                        int(response.headers.get("Retry-After", 60))
+                    )
                 items = response.json().get("data", [])
             except DeezerRateLimitError:
                 raise
@@ -123,7 +131,9 @@ class CatalogClient:
         return None
 
 
-def _select_best_item(items: list[dict[str, Any]], title: str, artist: str) -> dict[str, Any] | None:
+def _select_best_item(
+    items: list[dict[str, Any]], title: str, artist: str
+) -> dict[str, Any] | None:
     best: tuple[float, dict[str, Any]] | None = None
     for item in items:
         score = _match_score(
@@ -139,8 +149,12 @@ def _select_best_item(items: list[dict[str, Any]], title: str, artist: str) -> d
     return best[1]
 
 
-def _match_score(title: str, artist: str, expected_title: str, expected_artist: str) -> float:
-    return (text_ratio(title, expected_title) * 0.68) + (text_ratio(artist, expected_artist) * 0.32)
+def _match_score(
+    title: str, artist: str, expected_title: str, expected_artist: str
+) -> float:
+    return (text_ratio(title, expected_title) * 0.68) + (
+        text_ratio(artist, expected_artist) * 0.32
+    )
 
 
 def _upgrade_itunes_artwork(url: str) -> str:
@@ -182,17 +196,26 @@ def _looks_like_bad_version(value: str) -> bool:
 
 def _clean_title(value: str) -> str:
     cleaned = re.sub(r"\(.*?\)|\[.*?\]", " ", value)
-    cleaned = re.sub(r"\s+-\s+(remaster(?:ed)?|live|radio edit|single version).*$", " ", cleaned, flags=re.I)
+    cleaned = re.sub(
+        r"\s+-\s+(remaster(?:ed)?|live|radio edit|single version).*$",
+        " ",
+        cleaned,
+        flags=re.I,
+    )
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def _catalog_match_score(title: str, artist: str, expected_title: str, expected_artist: str = "") -> float:
+def _catalog_match_score(
+    title: str, artist: str, expected_title: str, expected_artist: str = ""
+) -> float:
     title_score = text_ratio(_clean_title(title), _clean_title(expected_title))
     artist_score = text_ratio(artist, expected_artist) if expected_artist else 1.0
     return (title_score * 0.68) + (artist_score * 0.32)
 
 
-def _select_deezer_item(items: Any, track_name: str, artist: str) -> dict[str, Any] | None:
+def _select_deezer_item(
+    items: Any, track_name: str, artist: str
+) -> dict[str, Any] | None:
     if not isinstance(items, list):
         return None
     best: tuple[float, dict[str, Any]] | None = None

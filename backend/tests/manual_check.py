@@ -2,25 +2,38 @@ import asyncio
 import json
 import os
 import sys
-import httpx
 
+import httpx
 
 MUST_PASS = [
     (
         "아이유의 너랑나",
-        lambda r: ("IU" in r["artist"] or "아이유" in r["artist"])
-        and any(x in r["title"].lower() for x in ["너랑나", "you&i", "you & i", "you and i"]),
+        lambda r: (
+            ("IU" in r["artist"] or "아이유" in r["artist"])
+            and any(
+                x in r["title"].lower()
+                for x in ["너랑나", "you&i", "you & i", "you and i"]
+            )
+        ),
     ),
     (
         "music for programming",
-        lambda r: r["tags"]
-        and any(t["name"] in ["lo-fi", "instrumental", "focus", "ambient"] for t in r["tags"]),
+        lambda r: (
+            r["tags"]
+            and any(
+                t["name"] in ["lo-fi", "instrumental", "focus", "ambient"]
+                for t in r["tags"]
+            )
+        ),
     ),
     ("새벽감성 음악", lambda r: "korean" not in [t["name"] for t in r["tags"]]),
     ("Bohemian Rhapsody Queen", lambda r: "Queen" in r["artist"]),
     (
         "프로그래밍할 때 듣는 음악",
-        lambda r: r["tags"] and any(t["name"] in ["lo-fi", "focus", "instrumental"] for t in r["tags"]),
+        lambda r: (
+            r["tags"]
+            and any(t["name"] in ["lo-fi", "focus", "instrumental"] for t in r["tags"])
+        ),
     ),
     ("새벽에 혼자 듣는 음악", lambda r: "Harry Styles" not in r["artist"]),
 ]

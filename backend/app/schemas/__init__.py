@@ -1,4 +1,12 @@
-from app.schemas.search import CandidateTrack, LastFmLookup, ParsedQuery, SearchRequest, SelectedTrack, Tag, Track
+from app.schemas.search import (
+    CandidateTrack,
+    LastFmLookup,
+    ParsedQuery,
+    SearchRequest,
+    SelectedTrack,
+    Tag,
+    Track,
+)
 
 __all__ = [
     "CandidateTrack",

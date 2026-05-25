@@ -29,3 +29,20 @@ package-mode = false
 dev = [
     "ruff (>=0.15.14,<0.16.0)"
 ]
+
+[tool.ruff]
+# 최대 줄 길이 설정 (기본값은 88, 보통 88이나 119를 많이 씁니다)
+line-length = 88
+
+# 파이썬 타겟 버전 설정
+target-version = "py310" 
+
+[tool.ruff.lint]
+# 적용할 린터 규칙 선택 (E: pycodestyle, F: Pyflakes, I: isort)
+select = ["E", "F", "I"]
+# 무시할 규칙
+ignore = ["E501"]
+
+[tool.ruff.format]
+# 포매팅할 때 따옴표 스타일 (기본값 "double")
+quote-style = "double"
