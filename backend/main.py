@@ -64,6 +64,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# router 설정 fetch하면 아래의 기능들 불러옴. 실제 기능들이 수행되는 곳
 app.include_router(preview_router)
 app.include_router(recommend_router)
 app.include_router(search_router)
