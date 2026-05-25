@@ -145,8 +145,9 @@ fi
 
 VENV_PY="$(venv_bin python)"
 VENV_PIP="$(venv_bin pip)"
-"$VENV_PY" -m pip install --upgrade pip
-"$VENV_PIP" install -r backend/requirements.txt
+# poetry로 변경하므로 추후 poetry 설치로 변경 예정
+# "$VENV_PY" -m pip install --upgrade pip
+# "$VENV_PIP" install -r backend/requirements.txt
 success "백엔드 의존성 설치 완료"
 
 step "프론트엔드 React 의존성 준비"
