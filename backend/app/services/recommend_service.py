@@ -8,8 +8,8 @@ import pylast
 from recommend_algo import (
     _track_similar_tracks,
     hidden_discovery,
-    normalize_input,
     opposite_emotion,
+    preprocess_input,
     resolve_album_art,
     reverse_top100,
     similar_listening_pattern,
@@ -37,8 +37,8 @@ async def run_recommend(
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
 ) -> dict:
-    name, artist, source_id = await normalize_input(query, http, lastfm)
-
+    name, artist, source_id = await preprocess_input(query, http, lastfm)
+    breakpoint()
     if not name or not artist:
         tag_results = await tag_based_recommendations(query, http, lastfm, top_n=top_n)
         if tag_results and any(tag_results.values()):

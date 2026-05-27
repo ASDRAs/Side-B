@@ -129,13 +129,20 @@ class TrackInfo:
     reason_tags: list[str] = field(default_factory=list)
 
 
-async def normalize_input(
+async def preprocess_input(
     query: str,
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
 ) -> tuple[str | None, str | None, str | None]:
-    """Resolve a free-form query to a canonical track title and artist."""
+    """
+    유저에게 입력받은 자유로운 형태의 query(ex : 힙한 음악)를 track name, artist, itunes_uid 형식으로 return
+    먼저 itunes(apple music)에서 검색하고 검색 결과가 있는 경우는 itunes_id도 함께 return한다.
+    만약, itunes에서 검색결과가 없는 경우는 lastfm에서 search하고
+    """
+
+    # NOTE : 이거 필요한가? 그냥 하드코딩 같은데.
     alias = _known_query_alias(query)
+
     if alias:
         alias_name, alias_artist = alias
         item = await _itunes_search(
@@ -144,32 +151,36 @@ async def normalize_input(
         if item:
             name = str(item.get("trackName") or "").strip()
             artist = str(item.get("artistName") or "").strip()
-            source_id = _itunes_source_id(item)
+            itunes_source_id = _itunes_source_id(item)
             if name and artist:
                 logger.info("[Normalize] known alias via iTunes: %s - %s", name, artist)
-                return name, artist, source_id
+                return name, artist, itunes_source_id
 
         logger.info(
             "[Normalize] known alias fallback: %s - %s", alias_name, alias_artist
         )
         return alias_name, alias_artist, None
 
+    # itunes search API로 노래의 이름, 아티스트, itunes에 등록된 id를 가져옴
     item = await _itunes_search(http, query, limit=8, min_score=0.35)
     if item:
         name = str(item.get("trackName") or "").strip()
         artist = str(item.get("artistName") or "").strip()
-        source_id = _itunes_source_id(item)
+        itunes_source_id = _itunes_source_id(item)
         if name and artist:
             logger.info("[Normalize] iTunes: %s - %s", name, artist)
-            return name, artist, source_id
+            return name, artist, itunes_source_id
 
+    # itunes search API로 노래가 검색되지 않는 경우
     try:
+        # lastfm에서 검색
         search = lastfm.search_for_track("", query)
         results = await _lf_call(
             f"lf:search_track:{compact_text(query)}",
             300,
             search.get_next_page,
         )
+
         for track in results or []:
             name = str(track.get_name() or "").strip()
             artist = str(track.get_artist().get_name() or "").strip()
@@ -213,6 +224,9 @@ async def _itunes_search(
     limit: int = 5,
     min_score: float = 0.5,
 ) -> dict[str, Any] | None:
+    """
+    itunes search API를 활용하여 음원 정보 검색
+    """
     term = f"{track_name} {artist}".strip()
     if not term:
         return None
