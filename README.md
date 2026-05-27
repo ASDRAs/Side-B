@@ -1,3 +1,9 @@
+### Pre-commit 설정 방법
+commit하기 전에 코드 검사하는 tool.
+현재 프로젝트에서는 breakpoint()같이 디버깅 코드가 올라가는게 싫어서 검사하는 용도로 사용
+`poetry install` 이후에 `poetry run pre-commit install`만 쳐주기
+디버킹 코드가 있는 경우는 커밋이 강제 취소된다!!
+
 ### Poetry 설정 방법
 
 pip로 하는 것 보다 의존성 관리가 편해서 poetry로 사용하길 권장.
