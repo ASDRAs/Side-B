@@ -137,7 +137,7 @@ async def preprocess_input(
     """
     유저에게 입력받은 자유로운 형태의 query(ex : 힙한 음악)를 track name, artist, itunes_uid 형식으로 return
     먼저 itunes(apple music)에서 검색하고 검색 결과가 있는 경우는 itunes_id도 함께 return한다.
-    만약, itunes에서 검색결과가 없는 경우는 lastfm에서 search하고
+    만약, itunes에서 검색결과가 없는 경우는 lastfm에서 search하고 track name과 artist를 return
     """
 
     # NOTE : 이거 필요한가? 그냥 하드코딩 같은데.
