@@ -181,7 +181,12 @@ async def preprocess_input(
             search.get_next_page,
         )
 
-        for track in results or []:
+        # 검색결과가 없는 경우
+        if not results:
+            logger.warning("[Normalize] No search in Last.fm")
+            return None, None, None
+
+        for track in results:
             name = str(track.get_name() or "").strip()
             artist = str(track.get_artist().get_name() or "").strip()
             if name and artist and artist.lower() != "[unknown]":
