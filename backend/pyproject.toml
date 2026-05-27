@@ -28,7 +28,8 @@ build-backend = "poetry.core.masonry.api"
 package-mode = false
 [dependency-groups]
 dev = [
-    "ruff (>=0.15.14,<0.16.0)"
+    "ruff (>=0.15.14,<0.16.0)",
+    "pre-commit (>=4.6.0,<5.0.0)"
 ]
 
 [tool.ruff]
