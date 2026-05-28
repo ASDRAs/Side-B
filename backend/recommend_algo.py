@@ -426,18 +426,18 @@ def _track_key(track: TrackInfo) -> str:
     return f"{compact_text(track.artist)}::{compact_text(track.name)}"
 
 
-def _track_similar_lookup_pairs(track_name: str, artist: str) -> list[tuple[str, str]]:
-    pairs = [(track_name, artist)]
-    aliases = _TRACK_SIMILAR_ALIASES.get(
-        (compact_text(artist), compact_text(track_name)), []
-    )
-    seen = {(compact_text(artist), compact_text(track_name))}
-    for alias_name, alias_artist in aliases:
-        key = (compact_text(alias_artist), compact_text(alias_name))
-        if key not in seen:
-            seen.add(key)
-            pairs.append((alias_name, alias_artist))
-    return pairs
+# def _track_similar_lookup_pairs(track_name: str, artist: str) -> list[tuple[str, str]]:
+#     pairs = [(track_name, artist)]
+#     aliases = _TRACK_SIMILAR_ALIASES.get(
+#         (compact_text(artist), compact_text(track_name)), []
+#     )
+#     seen = {(compact_text(artist), compact_text(track_name))}
+#     for alias_name, alias_artist in aliases:
+#         key = (compact_text(alias_artist), compact_text(alias_name))
+#         if key not in seen:
+#             seen.add(key)
+#             pairs.append((alias_name, alias_artist))
+#     return pairs
 
 
 async def _track_similar_tracks(
@@ -445,34 +445,55 @@ async def _track_similar_tracks(
     artist: str,
     lastfm: pylast.LastFMNetwork,
     limit: int,
-) -> None:
+) -> None | list[pylast.SimilarItem]:
     last_error: Exception | None = None
-    for lookup_name, lookup_artist in _track_similar_lookup_pairs(track_name, artist):
+
+    # 검색어 증강(last.fm에서 검색이 잘 되도록 _TRACK_SIMILAR_ALIASES에 미리 등록되어 있는 경우 추가함)
+    # TODO : _TRACK_SIMILAR_ALIASES는 DB로 관리해도 괜찮을까?
+    lookup_candidates = [(track_name, artist)]
+    aliases = _TRACK_SIMILAR_ALIASES.get(
+        (compact_text(artist), compact_text(track_name)), []
+    )
+
+    # 중복 제거
+    already_seen = {(compact_text(artist), compact_text(track_name))}
+    for alias_name, alias_artist in aliases:
+        key = (compact_text(alias_artist), compact_text(alias_name))
+        if key not in already_seen:
+            already_seen.add(key)
+            lookup_candidates.append((alias_name, alias_artist))
+
+    # TODO : 검색어 증강(한국어 -> 영어, 일본어 등등 언어로 증강)이 중요한 것 같음. llm이 잘할 것 같은데.
+    # TODO : DB에 계속해서 쌓아나가면 좋을 것 같다.
+    for lookup_track_name, lookup_artist in lookup_candidates:
         try:
-            lf_track = lastfm.get_track(lookup_artist, lookup_name)
+            # lastfm에서 비슷한 track search
+            lf_track = lastfm.get_track(lookup_artist, lookup_track_name)
             raw = await _lf_call(
-                f"lf:track_similar:{compact_text(lookup_artist)}:{compact_text(lookup_name)}:{limit}",
+                f"lf:track_similar:{compact_text(lookup_artist)}:{compact_text(lookup_track_name)}:{limit}",
                 600,
                 lf_track.get_similar,
                 limit,
             )
+
         except Exception as exc:
             last_error = exc
             logger.info(
                 "[TrackSimilar] lookup failed for %s - %s: %s",
                 lookup_artist,
-                lookup_name,
+                lookup_track_name,
                 exc,
             )
             continue
         if raw:
-            if (lookup_name, lookup_artist) != (track_name, artist):
+            # alias를 이용한 추천 결과인 경우 info
+            if (lookup_track_name, lookup_artist) != (track_name, artist):
                 logger.info(
                     "[TrackSimilar] alias used: %s - %s -> %s - %s",
                     artist,
                     track_name,
                     lookup_artist,
-                    lookup_name,
+                    lookup_track_name,
                 )
             return list(raw)
 
