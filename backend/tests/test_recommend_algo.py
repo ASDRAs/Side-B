@@ -1,6 +1,6 @@
 from recommend_algo import (
     hidden_discovery,
-    normalize_input,
+    preprocess_input,
     reverse_top100,
     similar_listening_pattern,
     tag_based_recommendations,
@@ -211,7 +211,7 @@ async def test_normalize_input_uses_itunes_candidate():
     http = FakeHttp([ITUNES_EVENT_HORIZON])
     lastfm = SearchableFakeLastFm([])
 
-    result = await normalize_input("윤하 사건의 지평선", http, lastfm)
+    result = await preprocess_input("윤하 사건의 지평선", http, lastfm)
 
     assert result == ("Event Horizon", "Younha", "itunes:123")
     assert http.requests[0][1]["term"] == "Event Horizon Younha"
@@ -222,7 +222,7 @@ async def test_normalize_input_uses_known_alias_over_karaoke_candidate():
     http = FakeHttp([ITUNES_MUSICMARU, ITUNES_EVENT_HORIZON])
     lastfm = SearchableFakeLastFm([])
 
-    result = await normalize_input("윤하 사건의 지평선", http, lastfm)
+    result = await preprocess_input("윤하 사건의 지평선", http, lastfm)
 
     assert result == ("Event Horizon", "Younha", "itunes:123")
     assert lastfm.search_queries == []
@@ -232,7 +232,7 @@ async def test_normalize_input_ignores_bad_itunes_candidate_and_uses_lastfm():
     http = FakeHttp([ITUNES_COVER])
     lastfm = SearchableFakeLastFm([FakeTrack("아이유", "좋은날")])
 
-    result = await normalize_input("아이유 좋은날", http, lastfm)
+    result = await preprocess_input("아이유 좋은날", http, lastfm)
 
     assert result == ("좋은날", "아이유", None)
     assert lastfm.search_queries == [("", "아이유 좋은날")]
@@ -242,7 +242,7 @@ async def test_normalize_input_returns_none_when_catalogs_miss():
     http = EmptyHttp()
     lastfm = SearchableFakeLastFm([])
 
-    result = await normalize_input("asdfqwer", http, lastfm)
+    result = await preprocess_input("asdfqwer", http, lastfm)
 
     assert result == (None, None, None)
 

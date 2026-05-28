@@ -8,8 +8,8 @@ import pylast
 from recommend_algo import (
     _track_similar_tracks,
     hidden_discovery,
-    normalize_input,
     opposite_emotion,
+    preprocess_input,
     resolve_album_art,
     reverse_top100,
     similar_listening_pattern,
@@ -37,8 +37,13 @@ async def run_recommend(
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
 ) -> dict:
-    name, artist, source_id = await normalize_input(query, http, lastfm)
+    """
+    유저의 free-form query를 받아 노래를 추천합니다.
+    """
 
+    name, artist, source_id = await preprocess_input(query, http, lastfm)
+
+    # 만약 검색된 name, artist가 없는 경우
     if not name or not artist:
         tag_results = await tag_based_recommendations(query, http, lastfm, top_n=top_n)
         if tag_results and any(tag_results.values()):
@@ -62,14 +67,14 @@ async def run_recommend(
             album_art_url=None,
             result={"similar": [], "reverse": [], "opposite": [], "hidden": []},
         )
+    album_source_id, album_art_url = await resolve_album_art(http, name, artist)
 
-    art_source_id, album_art_url = await resolve_album_art(http, name, artist)
-    source_id = source_id or art_source_id
-
+    # itunes id가 없고 album_source_id만 있는경우는 album_source_id를 사용
+    source_id = source_id or album_source_id
     try:
-        _prefetch_limit = max(60, top_n * 6)
+        prefetch_limit = max(60, top_n * 6)
         prefetched_similar = await _track_similar_tracks(
-            name, artist, lastfm, _prefetch_limit
+            name, artist, lastfm, prefetch_limit
         )
     except Exception as exc:
         logger.warning(
@@ -77,6 +82,7 @@ async def run_recommend(
         )
         prefetched_similar = None
 
+    # similar, reverse, oppsite, hidden 취향의 곡들 추천
     raw_results = await asyncio.gather(
         similar_listening_pattern(
             name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
@@ -89,13 +95,22 @@ async def run_recommend(
         return_exceptions=True,
     )
 
-    processed_results = []
-    for result in raw_results:
-        if isinstance(result, Exception):
-            logger.error("recommendation algorithm error: %s", result, exc_info=True)
-            processed_results.append([])
+    rcmd_results = {
+        "similar": raw_results[0],
+        "reverse": raw_results[1],
+        "opposite": raw_results[2],
+        "hidden": raw_results[3],
+    }
+
+    processed_rcmd_results = {}
+    for rcmd_type, rcmd_result in rcmd_results.items():
+        if isinstance(rcmd_result, Exception):
+            logger.error(
+                "recommendation algorithm error: %s", rcmd_result, exc_info=True
+            )
+            processed_rcmd_results[rcmd_type] = []
         else:
-            processed_results.append([asdict(track) for track in result])
+            processed_rcmd_results[rcmd_type] = [asdict(track) for track in rcmd_result]
 
     return dict(
         track_name=name,
@@ -104,9 +119,9 @@ async def run_recommend(
         source_id=source_id,
         album_art_url=album_art_url,
         result={
-            "similar": processed_results[0],
-            "reverse": processed_results[1],
-            "opposite": processed_results[2],
-            "hidden": processed_results[3],
+            "similar": processed_rcmd_results["similar"],
+            "reverse": processed_rcmd_results["reverse"],
+            "opposite": processed_rcmd_results["opposite"],
+            "hidden": processed_rcmd_results["hidden"],
         },
     )
