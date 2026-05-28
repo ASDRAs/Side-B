@@ -499,7 +499,7 @@ async def _track_similar_tracks(
 
     if last_error:
         logger.info("[TrackSimilar] no usable lookup after error: %s", last_error)
-    return None
+    return []
 
 
 def tags_from_query(query: str) -> list[str]:
