@@ -445,7 +445,7 @@ async def _track_similar_tracks(
     artist: str,
     lastfm: pylast.LastFMNetwork,
     limit: int,
-) -> list:
+) -> None:
     last_error: Exception | None = None
     for lookup_name, lookup_artist in _track_similar_lookup_pairs(track_name, artist):
         try:
@@ -478,7 +478,7 @@ async def _track_similar_tracks(
 
     if last_error:
         logger.info("[TrackSimilar] no usable lookup after error: %s", last_error)
-    return []
+    return None
 
 
 def tags_from_query(query: str) -> list[str]:
