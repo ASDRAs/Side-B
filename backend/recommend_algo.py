@@ -832,27 +832,32 @@ async def similar_listening_pattern(
         else:
             # NOTE : 이거 하는 이유가? error 발생해서 None이 넘어올건데 2중으로 call하는 이유는 없어보임
             raw_similar = await _track_similar_tracks(track_name, artist, lastfm, 50)
-        pool = _dedupe_tracks(
-            [
-                TrackInfo(
-                    name=item.item.get_name(),
-                    artist=item.item.get_artist().get_name(),
-                    match_score=float(item.match),
-                )
-                for item in raw_similar
-            ]
+
+        # 중복 제거
+        raw_tracks = [
+            TrackInfo(
+                name=item.item.get_name(),
+                artist=item.item.get_artist().get_name(),
+                match_score=float(item.match),
+            )
+            for item in raw_similar
+        ]
+        unique_tracks = _dedupe_tracks(raw_tracks)
+
+        # score 기준으로 정렬
+        sorted_tracks = sorted(
+            unique_tracks, key=lambda t: t.match_score or 0, reverse=True
         )
-        pool.sort(key=lambda t: t.match_score or 0, reverse=True)
-        pool = pool[:top_n]
-        pool = await _enrich_metadata(http, pool)
-        pool = await _fill_lastfm_album_art(lastfm, pool)
-        for track in pool:
+        top_tracks = sorted_tracks[:top_n]
+        top_tracks = await _enrich_metadata(http, top_tracks)
+        top_tracks = await _fill_lastfm_album_art(lastfm, top_tracks)
+        for track in top_tracks:
             track.reverse_score = track.match_score or 0
             track.algo, track.label = (
                 "similar_listening_pattern",
                 "비슷한 취향의 사람들이 들어요",
             )
-        return pool
+        return top_tracks
     except Exception as exc:
         logger.warning("[similar_listening_pattern] failed: %s", exc)
         return []
