@@ -445,7 +445,7 @@ async def _track_similar_tracks(
     artist: str,
     lastfm: pylast.LastFMNetwork,
     limit: int,
-) -> None | list[pylast.SimilarItem]:
+) -> list:
     last_error: Exception | None = None
 
     # 검색어 증강(last.fm에서 검색이 잘 되도록 _TRACK_SIMILAR_ALIASES에 미리 등록되어 있는 경우 추가함)
