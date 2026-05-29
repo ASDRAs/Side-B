@@ -426,20 +426,6 @@ def _track_key(track: TrackInfo) -> str:
     return f"{compact_text(track.artist)}::{compact_text(track.name)}"
 
 
-# def _track_similar_lookup_pairs(track_name: str, artist: str) -> list[tuple[str, str]]:
-#     pairs = [(track_name, artist)]
-#     aliases = _TRACK_SIMILAR_ALIASES.get(
-#         (compact_text(artist), compact_text(track_name)), []
-#     )
-#     seen = {(compact_text(artist), compact_text(track_name))}
-#     for alias_name, alias_artist in aliases:
-#         key = (compact_text(alias_artist), compact_text(alias_name))
-#         if key not in seen:
-#             seen.add(key)
-#             pairs.append((alias_name, alias_artist))
-#     return pairs
-
-
 async def _track_similar_tracks(
     track_name: str,
     artist: str,
