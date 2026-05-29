@@ -432,6 +432,9 @@ async def _track_similar_tracks(
     lastfm: pylast.LastFMNetwork,
     limit: int,
 ) -> list:
+    """
+    lasfm API를 사용하여 track_name과 비슷한 노래를 가져옴.
+    """
     last_error: Exception | None = None
 
     # 검색어 증강(last.fm에서 검색이 잘 되도록 _TRACK_SIMILAR_ALIASES에 미리 등록되어 있는 경우 추가함)
@@ -820,13 +823,14 @@ async def reverse_top100(
 
 
 async def similar_listening_pattern(
-    track_name, artist, http, lastfm, top_n=10, *, prefetched=None
+    track_name: str, artist: str, http, lastfm, top_n=10, *, prefetched=None
 ) -> list[TrackInfo]:
     """Recommend tracks with the strongest Last.fm similarity."""
     try:
         if prefetched is not None:
             raw_similar = prefetched
         else:
+            # NOTE : 이거 하는 이유가? error 발생해서 None이 넘어올건데 2중으로 call하는 이유는 없어보임
             raw_similar = await _track_similar_tracks(track_name, artist, lastfm, 50)
         pool = _dedupe_tracks(
             [
