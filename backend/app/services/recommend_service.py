@@ -43,7 +43,7 @@ async def run_recommend(
 
     name, artist, source_id = await preprocess_input(query, http, lastfm)
 
-    # 만약 검색된 name, artist가 없는 경우
+    # 유저 query에 name, artist가 없는 경우(mood tag query)
     if not name or not artist:
         tag_results = await tag_based_recommendations(query, http, lastfm, top_n=top_n)
         if tag_results and any(tag_results.values()):
@@ -67,61 +67,68 @@ async def run_recommend(
             album_art_url=None,
             result={"similar": [], "reverse": [], "opposite": [], "hidden": []},
         )
-    album_source_id, album_art_url = await resolve_album_art(http, name, artist)
 
-    # itunes id가 없고 album_source_id만 있는경우는 album_source_id를 사용
-    source_id = source_id or album_source_id
-    try:
-        prefetch_limit = max(60, top_n * 6)
-        prefetched_similar = await _track_similar_tracks(
-            name, artist, lastfm, prefetch_limit
-        )
-    except Exception as exc:
-        logger.warning(
-            "[Prefetch] get_similar failed, running algorithms independently: %s", exc
-        )
-        prefetched_similar = None
-
-    # similar, reverse, oppsite, hidden 취향의 곡들 추천
-    raw_results = await asyncio.gather(
-        similar_listening_pattern(
-            name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
-        ),
-        reverse_top100(
-            name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
-        ),
-        opposite_emotion(name, artist, http, lastfm, top_n=top_n),
-        hidden_discovery(name, artist, http, lastfm, top_n=top_n),
-        return_exceptions=True,
-    )
-
-    rcmd_results = {
-        "similar": raw_results[0],
-        "reverse": raw_results[1],
-        "opposite": raw_results[2],
-        "hidden": raw_results[3],
-    }
-
-    processed_rcmd_results = {}
-    for rcmd_type, rcmd_result in rcmd_results.items():
-        if isinstance(rcmd_result, Exception):
-            logger.error(
-                "recommendation algorithm error: %s", rcmd_result, exc_info=True
+    # 유저 query에 name, artist가 있는 경우(direct query)
+    else:
+        # 유저가 입력한 노래의 앨범 커버 uid/커버를 가져옴
+        album_source_id, album_art_url = await resolve_album_art(http, name, artist)
+        # itunes id가 없고 album_source_id만 있는경우는 album_source_id를 사용
+        source_id = source_id or album_source_id
+        try:
+            prefetch_limit = max(60, top_n * 6)
+            # 유저가 direct로 입력한 노래와 비슷한 노래 search
+            prefetched_similar = await _track_similar_tracks(
+                name, artist, lastfm, prefetch_limit
             )
-            processed_rcmd_results[rcmd_type] = []
-        else:
-            processed_rcmd_results[rcmd_type] = [asdict(track) for track in rcmd_result]
+        except Exception as exc:
+            logger.warning(
+                "[Prefetch] get_similar failed, running algorithms independently: %s",
+                exc,
+            )
+            prefetched_similar = None
 
-    return dict(
-        track_name=name,
-        artist=artist,
-        top_n=top_n,
-        source_id=source_id,
-        album_art_url=album_art_url,
-        result={
-            "similar": processed_rcmd_results["similar"],
-            "reverse": processed_rcmd_results["reverse"],
-            "opposite": processed_rcmd_results["opposite"],
-            "hidden": processed_rcmd_results["hidden"],
-        },
-    )
+        # similar, reverse, oppsite, hidden 취향의 곡들 추천
+        raw_results = await asyncio.gather(
+            similar_listening_pattern(
+                name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
+            ),
+            reverse_top100(
+                name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
+            ),
+            opposite_emotion(name, artist, http, lastfm, top_n=top_n),
+            hidden_discovery(name, artist, http, lastfm, top_n=top_n),
+            return_exceptions=True,
+        )
+
+        rcmd_results = {
+            "similar": raw_results[0],
+            "reverse": raw_results[1],
+            "opposite": raw_results[2],
+            "hidden": raw_results[3],
+        }
+
+        processed_rcmd_results = {}
+        for rcmd_type, rcmd_result in rcmd_results.items():
+            if isinstance(rcmd_result, Exception):
+                logger.error(
+                    "recommendation algorithm error: %s", rcmd_result, exc_info=True
+                )
+                processed_rcmd_results[rcmd_type] = []
+            else:
+                processed_rcmd_results[rcmd_type] = [
+                    asdict(track) for track in rcmd_result
+                ]
+
+        return dict(
+            track_name=name,
+            artist=artist,
+            top_n=top_n,
+            source_id=source_id,
+            album_art_url=album_art_url,
+            result={
+                "similar": processed_rcmd_results["similar"],
+                "reverse": processed_rcmd_results["reverse"],
+                "opposite": processed_rcmd_results["opposite"],
+                "hidden": processed_rcmd_results["hidden"],
+            },
+        )
