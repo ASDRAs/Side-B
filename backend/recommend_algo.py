@@ -210,7 +210,7 @@ async def resolve_album_art(
         if artwork:
             return _itunes_source_id(item), artwork
 
-    item = await _dz_search(http, track_name, artist)
+    item = await _deezer_search(http, track_name, artist)
     if item:
         album = item.get("album") or {}
         artwork = (
@@ -246,11 +246,13 @@ async def _itunes_search(
     return result
 
 
-async def _dz_search(
+async def _deezer_search(
     http: httpx.AsyncClient, track_name: str, artist: str
 ) -> dict[str, Any] | None:
     if _is_dz_rate_limited():
         return None
+
+    # dezeer에 search하기 전 track_name 전처리
     clean_name = re.sub(r"\(.*?\)|\[.*?\]", " ", track_name)
     clean_name = re.sub(
         r"\s+-\s+(remaster(?:ed)?|live|radio edit|single version).*$",
@@ -264,6 +266,7 @@ async def _dz_search(
     if hit:
         return cached
     try:
+        # TODO : Catalog 해체분석 해보기.
         result = await CatalogClient(http).deezer_search_best(track_name, artist)
     except DeezerRateLimitError as e:
         _mark_dz_rate_limited({"Retry-After": str(e.retry_after)})
@@ -275,22 +278,32 @@ async def _dz_search(
 async def _enrich_metadata(
     http: httpx.AsyncClient, tracks: list[TrackInfo]
 ) -> list[TrackInfo]:
+    """
+    deezer/itunes에서 track의 metadata를 검색해 TrackInfo에 추가합니다.
+    popularity : track의 인기도. 곡 재생횟수를 log-scale로 normalize한 value
+    album_art_url : 앨범 커버(표지) url
+    source_id : itunes/deezer에 등록된 track의 id
+    """
+
     async def _fetch(track: TrackInfo) -> TrackInfo:
+        # deezer/itunes에서 track을 검색하여 metadata를 가져옴
         deezer_item, itunes_item = await asyncio.gather(
-            _dz_search(http, track.name, track.artist),
+            _deezer_search(http, track.name, track.artist),
             _itunes_search(http, track.name, track.artist, limit=8, min_score=0.45),
         )
-
+        # popularity 추가
         if deezer_item:
+            # rank : 해당 곡이 얼마나 많이 재생되었는지
             rank = int(deezer_item.get("rank") or 0)
             if rank > 0:
+                # rank 정규화
                 track.popularity = min(100, int(math.log10(rank + 1) * 10))
-            track.source_id = track.source_id or _deezer_source_id(deezer_item)
 
+        # album_art_url 추가
         if itunes_item:
-            track.source_id = _itunes_source_id(itunes_item) or track.source_id
             track.album_art_url = _itunes_artwork(itunes_item) or track.album_art_url
 
+        # itunes에 album art가 없는 경우 deezer에서 가져옴
         if not track.album_art_url and deezer_item:
             album = deezer_item.get("album") or {}
             track.album_art_url = (
@@ -298,6 +311,12 @@ async def _enrich_metadata(
                 or album.get("cover_medium")
                 or album.get("cover")
             )
+
+        # source_id 추가
+        itunes_id = _itunes_source_id(itunes_item) if itunes_item else None
+        deezer_id = _deezer_source_id(deezer_item) if deezer_item else None
+        # track id를 우선순위에 맞게 부여(itune > 기존 id > deezer)
+        track.source_id = itunes_id or track.source_id or deezer_id
 
         return track
 
@@ -411,6 +430,9 @@ def _fill_from_ranked_pool(
 
 
 def _dedupe_tracks(tracks: list[TrackInfo]) -> list[TrackInfo]:
+    """
+    track list를 입력받아 중복되는 track을 제거하고 return합니다.
+    """
     seen: set[str] = set()
     deduped: list[TrackInfo] = []
     for track in tracks:
