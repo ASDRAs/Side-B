@@ -275,7 +275,7 @@ async def _deezer_search(
     return result
 
 
-async def _enrich_metadata(
+async def _get_tracks_metadata(
     http: httpx.AsyncClient,
     tracks: list[TrackInfo],
     fields: list[Literal["popularity", "album_art", "source_id"]]
@@ -571,7 +571,7 @@ async def tag_based_recommendations(
     if not pool:
         return None
 
-    pool = await _enrich_metadata(
+    pool = await _get_tracks_metadata(
         http, _cap_per_artist(pool, max_per=3)[: max(top_n * 5, 40)]
     )
     pool = await _fill_lastfm_album_art(lastfm, pool)
@@ -627,7 +627,7 @@ async def tag_based_recommendations(
             if _track_key(track) not in used_keys
         ]
     )
-    opposite = await _enrich_metadata(
+    opposite = await _get_tracks_metadata(
         http, _cap_per_artist(opposite_pool, max_per=1)[:top_n]
     )
     opposite = await _fill_lastfm_album_art(lastfm, opposite)
@@ -830,7 +830,7 @@ async def reverse_top100(
 
         # match_score 상위 후보를 보강하되 특정 아티스트 쏠림은 줄인다.
         merged = _balanced_candidate_slice(merged, top_n * 3)
-        merged = _dedupe_tracks(await _enrich_metadata(http, merged))
+        merged = _dedupe_tracks(await _get_tracks_metadata(http, merged))
         merged = await _fill_lastfm_album_art(lastfm, merged)
 
         # ── 비주류 점수 계산 ───────────────────────────────────────
@@ -927,7 +927,7 @@ async def similar_listening_pattern(
             unique_tracks, key=lambda t: t.match_score or 0, reverse=True
         )
         top_tracks = sorted_tracks[:top_n]
-        top_tracks = await _enrich_metadata(http, top_tracks)
+        top_tracks = await _get_tracks_metadata(http, top_tracks)
         top_tracks = await _fill_lastfm_album_art(lastfm, top_tracks)
         for track in top_tracks:
             track.reverse_score = track.match_score or 0
@@ -1006,7 +1006,7 @@ async def opposite_emotion(
             ]
             collected = _cap_per_artist(_dedupe_tracks(collected), max_per=1)
         collected = collected[:top_n]
-        opp_emotion_tracks = await _enrich_metadata(http, collected)
+        opp_emotion_tracks = await _get_tracks_metadata(http, collected)
 
         # NOTE : enrich_metadata에서 이미 album_art_url이 채워짐.
         # opp_emotion_tracks = await _fill_lastfm_album_art(lastfm, opp_emotion_tracks)
@@ -1119,7 +1119,7 @@ async def hidden_discovery(
         pre_scored.sort(key=lambda x: x[0], reverse=True)
         candidate_rows = [row for _, row in pre_scored[: top_n * 3]]
 
-        tracks = await _enrich_metadata(http, [row[3] for row in candidate_rows])
+        tracks = await _get_tracks_metadata(http, [row[3] for row in candidate_rows])
         tracks = await _fill_lastfm_album_art(lastfm, tracks)
         for row, track in zip(candidate_rows, tracks):
             artist_rank, track_rank, artist_match, _ = row
