@@ -706,70 +706,79 @@ async def _fill_lastfm_album_art(
     return tracks
 
 
+async def _fetch_artist_tracks(src, artist_rank: int) -> list[TrackInfo]:
+    synthetic_match = max(0.3, 0.70 - (artist_rank - 1) * 0.1)
+    similar_tracks = []
+    src_name = compact_text(str(src.get_name()))
+    response = await _lf_call(
+        f"lf:artist_top:{src_name}:20",
+        600,
+        src.get_top_tracks,
+        20,
+    )
+
+    for raw in response:
+        similar_tracks.append(
+            TrackInfo(
+                name=raw.item.get_name(),
+                artist=raw.item.get_artist().get_name(),
+                match_score=synthetic_match,
+            )
+        )
+    return similar_tracks
+
+
 async def reverse_top100(
-    track_name, artist, http, lastfm, top_n=10, *, prefetched=None
+    track_name: str,
+    artist: str,
+    http: httpx.AsyncClient,
+    lastfm: pylast.LastFMNetwork,
+    top_n=10,
+    *,
+    prefetched=None,
 ) -> list[TrackInfo]:
     """Discover less-mainstream tracks via direct similarity (A) and similar-artist networks (B)."""
     try:
-        # ── 소스 A + 유사 아티스트 목록 병렬 수집 ──────────────────
         if prefetched is not None:
-            raw_similar_tracks = prefetched
+            similar_tracks = prefetched
+
+        # NOTE : 이거 하는 이유가 없어보임. 차라리 track_similar_tracks에 retry 로직 걸어두기
         else:
             _limit = max(60, top_n * 6)
-            raw_similar_tracks = await _track_similar_tracks(
+            similar_tracks = await _track_similar_tracks(
                 track_name, artist, lastfm, _limit
             )
-        raw_similar_artists: list | Exception = []
-        try:
-            lf_artist = lastfm.get_artist(artist)
-            _artist_limit = max(3, min(top_n, 8))
-            raw_similar_artists = await _lf_call(
-                f"lf:artist_similar:{compact_text(artist)}:{_artist_limit}",
-                600,
-                lf_artist.get_similar,
-                _artist_limit,
-            )
-        except Exception as exc:
-            logger.info("[Reverse] similar artist expansion unavailable: %s", exc)
 
+        # 소스 A : lasfm에서 가져온(pretetched) similar track
         pool_a: list[TrackInfo] = []
-        if not isinstance(raw_similar_tracks, Exception):
+        if not isinstance(similar_tracks, Exception):
             pool_a = [
                 TrackInfo(
                     name=item.item.get_name(),
                     artist=item.item.get_artist().get_name(),
                     match_score=float(item.match),
                 )
-                for item in raw_similar_tracks
+                for item in similar_tracks
             ]
 
-        # ── 소스 B: 유사 아티스트 3명의 상위 20트랙 ─────────────
-        similar_artists = (
-            []
-            if isinstance(raw_similar_artists, Exception)
-            else [sa.item for sa in raw_similar_artists]
-        )
+        # 소스 B : 유저가 검색한 아티스트와 유사한 아티스트 3명의 상위 20트랙
 
-        async def _fetch_artist_tracks(src, artist_rank: int) -> list[TrackInfo]:
-            synthetic_match = max(0.3, 0.70 - (artist_rank - 1) * 0.1)
-            try:
-                src_name = compact_text(str(src.get_name()))
-                raw = await _lf_call(
-                    f"lf:artist_top:{src_name}:20",
-                    600,
-                    src.get_top_tracks,
-                    20,
-                )
-                return [
-                    TrackInfo(
-                        name=item.item.get_name(),
-                        artist=item.item.get_artist().get_name(),
-                        match_score=synthetic_match,
-                    )
-                    for item in raw
-                ]
-            except Exception:
-                return []
+        # lastfm에서 user query의 artist와 유사한 artist를 가져옴
+        similar_artists: list = []
+        try:
+            artist_lf_info = lastfm.get_artist(artist)
+            artist_search_limit = max(3, min(top_n, 8))
+            similar_artists = await _lf_call(
+                f"lf:artist_similar:{compact_text(artist)}:{artist_search_limit}",
+                600,
+                artist_lf_info.get_similar,
+                artist_search_limit,
+            )
+
+        except Exception as exc:
+            logger.info("[Reverse] similar artist expansion unavailable: %s", exc)
+
+        similar_artists = [sa.item for sa in similar_artists]
 
         b_results = await asyncio.gather(
             *[
@@ -778,6 +787,7 @@ async def reverse_top100(
             ],
             return_exceptions=True,
         )
+
         pool_b: list[TrackInfo] = []
         for res in b_results:
             if not isinstance(res, Exception):
@@ -805,22 +815,48 @@ async def reverse_top100(
         merged = await _fill_lastfm_album_art(lastfm, merged)
 
         # ── 비주류 점수 계산 ───────────────────────────────────────
-        obvious_keys = (
-            {_track_key(t) for t in merged[:top_n]} if len(merged) > top_n else set()
-        )
-        discovery_pool = [t for t in merged if _track_key(t) not in obvious_keys]
-        low_exposure = [
-            t
-            for t in discovery_pool
-            if (t.popularity if t.popularity is not None else 55) < 70
-        ]
+        # 1단계: 너무 뻔한 상위 추천곡 제외하기 (Obvious Filter)
+        obvious_keys = set()
+
+        # 추천 리스트가 요구하는 개수(top_n)보다 충분히 많을 때만 상위 곡을 걸러냅니다.
+        if len(merged) > top_n:
+            for track in merged[:top_n]:
+                obvious_keys.add(_track_key(track))
+
+        # 뻔한 곡 목록에 없는 곡들만 새로운 풀에 담습니다.
+        discovery_pool = []
+        for track in merged:
+            key = _track_key(track)
+            if key not in obvious_keys:
+                discovery_pool.append(track)
+        # TODO : 상수 관리할 방법 고민. 따로 파일에 빼서 관리할 까 싶기도 함
+        DEFAULT_POPULARITY = 55
+        LOW_EXPOUSURE_CUT = 70
+        MAX_POPULARITY = 75
+        # 인기도가 낮은 곡들만 추가
+        low_exposure = []
+        for track in discovery_pool:
+            if track.popularity is None:
+                track.popularity = DEFAULT_POPULARITY
+
+            if track.popularity < LOW_EXPOUSURE_CUT:
+                low_exposure.append(track)
+
+        # 만약, 비주류 곡들이 추천 갯수보다 많다면 유명한 곡들은 완전히 제거하고 비주류 곡만 pool에 담음
         if len(low_exposure) >= top_n:
             discovery_pool = low_exposure
 
         pool_size = max(len(discovery_pool) - 1, 1)
+        # 비주류 점수 계산
         for index, t in enumerate(discovery_pool):
-            popularity = t.popularity if t.popularity is not None else 55
-            obscurity = max(0.0, min(1.0, (75 - popularity) / 75))
+            popularity = t.popularity
+            obscurity = max(
+                0.0,
+                min(
+                    1.0,
+                    (MAX_POPULARITY - popularity) / MAX_POPULARITY,
+                ),
+            )
             match = max(0.0, min(1.0, t.match_score or 0.0))
             middle_similarity = max(0.0, 1 - (abs(match - 0.35) / 0.45))
             rank_novelty = index / pool_size
@@ -838,6 +874,7 @@ async def reverse_top100(
         for t in ranked:
             t.algo, t.label = "reverse_top100", "당신만 모르는 숨겨진 명곡"
         logger.info("[Reverse] 최종 선정 %d개", len(ranked))
+
         return ranked
     except Exception as exc:
         logger.warning("[reverse_top100] failed: %s", exc)
