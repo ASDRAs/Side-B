@@ -13,7 +13,7 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import pylast
@@ -276,14 +276,25 @@ async def _deezer_search(
 
 
 async def _enrich_metadata(
-    http: httpx.AsyncClient, tracks: list[TrackInfo]
+    http: httpx.AsyncClient,
+    tracks: list[TrackInfo],
+    fields: list[Literal["popularity", "album_art", "source_id"]]
+    | Literal["all"] = "all",
 ) -> list[TrackInfo]:
     """
     deezer/itunes에서 track의 metadata를 검색해 TrackInfo에 추가합니다.
-    popularity : track의 인기도. 곡 재생횟수를 log-scale로 normalize한 value
-    album_art_url : 앨범 커버(표지) url
-    source_id : itunes/deezer에 등록된 track의 id
+    - popularity : track의 인기도. 곡 재생횟수를 log-scale로 normalize한 value
+    - album_art : 앨범 커버(표지) url
+    - source_id : itunes/deezer에 등록된 track의 id
     """
+    VALID_FIELDS = {"popularity", "album_art", "source_id"}
+    if fields == "all":
+        active_fields = VALID_FIELDS
+    else:
+        validate_fileds = set(fields) - VALID_FIELDS
+        if validate_fileds:
+            raise ValueError(f"유효하지 않은 메타데이터 필드입니다: {validate_fileds}")
+        active_fields = set(fields)
 
     async def _fetch(track: TrackInfo) -> TrackInfo:
         # deezer/itunes에서 track을 검색하여 metadata를 가져옴
@@ -292,31 +303,39 @@ async def _enrich_metadata(
             _itunes_search(http, track.name, track.artist, limit=8, min_score=0.45),
         )
         # popularity 추가
-        if deezer_item:
-            # rank : 해당 곡이 얼마나 많이 재생되었는지
-            rank = int(deezer_item.get("rank") or 0)
+        if "popularity" in active_fields:
+            if deezer_item:
+                # rank : 해당 곡이 얼마나 많이 재생되었는지
+                rank = int(deezer_item.get("rank") or 0)
+            else:
+                rank = 0
             if rank > 0:
                 # rank 정규화
                 track.popularity = min(100, int(math.log10(rank + 1) * 10))
 
         # album_art_url 추가
-        if itunes_item:
-            track.album_art_url = _itunes_artwork(itunes_item) or track.album_art_url
+        if "album_art" in active_fields:
+            if itunes_item:
+                track.album_art_url = (
+                    _itunes_artwork(itunes_item) or track.album_art_url
+                )
 
-        # itunes에 album art가 없는 경우 deezer에서 가져옴
-        if not track.album_art_url and deezer_item:
-            album = deezer_item.get("album") or {}
-            track.album_art_url = (
-                album.get("cover_big")
-                or album.get("cover_medium")
-                or album.get("cover")
-            )
+            # itunes에 album art가 없는 경우 deezer에서 가져옴
+            if not track.album_art_url and deezer_item:
+                album = deezer_item.get("album") or {}
+                track.album_art_url = (
+                    album.get("cover_big")
+                    or album.get("cover_medium")
+                    or album.get("cover")
+                )
+            # TODO : 그래도 없는 경우는 lastfm에서?
 
-        # source_id 추가
-        itunes_id = _itunes_source_id(itunes_item) if itunes_item else None
-        deezer_id = _deezer_source_id(deezer_item) if deezer_item else None
-        # track id를 우선순위에 맞게 부여(itune > 기존 id > deezer)
-        track.source_id = itunes_id or track.source_id or deezer_id
+        if "source_id" in active_fields:
+            # source_id 추가
+            itunes_id = _itunes_source_id(itunes_item) if itunes_item else None
+            deezer_id = _deezer_source_id(deezer_item) if deezer_item else None
+            # track id를 우선순위에 맞게 부여(itune > 기존 id > deezer)
+            track.source_id = itunes_id or track.source_id or deezer_id
 
         return track
 
