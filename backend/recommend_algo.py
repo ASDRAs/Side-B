@@ -596,7 +596,7 @@ async def tag_based_recommendations(
         track.algo, track.label = "tag_reverse", "태그 속 저노출곡"
 
     used_keys.update(_track_key(track) for track in reverse)
-    opposite_tags = _opposite_tag_candidates(tags, "")
+    opposite_tags = _get_opposite_tags(tags, "")
     opposite_rows = await _collect_tag_tracks(
         opposite_tags, lastfm, limit=max(top_n * 3, 20)
     )
@@ -923,31 +923,40 @@ async def similar_listening_pattern(
 
 
 async def opposite_emotion(
-    track_name, artist, http, lastfm, top_n=10
+    track_name: str,
+    artist: str,
+    http: httpx.AsyncClient,
+    lastfm: pylast.LastFMNetwork,
+    top_n=10,
 ) -> list[TrackInfo]:
     """Return mood/genre contrast recommendations with robust tag fallbacks."""
+    MAX_TAG_CNT = 8
     try:
+        # 주어진 track과 artist의 tag를 추출하고 이에 반대되는 opposite tag 추출
         seed_tags = await _seed_tags(track_name, artist, lastfm)
-        query_tags = _opposite_tag_candidates(seed_tags, artist)
+        seed_tags = seed_tags[:MAX_TAG_CNT]
+        opp_tags = _get_opposite_tags(seed_tags, artist)
+        opp_tags = opp_tags[:MAX_TAG_CNT]
         collected: list[TrackInfo] = []
 
-        for tag in query_tags:
+        # seed tag와 반대 속성의 tag의 곡들 중에서 인기도 순으로 lastfm에서 검색
+        for tag in opp_tags:
             tag_obj = lastfm.get_tag(tag)
-            raw = await _lf_call(
+            response = await _lf_call(
                 f"lf:tag_top:{compact_text(tag)}:{top_n * 4}",
                 600,
                 tag_obj.get_top_tracks,
                 top_n * 4,
             )
-            for item in raw or []:
-                name = item.item.get_name()
-                item_artist = item.item.get_artist().get_name()
-                if _is_same_track(name, item_artist, track_name, artist):
+            for track_metadata in response or []:
+                opp_track_name = track_metadata.item.get_name()
+                opp_artist = track_metadata.item.get_artist().get_name()
+                if _is_same_track(opp_track_name, opp_artist, track_name, artist):
                     continue
                 collected.append(
                     TrackInfo(
-                        name=name,
-                        artist=item_artist,
+                        name=opp_track_name,
+                        artist=opp_artist,
                         algo="opposite_emotion",
                         label=f"#{tag} 반전 무드",
                     )
@@ -956,9 +965,11 @@ async def opposite_emotion(
             if len(collected) >= top_n:
                 break
 
+        # NOTE : get_similar로 검색하고 reverse 해야하는거 아닌지? 수정 필요해 보임
         if not collected:
             lf_track = lastfm.get_track(artist, track_name)
-            raw_similar = await _lf_call(
+
+            response = await _lf_call(
                 f"lf:track_similar:{compact_text(artist)}:{compact_text(track_name)}:{top_n * 4}",
                 600,
                 lf_track.get_similar,
@@ -972,17 +983,19 @@ async def opposite_emotion(
                     algo="opposite_emotion",
                     label="유사곡 기반 반전 추천",
                 )
-                for item in raw_similar or []
+                for item in response or []
             ]
+            collected = _cap_per_artist(_dedupe_tracks(collected), max_per=1)
+        collected = collected[:top_n]
+        opp_emotion_tracks = await _enrich_metadata(http, collected)
 
-        ranked = await _enrich_metadata(
-            http, _cap_per_artist(_dedupe_tracks(collected), max_per=1)[:top_n]
-        )
-        ranked = await _fill_lastfm_album_art(lastfm, ranked)
-        for track in ranked:
+        # NOTE : enrich_metadata에서 이미 album_art_url이 채워짐.
+        # opp_emotion_tracks = await _fill_lastfm_album_art(lastfm, opp_emotion_tracks)
+        for track in opp_emotion_tracks:
             track.algo = track.algo or "opposite_emotion"
             track.label = track.label or "반전 무드 추천"
-        return ranked
+        return opp_emotion_tracks
+
     except Exception as exc:
         logger.warning("[opposite_emotion] failed: %s", exc)
         return []
@@ -1127,6 +1140,10 @@ async def hidden_discovery(
 async def _seed_tags(
     track_name: str, artist: str, lastfm: pylast.LastFMNetwork
 ) -> list[str]:
+    """
+    lastfm에서 track의 tag를 검색합니다.
+    만약, track의 검색된 tag가 없는 경우 artist의 tag를 가져옵니다.
+    """
     tags: list[str] = []
     try:
         lf_track = lastfm.get_track(artist, track_name)
@@ -1151,13 +1168,13 @@ async def _seed_tags(
         except Exception as exc:
             logger.info("[opposite_emotion] artist tags unavailable: %s", exc)
 
-    if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
-        tags.extend(["k-pop", "pop", "female vocalists"])
+    # if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
+    #    tags.extend(["k-pop", "pop", "female vocalists"])
 
-    if not tags:
-        tags.extend(["pop", "indie", "alternative"])
+    # if not tags:
+    #    tags.extend(["pop", "indie", "alternative"])
 
-    return _unique_preserve_order(tags)[:8]
+    return _unique_preserve_order(tags)
 
 
 def _tag_names(raw_tags: Any) -> list[str]:
@@ -1172,19 +1189,24 @@ def _tag_names(raw_tags: Any) -> list[str]:
     return names
 
 
-def _opposite_tag_candidates(seed_tags: list[str], artist: str) -> list[str]:
+def _get_opposite_tags(seed_tags: list[str], artist: str) -> list[str]:
+    """
+    seed tag를 받아 해당 tag의 속성과 반대 속성의 tag
+    """
     candidates: list[str] = []
+
+    # TODO : 미리 oppsite tag 설정도 좋지만 LLM으로 바꾸는 게 좋은듯
     for tag in seed_tags:
         normalized = tag.lower().replace("-", " ")
         for key, alternatives in _OPPOSITE_TAGS.items():
             if key.replace("-", " ") in normalized:
                 candidates.extend(alternatives)
 
-    if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
-        candidates.extend(["k-pop", "indie pop", "female vocalists"])
+    # if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
+    #   candidates.extend(["k-pop", "indie pop", "female vocalists"])
 
-    candidates.extend(["pop", "indie", "alternative", "electronic"])
-    return _unique_preserve_order(candidates)[:8]
+    # candidates.extend(["pop", "indie", "alternative", "electronic"])
+    return _unique_preserve_order(candidates)
 
 
 def _unique_preserve_order(values: list[str]) -> list[str]:
