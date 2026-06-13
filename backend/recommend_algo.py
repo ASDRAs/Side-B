@@ -901,7 +901,13 @@ async def reverse_top100(
 
 
 async def similar_listening_pattern(
-    track_name: str, artist: str, http, lastfm, top_n=10, *, prefetched=None
+    track_name: str,
+    artist: str,
+    http: httpx.AsyncClient,
+    lastfm: pylast.LastFMNetwork,
+    top_n=10,
+    *,
+    prefetched=None,
 ) -> list[TrackInfo]:
     """Recommend tracks with the strongest Last.fm similarity."""
     try:
