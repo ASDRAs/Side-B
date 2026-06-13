@@ -954,7 +954,10 @@ async def opposite_emotion(
     lastfm: pylast.LastFMNetwork,
     top_n=10,
 ) -> list[TrackInfo]:
-    """Return mood/genre contrast recommendations with robust tag fallbacks."""
+    """
+    lastfm에서 track의 tag를 검색하고, 해당 tag의 반대되는 emotion의 track 추천
+    만약, track에서 tag를 검색할 수 없는 경우에는 artist를 기준으로 추천
+    """
     MAX_TAG_CNT = 8
     try:
         # 주어진 track과 artist의 tag를 추출하고 이에 반대되는 opposite tag 추출
