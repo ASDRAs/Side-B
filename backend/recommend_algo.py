@@ -756,7 +756,11 @@ async def reverse_top100(
     *,
     prefetched=None,
 ) -> list[TrackInfo]:
-    """Discover less-mainstream tracks via direct similarity (A) and similar-artist networks (B)."""
+    """
+    유저가 검색한 track, artist와 비슷한 노래를 추천하는 함수.
+    (1) seed track과 유사한 track, (2) seed artist와 유사한 artist의 대표 track을 기반으로 추천
+    이때, 비주류 곡들을 우선으로 추천(재생횟수 및 노래 유사도가 낮은 곡들)
+    """
     try:
         if prefetched is not None:
             similar_tracks = prefetched
@@ -768,7 +772,7 @@ async def reverse_top100(
                 track_name, artist, lastfm, _limit
             )
 
-        # 소스 A : lasfm에서 가져온(pretetched) similar track
+        # 소스 A : lastfm에서 가져온(pretetched) similar track
         pool_a: list[TrackInfo] = []
         if not isinstance(similar_tracks, Exception):
             pool_a = [
@@ -812,7 +816,7 @@ async def reverse_top100(
             if not isinstance(res, Exception):
                 pool_b.extend(res)
 
-        # ── 병합 + 중복 제거 ──────────────────────────────────────
+        # 소스 A,B 병합 및 중복 제거
         input_key = (track_name.lower(), artist.lower())
         seen: set[str] = set()
         merged: list[TrackInfo] = []
