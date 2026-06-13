@@ -913,7 +913,10 @@ async def similar_listening_pattern(
     *,
     prefetched=None,
 ) -> list[TrackInfo]:
-    """Recommend tracks with the strongest Last.fm similarity."""
+    """
+    유저가 검색한 track과 유사한 tack을 추천하는 함수
+    lastfm의 match score를 기준으로 정렬하여 추천합니다.
+    """
     try:
         if prefetched is not None:
             raw_similar = prefetched
