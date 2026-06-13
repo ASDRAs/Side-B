@@ -291,9 +291,9 @@ async def _get_tracks_metadata(
     if fields == "all":
         active_fields = VALID_FIELDS
     else:
-        validate_fileds = set(fields) - VALID_FIELDS
-        if validate_fileds:
-            raise ValueError(f"유효하지 않은 메타데이터 필드입니다: {validate_fileds}")
+        validate_fields = set(fields) - VALID_FIELDS
+        if validate_fields:
+            raise ValueError(f"유효하지 않은 메타데이터 필드입니다: {validate_fields}")
         active_fields = set(fields)
 
     async def _fetch(track: TrackInfo) -> TrackInfo:
@@ -994,6 +994,7 @@ async def opposite_emotion(
                 lf_track.get_similar,
                 top_n * 4,
             )
+            
             collected = [
                 TrackInfo(
                     name=item.item.get_name(),
