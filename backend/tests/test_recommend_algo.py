@@ -1,5 +1,5 @@
 from recommend_algo import (
-    hidden_discovery,
+    hidden_discovery_by_artist,
     preprocess_input,
     reverse_top100,
     similar_listening_pattern,
@@ -430,9 +430,7 @@ async def test_hidden_discovery_excludes_seed_artist_and_expands_to_similar_arti
 
     monkeypatch.setattr("recommend_algo._enrich_metadata", fake_enrich_metadata)
 
-    result = await hidden_discovery(
-        "Event Horizon", "Younha", EmptyHttp(), lastfm, top_n=2
-    )
+    result = await hidden_discovery_by_artist("Younha", EmptyHttp(), lastfm, top_n=2)
 
     assert result
     assert all(track.artist != "Younha" for track in result)

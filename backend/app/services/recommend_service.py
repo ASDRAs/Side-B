@@ -7,7 +7,7 @@ import pylast
 
 from recommend_algo import (
     _track_similar_tracks,
-    hidden_discovery,
+    hidden_discovery_by_artist,
     opposite_emotion,
     preprocess_input,
     resolve_album_art,
@@ -96,7 +96,7 @@ async def run_recommend(
                 name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
             ),
             opposite_emotion(name, artist, http, lastfm, top_n=top_n),
-            hidden_discovery(name, artist, http, lastfm, top_n=top_n),
+            hidden_discovery_by_artist(artist, http, lastfm, top_n=top_n),
             return_exceptions=True,
         )
 

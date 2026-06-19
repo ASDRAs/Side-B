@@ -13,7 +13,7 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import pylast
@@ -275,15 +275,26 @@ async def _deezer_search(
     return result
 
 
-async def _enrich_metadata(
-    http: httpx.AsyncClient, tracks: list[TrackInfo]
+async def _get_tracks_metadata(
+    http: httpx.AsyncClient,
+    tracks: list[TrackInfo],
+    fields: list[Literal["popularity", "album_art", "source_id"]]
+    | Literal["all"] = "all",
 ) -> list[TrackInfo]:
     """
     deezer/itunes에서 track의 metadata를 검색해 TrackInfo에 추가합니다.
-    popularity : track의 인기도. 곡 재생횟수를 log-scale로 normalize한 value
-    album_art_url : 앨범 커버(표지) url
-    source_id : itunes/deezer에 등록된 track의 id
+    - popularity : track의 인기도. 곡 재생횟수를 log-scale로 normalize한 value
+    - album_art : 앨범 커버(표지) url
+    - source_id : itunes/deezer에 등록된 track의 id
     """
+    VALID_FIELDS = {"popularity", "album_art", "source_id"}
+    if fields == "all":
+        active_fields = VALID_FIELDS
+    else:
+        validate_fields = set(fields) - VALID_FIELDS
+        if validate_fields:
+            raise ValueError(f"유효하지 않은 메타데이터 필드입니다: {validate_fields}")
+        active_fields = set(fields)
 
     async def _fetch(track: TrackInfo) -> TrackInfo:
         # deezer/itunes에서 track을 검색하여 metadata를 가져옴
@@ -292,31 +303,39 @@ async def _enrich_metadata(
             _itunes_search(http, track.name, track.artist, limit=8, min_score=0.45),
         )
         # popularity 추가
-        if deezer_item:
-            # rank : 해당 곡이 얼마나 많이 재생되었는지
-            rank = int(deezer_item.get("rank") or 0)
+        if "popularity" in active_fields:
+            if deezer_item:
+                # rank : 해당 곡이 얼마나 많이 재생되었는지
+                rank = int(deezer_item.get("rank") or 0)
+            else:
+                rank = 0
             if rank > 0:
                 # rank 정규화
                 track.popularity = min(100, int(math.log10(rank + 1) * 10))
 
         # album_art_url 추가
-        if itunes_item:
-            track.album_art_url = _itunes_artwork(itunes_item) or track.album_art_url
+        if "album_art" in active_fields:
+            if itunes_item:
+                track.album_art_url = (
+                    _itunes_artwork(itunes_item) or track.album_art_url
+                )
 
-        # itunes에 album art가 없는 경우 deezer에서 가져옴
-        if not track.album_art_url and deezer_item:
-            album = deezer_item.get("album") or {}
-            track.album_art_url = (
-                album.get("cover_big")
-                or album.get("cover_medium")
-                or album.get("cover")
-            )
+            # itunes에 album art가 없는 경우 deezer에서 가져옴
+            if not track.album_art_url and deezer_item:
+                album = deezer_item.get("album") or {}
+                track.album_art_url = (
+                    album.get("cover_big")
+                    or album.get("cover_medium")
+                    or album.get("cover")
+                )
+            # TODO : 그래도 없는 경우는 lastfm에서?
 
-        # source_id 추가
-        itunes_id = _itunes_source_id(itunes_item) if itunes_item else None
-        deezer_id = _deezer_source_id(deezer_item) if deezer_item else None
-        # track id를 우선순위에 맞게 부여(itune > 기존 id > deezer)
-        track.source_id = itunes_id or track.source_id or deezer_id
+        if "source_id" in active_fields:
+            # source_id 추가
+            itunes_id = _itunes_source_id(itunes_item) if itunes_item else None
+            deezer_id = _deezer_source_id(deezer_item) if deezer_item else None
+            # track id를 우선순위에 맞게 부여(itune > 기존 id > deezer)
+            track.source_id = itunes_id or track.source_id or deezer_id
 
         return track
 
@@ -552,7 +571,7 @@ async def tag_based_recommendations(
     if not pool:
         return None
 
-    pool = await _enrich_metadata(
+    pool = await _get_tracks_metadata(
         http, _cap_per_artist(pool, max_per=3)[: max(top_n * 5, 40)]
     )
     pool = await _fill_lastfm_album_art(lastfm, pool)
@@ -596,7 +615,7 @@ async def tag_based_recommendations(
         track.algo, track.label = "tag_reverse", "태그 속 저노출곡"
 
     used_keys.update(_track_key(track) for track in reverse)
-    opposite_tags = _opposite_tag_candidates(tags, "")
+    opposite_tags = _get_opposite_tags(tags, "")
     opposite_rows = await _collect_tag_tracks(
         opposite_tags, lastfm, limit=max(top_n * 3, 20)
     )
@@ -608,7 +627,7 @@ async def tag_based_recommendations(
             if _track_key(track) not in used_keys
         ]
     )
-    opposite = await _enrich_metadata(
+    opposite = await _get_tracks_metadata(
         http, _cap_per_artist(opposite_pool, max_per=1)[:top_n]
     )
     opposite = await _fill_lastfm_album_art(lastfm, opposite)
@@ -737,7 +756,11 @@ async def reverse_top100(
     *,
     prefetched=None,
 ) -> list[TrackInfo]:
-    """Discover less-mainstream tracks via direct similarity (A) and similar-artist networks (B)."""
+    """
+    유저가 검색한 track, artist와 비슷한 노래를 추천하는 함수.
+    (1) seed track과 유사한 track, (2) seed artist와 유사한 artist의 대표 track을 기반으로 추천
+    이때, 비주류 곡들을 우선으로 추천(재생횟수 및 노래 유사도가 낮은 곡들)
+    """
     try:
         if prefetched is not None:
             similar_tracks = prefetched
@@ -749,7 +772,7 @@ async def reverse_top100(
                 track_name, artist, lastfm, _limit
             )
 
-        # 소스 A : lasfm에서 가져온(pretetched) similar track
+        # 소스 A : lastfm에서 가져온(pretetched) similar track
         pool_a: list[TrackInfo] = []
         if not isinstance(similar_tracks, Exception):
             pool_a = [
@@ -793,7 +816,7 @@ async def reverse_top100(
             if not isinstance(res, Exception):
                 pool_b.extend(res)
 
-        # ── 병합 + 중복 제거 ──────────────────────────────────────
+        # 소스 A,B 병합 및 중복 제거
         input_key = (track_name.lower(), artist.lower())
         seen: set[str] = set()
         merged: list[TrackInfo] = []
@@ -811,7 +834,7 @@ async def reverse_top100(
 
         # match_score 상위 후보를 보강하되 특정 아티스트 쏠림은 줄인다.
         merged = _balanced_candidate_slice(merged, top_n * 3)
-        merged = _dedupe_tracks(await _enrich_metadata(http, merged))
+        merged = _dedupe_tracks(await _get_tracks_metadata(http, merged))
         merged = await _fill_lastfm_album_art(lastfm, merged)
 
         # ── 비주류 점수 계산 ───────────────────────────────────────
@@ -882,9 +905,18 @@ async def reverse_top100(
 
 
 async def similar_listening_pattern(
-    track_name: str, artist: str, http, lastfm, top_n=10, *, prefetched=None
+    track_name: str,
+    artist: str,
+    http: httpx.AsyncClient,
+    lastfm: pylast.LastFMNetwork,
+    top_n=10,
+    *,
+    prefetched=None,
 ) -> list[TrackInfo]:
-    """Recommend tracks with the strongest Last.fm similarity."""
+    """
+    유저가 검색한 track과 유사한 tack을 추천하는 함수
+    lastfm의 match score를 기준으로 정렬하여 추천합니다.
+    """
     try:
         if prefetched is not None:
             raw_similar = prefetched
@@ -908,7 +940,7 @@ async def similar_listening_pattern(
             unique_tracks, key=lambda t: t.match_score or 0, reverse=True
         )
         top_tracks = sorted_tracks[:top_n]
-        top_tracks = await _enrich_metadata(http, top_tracks)
+        top_tracks = await _get_tracks_metadata(http, top_tracks)
         top_tracks = await _fill_lastfm_album_art(lastfm, top_tracks)
         for track in top_tracks:
             track.reverse_score = track.match_score or 0
@@ -923,31 +955,43 @@ async def similar_listening_pattern(
 
 
 async def opposite_emotion(
-    track_name, artist, http, lastfm, top_n=10
+    track_name: str,
+    artist: str,
+    http: httpx.AsyncClient,
+    lastfm: pylast.LastFMNetwork,
+    top_n=10,
 ) -> list[TrackInfo]:
-    """Return mood/genre contrast recommendations with robust tag fallbacks."""
+    """
+    lastfm에서 track의 tag를 검색하고, 해당 tag의 반대되는 emotion의 track 추천
+    만약, track에서 tag를 검색할 수 없는 경우에는 artist를 기준으로 추천
+    """
+    MAX_TAG_CNT = 8
     try:
+        # 주어진 track과 artist의 tag를 추출하고 이에 반대되는 opposite tag 추출
         seed_tags = await _seed_tags(track_name, artist, lastfm)
-        query_tags = _opposite_tag_candidates(seed_tags, artist)
+        seed_tags = seed_tags[:MAX_TAG_CNT]
+        opp_tags = _get_opposite_tags(seed_tags, artist)
+        opp_tags = opp_tags[:MAX_TAG_CNT]
         collected: list[TrackInfo] = []
 
-        for tag in query_tags:
+        # seed tag와 반대 속성의 tag의 곡들 중에서 인기도 순으로 lastfm에서 검색
+        for tag in opp_tags:
             tag_obj = lastfm.get_tag(tag)
-            raw = await _lf_call(
+            response = await _lf_call(
                 f"lf:tag_top:{compact_text(tag)}:{top_n * 4}",
                 600,
                 tag_obj.get_top_tracks,
                 top_n * 4,
             )
-            for item in raw or []:
-                name = item.item.get_name()
-                item_artist = item.item.get_artist().get_name()
-                if _is_same_track(name, item_artist, track_name, artist):
+            for track_metadata in response or []:
+                opp_track_name = track_metadata.item.get_name()
+                opp_artist = track_metadata.item.get_artist().get_name()
+                if _is_same_track(opp_track_name, opp_artist, track_name, artist):
                     continue
                 collected.append(
                     TrackInfo(
-                        name=name,
-                        artist=item_artist,
+                        name=opp_track_name,
+                        artist=opp_artist,
                         algo="opposite_emotion",
                         label=f"#{tag} 반전 무드",
                     )
@@ -956,14 +1000,17 @@ async def opposite_emotion(
             if len(collected) >= top_n:
                 break
 
+        # NOTE : get_similar로 검색하고 reverse 해야하는거 아닌지? 수정 필요해 보임
         if not collected:
             lf_track = lastfm.get_track(artist, track_name)
-            raw_similar = await _lf_call(
+
+            response = await _lf_call(
                 f"lf:track_similar:{compact_text(artist)}:{compact_text(track_name)}:{top_n * 4}",
                 600,
                 lf_track.get_similar,
                 top_n * 4,
             )
+
             collected = [
                 TrackInfo(
                     name=item.item.get_name(),
@@ -972,131 +1019,154 @@ async def opposite_emotion(
                     algo="opposite_emotion",
                     label="유사곡 기반 반전 추천",
                 )
-                for item in raw_similar or []
+                for item in response or []
             ]
+            collected = _cap_per_artist(_dedupe_tracks(collected), max_per=1)
+        collected = collected[:top_n]
+        opp_emotion_tracks = await _get_tracks_metadata(http, collected)
 
-        ranked = await _enrich_metadata(
-            http, _cap_per_artist(_dedupe_tracks(collected), max_per=1)[:top_n]
-        )
-        ranked = await _fill_lastfm_album_art(lastfm, ranked)
-        for track in ranked:
+        # NOTE : enrich_metadata에서 이미 album_art_url이 채워짐.
+        # opp_emotion_tracks = await _fill_lastfm_album_art(lastfm, opp_emotion_tracks)
+        for track in opp_emotion_tracks:
             track.algo = track.algo or "opposite_emotion"
             track.label = track.label or "반전 무드 추천"
-        return ranked
+        return opp_emotion_tracks
+
     except Exception as exc:
         logger.warning("[opposite_emotion] failed: %s", exc)
         return []
 
 
-async def hidden_discovery(
-    track_name, artist, http, lastfm, top_n=10
+async def hidden_discovery_by_artist(
+    artist: str, http: httpx.AsyncClient, lastfm: pylast.LastFMNetwork, top_n=10
 ) -> list[TrackInfo]:
-    """Discover tracks by similar artists while excluding the seed artist."""
+    """유저가 입력한 artist와 유사한 artist의 숨은 명곡을 추천하는 함수"""
+
+    HIDDEN_LIMIT = max(top_n * 3, 18)
     try:
-        seed_artist_key = compact_text(artist)
+        # lastfm에서 유저가 검색한 artist와 유사한 artist를 가져옴
+        seed_artist = compact_text(artist)
         lf_artist = lastfm.get_artist(artist)
-        _hidden_limit = max(top_n * 3, 18)
-        raw_artists = await _lf_call(
-            f"lf:artist_similar:{compact_text(artist)}:{_hidden_limit}",
+        response_artists = await _lf_call(
+            f"lf:artist_similar:{seed_artist}:{HIDDEN_LIMIT}",
             600,
             lf_artist.get_similar,
-            _hidden_limit,
+            HIDDEN_LIMIT,
         )
-        artist_rows = []
-        for artist_rank, item in enumerate(raw_artists or []):
+        artist_candidates = []
+
+        for artist_rank, artist_metadata in enumerate(response_artists or []):
             try:
-                similar_artist = item.item
+                similar_artist = artist_metadata.item
                 similar_artist_name = str(similar_artist.get_name() or "").strip()
-                artist_match = float(getattr(item, "match", 0) or 0)
-            except Exception:
+                artist_match = float(getattr(artist_metadata, "match", 0) or 0)
+            except Exception as exc:
+                logger.warning(
+                    "[hidden_discovery] fail to get similar artist & score (%s): %s",
+                    similar_artist_name,
+                    exc,
+                )
                 continue
+
             if (
                 not similar_artist_name
-                or compact_text(similar_artist_name) == seed_artist_key
+                or compact_text(similar_artist_name) == seed_artist
             ):
                 continue
-            artist_rows.append(
+            artist_candidates.append(
                 (artist_rank, similar_artist, similar_artist_name, artist_match)
             )
 
-        async def _fetch_artist_tracks(row):
-            artist_rank, similar_artist, similar_artist_name, artist_match = row
+        async def _fetch_artist_tracks(artist_infos, max_track_num=4):
+            artist_rank, pylast_artist, artist_name, artist_match = artist_infos
+
+            # artist의 노래를 lastfm에서 가져옴
             try:
-                raw_tracks = await _lf_call(
-                    f"lf:artist_top:{compact_text(similar_artist_name)}:4",
+                response_tracks = await _lf_call(
+                    f"lf:artist_top:{compact_text(artist_name)}:{max_track_num}",
                     600,
-                    similar_artist.get_top_tracks,
-                    4,
+                    pylast_artist.get_top_tracks,
+                    max_track_num,
                 )
             except Exception as exc:
-                logger.info(
+                logger.warning(
                     "[hidden_discovery] similar artist tracks unavailable (%s): %s",
-                    similar_artist_name,
+                    artist_name,
                     exc,
                 )
                 return []
 
-            rows = []
-            for track_rank, item in enumerate(raw_tracks or [], start=1):
+            # artist의 대표곡들 이름을 가져옴
+            results = []
+            for track_rank, track_metadata in enumerate(response_tracks or [], start=1):
                 try:
-                    name = str(item.item.get_name() or "").strip()
-                    item_artist = str(item.item.get_artist().get_name() or "").strip()
-                except Exception:
+                    track_name = str(track_metadata.item.get_name() or "").strip()
+                except Exception as exc:
+                    logger.warning(
+                        "[hidden_discovery] fail to get track info (%s): %s",
+                        artist_name,
+                        exc,
+                    )
                     continue
-                if (
-                    not name
-                    or not item_artist
-                    or compact_text(item_artist) == seed_artist_key
-                ):
+
+                if not track_name:
                     continue
-                rows.append(
+                results.append(
                     (
                         artist_rank,
                         track_rank,
                         artist_match,
                         TrackInfo(
-                            name=name,
-                            artist=item_artist,
+                            name=track_name,
+                            artist=artist_name,
                             match_score=artist_match,
-                            reason_tags=[similar_artist_name],
+                            reason_tags=[artist_name],
                         ),
                     )
                 )
-            return rows
+            return results
 
         fetched = await asyncio.gather(
-            *[_fetch_artist_tracks(row) for row in artist_rows]
+            *[_fetch_artist_tracks(row) for row in artist_candidates]
         )
-        candidate_rows = [row for rows in fetched for row in rows]
-        if not candidate_rows:
+        candidate_tracks = [row for rows in fetched for row in rows]
+        if not candidate_tracks:
             return []
 
-        # popularity 없이 artist_affinity + track_depth 사전 점수로 top_n*3 선별
-        n_rows = max(len(artist_rows), 1)
+        candidates_len = max(len(artist_candidates), 1)
         pre_scored = []
-        for row in candidate_rows:
-            artist_rank, track_rank, artist_match, _ = row
+
+        # 1차 비주류 점수 계산(사전 선별 top_n*3)
+        for track_info in candidate_tracks:
+            artist_rank, track_rank, artist_match, _ = track_info
+            # 아티스트 유사도 & 트랙 depth 기준으로 정렬
             affinity = (
                 artist_match
                 if artist_match > 0
-                else max(0.0, 1 - (artist_rank / n_rows))
+                else max(0.0, 1 - (artist_rank / candidates_len))
             )
             affinity = max(0.0, min(1.0, affinity))
             depth = min(1.0, max(0.0, (track_rank - 1) / 3))
-            pre_scored.append((affinity * 0.55 + depth * 0.45, row))
-        pre_scored.sort(key=lambda x: x[0], reverse=True)
-        candidate_rows = [row for _, row in pre_scored[: top_n * 3]]
 
-        tracks = await _enrich_metadata(http, [row[3] for row in candidate_rows])
-        tracks = await _fill_lastfm_album_art(lastfm, tracks)
-        for row, track in zip(candidate_rows, tracks):
-            artist_rank, track_rank, artist_match, _ = row
+            # 아티스트 유사도가 높을수록, 대표곡이 아닐수록(depth가 깊을수록) 점수가 높음
+            pre_scored.append((affinity * 0.55 + depth * 0.45, track_info))
+        pre_scored.sort(key=lambda x: x[0], reverse=True)
+        prescored_candidates = [row for _, row in pre_scored[: top_n * 3]]
+
+        tracks_metadata = await _get_tracks_metadata(
+            http, [row[3] for row in prescored_candidates]
+        )
+
+        # 최종 비주류 점수 계산
+        for candidate_score, track in zip(prescored_candidates, tracks_metadata):
+            artist_rank, track_rank, artist_match, _ = candidate_score
+            # 노래 재생횟수도 반영하여 비주류 점수 재계산
             popularity = track.popularity if track.popularity is not None else 55
             obscurity = max(0.0, min(1.0, (80 - popularity) / 80))
             artist_affinity = (
                 artist_match
                 if artist_match > 0
-                else max(0.0, 1 - (artist_rank / n_rows))
+                else max(0.0, 1 - (artist_rank / candidates_len))
             )
             artist_affinity = max(0.0, min(1.0, artist_affinity))
             track_depth = min(1.0, max(0.0, (track_rank - 1) / 3))
@@ -1104,8 +1174,9 @@ async def hidden_discovery(
                 (artist_affinity * 0.35) + (obscurity * 0.45) + (track_depth * 0.20)
             )
 
+        # 노출도가 낮은 track을 우선적으로 추천
         ranked_pool = sorted(
-            tracks, key=lambda item: item.reverse_score or 0, reverse=True
+            tracks_metadata, key=lambda item: item.reverse_score or 0, reverse=True
         )
         low_exposure_pool = [
             track
@@ -1127,6 +1198,10 @@ async def hidden_discovery(
 async def _seed_tags(
     track_name: str, artist: str, lastfm: pylast.LastFMNetwork
 ) -> list[str]:
+    """
+    lastfm에서 track의 tag를 검색합니다.
+    만약, track의 검색된 tag가 없는 경우 artist의 tag를 가져옵니다.
+    """
     tags: list[str] = []
     try:
         lf_track = lastfm.get_track(artist, track_name)
@@ -1151,13 +1226,13 @@ async def _seed_tags(
         except Exception as exc:
             logger.info("[opposite_emotion] artist tags unavailable: %s", exc)
 
-    if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
-        tags.extend(["k-pop", "pop", "female vocalists"])
+    # if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
+    #    tags.extend(["k-pop", "pop", "female vocalists"])
 
-    if not tags:
-        tags.extend(["pop", "indie", "alternative"])
+    # if not tags:
+    #    tags.extend(["pop", "indie", "alternative"])
 
-    return _unique_preserve_order(tags)[:8]
+    return _unique_preserve_order(tags)
 
 
 def _tag_names(raw_tags: Any) -> list[str]:
@@ -1172,19 +1247,24 @@ def _tag_names(raw_tags: Any) -> list[str]:
     return names
 
 
-def _opposite_tag_candidates(seed_tags: list[str], artist: str) -> list[str]:
+def _get_opposite_tags(seed_tags: list[str], artist: str) -> list[str]:
+    """
+    seed tag를 받아 해당 tag의 속성과 반대 속성의 tag
+    """
     candidates: list[str] = []
+
+    # TODO : 미리 oppsite tag 설정도 좋지만 LLM으로 바꾸는 게 좋은듯
     for tag in seed_tags:
         normalized = tag.lower().replace("-", " ")
         for key, alternatives in _OPPOSITE_TAGS.items():
             if key.replace("-", " ") in normalized:
                 candidates.extend(alternatives)
 
-    if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
-        candidates.extend(["k-pop", "indie pop", "female vocalists"])
+    # if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
+    #   candidates.extend(["k-pop", "indie pop", "female vocalists"])
 
-    candidates.extend(["pop", "indie", "alternative", "electronic"])
-    return _unique_preserve_order(candidates)[:8]
+    # candidates.extend(["pop", "indie", "alternative", "electronic"])
+    return _unique_preserve_order(candidates)
 
 
 def _unique_preserve_order(values: list[str]) -> list[str]:

@@ -5,7 +5,11 @@ Phase 1 (Lazy Enrichment) 적용 전에는 실패하는 것이 정상.
 Phase 1 적용 후 전부 통과해야 한다.
 """
 
-from recommend_algo import hidden_discovery, reverse_top100, similar_listening_pattern
+from recommend_algo import (
+    hidden_discovery_by_artist,
+    reverse_top100,
+    similar_listening_pattern,
+)
 
 TOP_N = 10
 ENRICH_LIMIT_SIMILAR = TOP_N
@@ -192,7 +196,7 @@ async def test_hidden_enrich_count_is_at_most_top_n_times_3(monkeypatch):
 
     monkeypatch.setattr("recommend_algo._enrich_metadata", counting_enrich)
 
-    await hidden_discovery("Seed", "Artist", EmptyHttp(), lastfm, top_n=TOP_N)
+    await hidden_discovery_by_artist("Artist", EmptyHttp(), lastfm, top_n=TOP_N)
 
     total = sum(enrich_counts)
     assert total <= ENRICH_LIMIT_HIDDEN, (
