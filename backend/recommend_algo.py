@@ -281,6 +281,7 @@ async def _deezer_search(
 async def _get_tracks_metadata(
     http: httpx.AsyncClient,
     tracks: list[TrackInfo],
+    lastfm: pylast.LastFMNetwork | None = None,
     fields: list[Literal["popularity", "album_art", "source_id"]]
     | Literal["all"] = "all",
 ) -> list[TrackInfo]:
@@ -300,46 +301,91 @@ async def _get_tracks_metadata(
         active_fields = set(fields)
 
     async def _fetch(track: TrackInfo) -> TrackInfo:
-        # deezer/itunes에서 track을 검색하여 metadata를 가져옴
-        deezer_item, itunes_item = await asyncio.gather(
-            _deezer_search(http, track.name, track.artist),
-            _itunes_search(http, track.name, track.artist, limit=8, min_score=0.45),
-        )
-        # popularity 추가
+        req_art = "album_art" in active_fields
+        req_id = "source_id" in active_fields
+
+        needs_deezer = "popularity" in active_fields
+        needs_itunes = req_art or req_id
+
+        # field에 따라 필요한 API만 call
+        tasks = []
+        if needs_deezer:
+            tasks.append(_deezer_search(http, track.name, track.artist))
+        if needs_itunes:
+            tasks.append(
+                _itunes_search(http, track.name, track.artist, limit=8, min_score=0.45)
+            )
+
+        async with _API_SEMAPHORE:
+            results = await asyncio.gather(*tasks)
+
+        result_iter = iter(results)
+        deezer_item = next(result_iter) if needs_deezer else None
+        itunes_item = next(result_iter) if needs_itunes else None
+
+        # popularity
         if "popularity" in active_fields:
             if deezer_item:
-                # rank : 해당 곡이 얼마나 많이 재생되었는지
-                rank = int(deezer_item.get("rank") or 0)
+                popularity = int(deezer_item.get("rank") or 0)
             else:
-                rank = 0
-            if rank > 0:
+                popularity = 0
+            if popularity > 0:
                 # rank 정규화
-                track.popularity = min(100, int(math.log10(rank + 1) * 10))
+                track.popularity = min(100, int(math.log10(popularity + 1) * 10))
 
-        # album_art_url 추가
-        if "album_art" in active_fields:
+        # album_art_url & album srouce id
+        if req_art or req_id:
+            # 1. req에 따라 album art/id를 itunes에서 가져옴
             if itunes_item:
-                track.album_art_url = (
-                    _itunes_artwork(itunes_item) or track.album_art_url
-                )
+                if req_art:
+                    track.album_art_url = (
+                        _itunes_artwork(itunes_item) or track.album_art_url
+                    )
+                if req_id:
+                    track.source_id = _itunes_source_id(itunes_item) or track.source_id
 
-            # itunes에 album art가 없는 경우 deezer에서 가져옴
-            if not track.album_art_url and deezer_item:
-                album = deezer_item.get("album") or {}
-                track.album_art_url = (
-                    album.get("cover_big")
-                    or album.get("cover_medium")
-                    or album.get("cover")
-                )
-            # TODO : 그래도 없는 경우는 lastfm에서?
+            # 2. itune와 req field 확인 후 API return 값 확인
+            is_missing_art = req_art and not track.album_art_url
+            is_missing_id = req_id and not track.source_id
 
-        if "source_id" in active_fields:
-            # source_id 추가
-            itunes_id = _itunes_source_id(itunes_item) if itunes_item else None
-            deezer_id = _deezer_source_id(deezer_item) if deezer_item else None
-            # track id를 우선순위에 맞게 부여(itune > 기존 id > deezer)
-            track.source_id = itunes_id or track.source_id or deezer_id
+            # 3. itunes에서 원하는 metadata를 가져오지 못한 경우는 deezer API를 call
+            if is_missing_art or is_missing_id:
+                if not deezer_item:
+                    async with _API_SEMAPHORE:
+                        deezer_item = await _deezer_search(
+                            http, track.name, track.artist
+                        )
 
+                if deezer_item:
+                    # 4-1. deezer에서 album art
+                    if is_missing_art:
+                        album = deezer_item.get("album") or {}
+                        track.album_art_url = (
+                            album.get("cover_big")
+                            or album.get("cover_medium")
+                            or album.get("cover")
+                        )
+                        # TODO : id 없는경우 warning logger 추가
+
+                    # 4-2. deezer에서 source id
+                    if is_missing_id:
+                        track.source_id = _deezer_source_id(deezer_item)
+
+            # 5. deezer에도 album art가 없는 경우 lastfm에서 가져옴
+            is_missing_art = req_art and not track.album_art_url
+            if is_missing_art and lastfm:
+                try:
+                    lf_track_obj = lastfm.get_track(track.artist, track.name)
+                    artwork = await _lf_call(
+                        f"lf:cover:{compact_text(track.artist)}:{compact_text(track.name)}",
+                        600,
+                        lf_track_obj.get_cover_image,
+                    )
+                    if artwork:
+                        track.album_art_url = str(artwork)
+                except Exception:
+                    # TODO : art 없는경우 warning logger 추가
+                    pass
         return track
 
     return list(await asyncio.gather(*[_fetch(t) for t in tracks]))
@@ -574,11 +620,10 @@ async def tag_based_recommendations(
     if not pool:
         return None
 
+    # TODO : 리팩 후 field 설정(모든 field 필요한지 확인 필요)
     pool = await _get_tracks_metadata(
-        http, _cap_per_artist(pool, max_per=3)[: max(top_n * 5, 40)]
+        http, _cap_per_artist(pool, max_per=3)[: max(top_n * 5, 40)], lastfm
     )
-    pool = await _fill_lastfm_album_art(lastfm, pool)
-
     similar_candidates = _cap_per_artist(pool, max_per=2)
     similar_with_art = [track for track in similar_candidates if track.album_art_url]
     similar = (
@@ -630,10 +675,10 @@ async def tag_based_recommendations(
             if _track_key(track) not in used_keys
         ]
     )
+    # TODO : 리팩 후 모든 field 필요한지 확인 필요
     opposite = await _get_tracks_metadata(
-        http, _cap_per_artist(opposite_pool, max_per=1)[:top_n]
+        http, _cap_per_artist(opposite_pool, max_per=1)[:top_n], lastfm
     )
-    opposite = await _fill_lastfm_album_art(lastfm, opposite)
     for track in opposite:
         tag = track.reason_tags[0] if track.reason_tags else "contrast"
         track.algo, track.label = "tag_opposite", f"#{tag} 반대 결 추천"
@@ -837,8 +882,9 @@ async def reverse_top100(
 
         # match_score 상위 후보를 보강하되 특정 아티스트 쏠림은 줄인다.
         merged = _balanced_candidate_slice(merged, top_n * 3)
-        merged = _dedupe_tracks(await _get_tracks_metadata(http, merged))
-        merged = await _fill_lastfm_album_art(lastfm, merged)
+        merged = _dedupe_tracks(
+            await _get_tracks_metadata(http, merged, fields=["popularity"])
+        )
 
         # ── 비주류 점수 계산 ───────────────────────────────────────
         # 1단계: 너무 뻔한 상위 추천곡 제외하기 (Obvious Filter)
@@ -900,6 +946,9 @@ async def reverse_top100(
         for t in ranked:
             t.algo, t.label = "reverse_top100", "당신만 모르는 숨겨진 명곡"
         logger.info("[Reverse] 최종 선정 %d개", len(ranked))
+        ranked = await _get_tracks_metadata(
+            http, ranked, lastfm, fields=["album_art", "source_id"]
+        )
 
         return ranked
     except Exception as exc:
@@ -943,8 +992,7 @@ async def similar_listening_pattern(
             unique_tracks, key=lambda t: t.match_score or 0, reverse=True
         )
         top_tracks = sorted_tracks[:top_n]
-        top_tracks = await _get_tracks_metadata(http, top_tracks)
-        top_tracks = await _fill_lastfm_album_art(lastfm, top_tracks)
+        top_tracks = await _get_tracks_metadata(http, top_tracks, lastfm)
         for track in top_tracks:
             track.reverse_score = track.match_score or 0
             track.algo, track.label = (
@@ -1026,10 +1074,7 @@ async def opposite_emotion(
             ]
             collected = _cap_per_artist(_dedupe_tracks(collected), max_per=1)
         collected = collected[:top_n]
-        opp_emotion_tracks = await _get_tracks_metadata(http, collected)
-
-        # NOTE : enrich_metadata에서 이미 album_art_url이 채워짐.
-        # opp_emotion_tracks = await _fill_lastfm_album_art(lastfm, opp_emotion_tracks)
+        opp_emotion_tracks = await _get_tracks_metadata(http, collected, lastfm)
         for track in opp_emotion_tracks:
             track.algo = track.algo or "opposite_emotion"
             track.label = track.label or "반전 무드 추천"
@@ -1157,7 +1202,7 @@ async def hidden_discovery_by_artist(
         prescored_candidates = [row for _, row in pre_scored[: top_n * 3]]
 
         tracks_metadata = await _get_tracks_metadata(
-            http, [row[3] for row in prescored_candidates]
+            http, [row[3] for row in prescored_candidates], fields=["popularity"]
         )
 
         # 최종 비주류 점수 계산
@@ -1190,6 +1235,9 @@ async def hidden_discovery_by_artist(
             ranked_pool = low_exposure_pool
 
         ranked = _cap_per_artist(_dedupe_tracks(ranked_pool), max_per=1)[:top_n]
+        ranked = await _get_tracks_metadata(
+            http, ranked, lastfm, fields=["album_art", "source_id"]
+        )
         for track in ranked:
             track.algo, track.label = "hidden_discovery", "닮은 아티스트의 발견곡"
         return ranked
