@@ -724,31 +724,6 @@ async def _collect_tag_tracks(
     )
 
 
-async def _fill_lastfm_album_art(
-    lastfm: pylast.LastFMNetwork,
-    tracks: list[TrackInfo],
-) -> list[TrackInfo]:
-    missing = [t for t in tracks if not t.album_art_url]
-    if not missing:
-        return tracks
-
-    async def _fetch(track: TrackInfo) -> None:
-        try:
-            lf_track_obj = lastfm.get_track(track.artist, track.name)
-            artwork = await _lf_call(
-                f"lf:cover:{compact_text(track.artist)}:{compact_text(track.name)}",
-                600,
-                lf_track_obj.get_cover_image,
-            )
-        except Exception:
-            return
-        if artwork:
-            track.album_art_url = str(artwork)
-
-    await asyncio.gather(*[_fetch(t) for t in missing])
-    return tracks
-
-
 async def _fetch_artist_tracks(src, artist_rank: int) -> list[TrackInfo]:
     synthetic_match = max(0.3, 0.70 - (artist_rank - 1) * 0.1)
     similar_tracks = []
