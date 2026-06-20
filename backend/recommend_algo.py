@@ -213,45 +213,36 @@ async def _itunes_search(
     term = f"{track_name} {artist}".strip()
     if not term:
         return None
-    cache_key = f"itunes:{term}:{limit}:{min_score}"
-    hit, cached = _cache_get(cache_key, 300)
-    if hit:
-        return cached
-    result = await CatalogClient(http).itunes_search_best(
+    return await CatalogClient(http).itunes_search_best(
         track_name, artist, limit, min_score
     )
-    _cache_set(cache_key, result)
-    return result
 
 
 @alru_cache(maxsize=500, ttl=3600)
 async def _deezer_search(
     http: httpx.AsyncClient, track_name: str, artist: str
 ) -> dict[str, Any] | None:
+    # rate-limit은 None 대신 예외로 전파한다.
+    # alru_cache는 예외가 난 호출을 캐시하지 않으므로(429가 1시간 None으로 고착되는 것을 방지),
+    # 회로차단기가 풀리면 다음 호출에서 곧바로 재시도된다.
     if _is_dz_rate_limited():
-        return None
-
-    # dezeer에 search하기 전 track_name 전처리
-    clean_name = re.sub(r"\(.*?\)|\[.*?\]", " ", track_name)
-    clean_name = re.sub(
-        r"\s+-\s+(remaster(?:ed)?|live|radio edit|single version).*$",
-        " ",
-        clean_name,
-        flags=re.I,
-    )
-    clean_name = re.sub(r"\s+", " ", clean_name).strip()
-    cache_key = f"deezer:{compact_text(clean_name)}:{compact_text(artist)}"
-    hit, cached = _cache_get(cache_key, 300)
-    if hit:
-        return cached
+        raise DeezerRateLimitError()
     try:
         # TODO : Catalog 해체분석 해보기.
-        result = await CatalogClient(http).deezer_search_best(track_name, artist)
+        return await CatalogClient(http).deezer_search_best(track_name, artist)
     except DeezerRateLimitError as e:
         _mark_dz_rate_limited({"Retry-After": str(e.retry_after)})
+        raise
+
+
+async def _deezer_or_none(
+    http: httpx.AsyncClient, track_name: str, artist: str
+) -> dict[str, Any] | None:
+    """rate-limit 예외를 호출부에서는 None으로 흡수한다."""
+    try:
+        return await _deezer_search(http, track_name, artist)
+    except DeezerRateLimitError:
         return None
-    _cache_set(cache_key, result)
-    return result
 
 
 async def get_tracks_metadata(
@@ -286,7 +277,7 @@ async def get_tracks_metadata(
         # field에 따라 필요한 API만 call
         tasks = []
         if needs_deezer:
-            tasks.append(_deezer_search(http, track.name, track.artist))
+            tasks.append(_deezer_or_none(http, track.name, track.artist))
         if needs_itunes:
             tasks.append(
                 _itunes_search(http, track.name, track.artist, limit=8, min_score=0.45)
@@ -328,7 +319,7 @@ async def get_tracks_metadata(
             if is_missing_art or is_missing_id:
                 if not deezer_item:
                     async with _API_SEMAPHORE:
-                        deezer_item = await _deezer_search(
+                        deezer_item = await _deezer_or_none(
                             http, track.name, track.artist
                         )
 
