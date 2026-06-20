@@ -6,11 +6,12 @@ import httpx
 import pylast
 
 from recommend_algo import (
+    TrackInfo,
     _track_similar_tracks,
+    get_tracks_metadata,
     hidden_discovery_by_artist,
     opposite_emotion,
     preprocess_input,
-    resolve_album_art,
     reverse_top100,
     similar_listening_pattern,
     tag_based_recommendations,
@@ -42,7 +43,7 @@ async def run_recommend(
     """
 
     name, artist, source_id = await preprocess_input(query, http, lastfm)
-
+    user_track_info = TrackInfo(name=name, artist=artist, source_id=source_id)
     # 유저 query에 name, artist가 없는 경우(mood tag query)
     if not name or not artist:
         tag_results = await tag_based_recommendations(query, http, lastfm, top_n=top_n)
@@ -71,9 +72,12 @@ async def run_recommend(
     # 유저 query에 name, artist가 있는 경우(direct query)
     else:
         # 유저가 입력한 노래의 앨범 커버 uid/커버를 가져옴
-        album_source_id, album_art_url = await resolve_album_art(http, name, artist)
-        # itunes id가 없고 album_source_id만 있는경우는 album_source_id를 사용
-        source_id = source_id or album_source_id
+        user_track_info = TrackInfo(name=name, artist=artist)
+        user_track_info = await get_tracks_metadata(
+            http, [user_track_info], lastfm, fields=["album_art", "source_id"]
+        )
+        user_track_info: TrackInfo = user_track_info[0]
+
         try:
             prefetch_limit = max(60, top_n * 6)
             # 유저가 direct로 입력한 노래와 비슷한 노래 search
@@ -120,11 +124,11 @@ async def run_recommend(
                 ]
 
         return dict(
-            track_name=name,
-            artist=artist,
+            track_name=user_track_info.name,
+            artist=user_track_info.artist,
             top_n=top_n,
-            source_id=source_id,
-            album_art_url=album_art_url,
+            source_id=user_track_info.source_id,
+            album_art_url=user_track_info.album_art_url,
             result={
                 "similar": processed_rcmd_results["similar"],
                 "reverse": processed_rcmd_results["reverse"],

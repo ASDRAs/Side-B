@@ -199,30 +199,6 @@ async def preprocess_input(
     return None, None, None
 
 
-async def resolve_album_art(
-    http: httpx.AsyncClient,
-    track_name: str,
-    artist: str,
-) -> tuple[str | None, str | None]:
-    """Return (source_id, album_art_url) from the configured public catalogs."""
-    item = await _itunes_search(http, track_name, artist, limit=8, min_score=0.45)
-    if item:
-        artwork = _itunes_artwork(item)
-        if artwork:
-            return _itunes_source_id(item), artwork
-
-    item = await _deezer_search(http, track_name, artist)
-    if item:
-        album = item.get("album") or {}
-        artwork = (
-            album.get("cover_big") or album.get("cover_medium") or album.get("cover")
-        )
-        if artwork:
-            return _deezer_source_id(item), str(artwork)
-
-    return None, None
-
-
 @alru_cache(maxsize=500, ttl=3600)
 async def _itunes_search(
     http: httpx.AsyncClient,
@@ -278,7 +254,7 @@ async def _deezer_search(
     return result
 
 
-async def _get_tracks_metadata(
+async def get_tracks_metadata(
     http: httpx.AsyncClient,
     tracks: list[TrackInfo],
     lastfm: pylast.LastFMNetwork | None = None,
@@ -621,7 +597,7 @@ async def tag_based_recommendations(
         return None
 
     # TODO : 리팩 후 field 설정(모든 field 필요한지 확인 필요)
-    pool = await _get_tracks_metadata(
+    pool = await get_tracks_metadata(
         http, _cap_per_artist(pool, max_per=3)[: max(top_n * 5, 40)], lastfm
     )
     similar_candidates = _cap_per_artist(pool, max_per=2)
@@ -676,7 +652,7 @@ async def tag_based_recommendations(
         ]
     )
     # TODO : 리팩 후 모든 field 필요한지 확인 필요
-    opposite = await _get_tracks_metadata(
+    opposite = await get_tracks_metadata(
         http, _cap_per_artist(opposite_pool, max_per=1)[:top_n], lastfm
     )
     for track in opposite:
@@ -883,7 +859,7 @@ async def reverse_top100(
         # match_score 상위 후보를 보강하되 특정 아티스트 쏠림은 줄인다.
         merged = _balanced_candidate_slice(merged, top_n * 3)
         merged = _dedupe_tracks(
-            await _get_tracks_metadata(http, merged, fields=["popularity"])
+            await get_tracks_metadata(http, merged, fields=["popularity"])
         )
 
         # ── 비주류 점수 계산 ───────────────────────────────────────
@@ -946,7 +922,7 @@ async def reverse_top100(
         for t in ranked:
             t.algo, t.label = "reverse_top100", "당신만 모르는 숨겨진 명곡"
         logger.info("[Reverse] 최종 선정 %d개", len(ranked))
-        ranked = await _get_tracks_metadata(
+        ranked = await get_tracks_metadata(
             http, ranked, lastfm, fields=["album_art", "source_id"]
         )
 
@@ -992,7 +968,7 @@ async def similar_listening_pattern(
             unique_tracks, key=lambda t: t.match_score or 0, reverse=True
         )
         top_tracks = sorted_tracks[:top_n]
-        top_tracks = await _get_tracks_metadata(http, top_tracks, lastfm)
+        top_tracks = await get_tracks_metadata(http, top_tracks, lastfm)
         for track in top_tracks:
             track.reverse_score = track.match_score or 0
             track.algo, track.label = (
@@ -1074,7 +1050,7 @@ async def opposite_emotion(
             ]
             collected = _cap_per_artist(_dedupe_tracks(collected), max_per=1)
         collected = collected[:top_n]
-        opp_emotion_tracks = await _get_tracks_metadata(http, collected, lastfm)
+        opp_emotion_tracks = await get_tracks_metadata(http, collected, lastfm)
         for track in opp_emotion_tracks:
             track.algo = track.algo or "opposite_emotion"
             track.label = track.label or "반전 무드 추천"
@@ -1201,7 +1177,7 @@ async def hidden_discovery_by_artist(
         pre_scored.sort(key=lambda x: x[0], reverse=True)
         prescored_candidates = [row for _, row in pre_scored[: top_n * 3]]
 
-        tracks_metadata = await _get_tracks_metadata(
+        tracks_metadata = await get_tracks_metadata(
             http, [row[3] for row in prescored_candidates], fields=["popularity"]
         )
 
@@ -1235,7 +1211,7 @@ async def hidden_discovery_by_artist(
             ranked_pool = low_exposure_pool
 
         ranked = _cap_per_artist(_dedupe_tracks(ranked_pool), max_per=1)[:top_n]
-        ranked = await _get_tracks_metadata(
+        ranked = await get_tracks_metadata(
             http, ranked, lastfm, fields=["album_art", "source_id"]
         )
         for track in ranked:
