@@ -71,8 +71,6 @@ async def run_recommend(
 
     # 유저 query에 name, artist가 있는 경우(direct query)
     else:
-        # 유저가 입력한 노래의 앨범 커버 uid/커버를 가져옴
-        user_track_info = TrackInfo(name=name, artist=artist)
         user_track_info = await get_tracks_metadata(
             http, [user_track_info], lastfm, fields=["album_art", "source_id"]
         )
