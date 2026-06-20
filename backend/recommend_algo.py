@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 import httpx
 import pylast
+from async_lru import alru_cache
 
 from app.config.rules import MOOD_QUERY_RULES as _MOOD_QUERY_RULES
 from app.services.catalog import CatalogClient, DeezerRateLimitError
@@ -222,6 +223,7 @@ async def resolve_album_art(
     return None, None
 
 
+@alru_cache(maxsize=500, ttl=3600)
 async def _itunes_search(
     http: httpx.AsyncClient,
     track_name: str,
@@ -246,6 +248,7 @@ async def _itunes_search(
     return result
 
 
+@alru_cache(maxsize=500, ttl=3600)
 async def _deezer_search(
     http: httpx.AsyncClient, track_name: str, artist: str
 ) -> dict[str, Any] | None:
