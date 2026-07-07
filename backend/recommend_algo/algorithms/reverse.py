@@ -147,17 +147,13 @@ async def reverse_top100(
             key = scoring._track_key(track)
             if key not in obvious_keys:
                 discovery_pool.append(track)
-        # TODO : 상수 관리할 방법 고민. 따로 파일에 빼서 관리할 까 싶기도 함
-        DEFAULT_POPULARITY = 55
-        LOW_EXPOSURE_CUT = 70
-        MAX_POPULARITY = 75
         # 인기도가 낮은 곡들만 추가
         low_exposure = []
         for track in discovery_pool:
             if track.popularity is None:
-                track.popularity = DEFAULT_POPULARITY
+                track.popularity = scoring.DEFAULT_POPULARITY
 
-            if track.popularity < LOW_EXPOSURE_CUT:
+            if scoring._is_low_exposure(track.popularity):
                 low_exposure.append(track)
 
         # 만약, 비주류 곡들이 추천 갯수보다 많다면 유명한 곡들은 완전히 제거하고 비주류 곡만 pool에 담음
@@ -167,15 +163,11 @@ async def reverse_top100(
         pool_size = max(len(discovery_pool) - 1, 1)
         # 비주류 점수 계산
         for rank, track in enumerate(discovery_pool):
-            popularity = track.popularity
-            obscurity = max(
-                0.0,
-                min(
-                    1.0,
-                    (MAX_POPULARITY - popularity) / MAX_POPULARITY,
-                ),
+            obscurity = scoring._popularity_obscurity(
+                track.popularity,
+                ceiling=scoring.OBSCURITY_CEILING,
             )
-            match = max(0.0, min(1.0, track.match_score or 0.0))
+            match = scoring._clamp_score(track.match_score or 0.0)
             middle_similarity = max(0.0, 1 - (abs(match - 0.35) / 0.45))
             rank_novelty = rank / pool_size
             track.reverse_score = (

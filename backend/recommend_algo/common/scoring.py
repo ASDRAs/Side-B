@@ -4,6 +4,42 @@ import random
 from app.utils.text import compact_text
 from recommend_algo.common.models import TrackInfo
 
+DEFAULT_POPULARITY = 55
+LOW_EXPOSURE_CUTOFF = 70
+OBSCURITY_CEILING = 80
+
+
+def _clamp_score(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _resolved_popularity(
+    track: TrackInfo,
+    *,
+    default: int = DEFAULT_POPULARITY,
+) -> int:
+    return track.popularity if track.popularity is not None else default
+
+
+def _popularity_obscurity(
+    popularity: int | None,
+    *,
+    ceiling: int,
+    default: int = DEFAULT_POPULARITY,
+) -> float:
+    resolved = popularity if popularity is not None else default
+    return _clamp_score((ceiling - resolved) / ceiling)
+
+
+def _is_low_exposure(
+    popularity: int | None,
+    *,
+    cutoff: int = LOW_EXPOSURE_CUTOFF,
+    default: int = DEFAULT_POPULARITY,
+) -> bool:
+    resolved = popularity if popularity is not None else default
+    return resolved < cutoff
+
 
 def _cap_per_artist(tracks: list[TrackInfo], max_per: int = 1) -> list[TrackInfo]:
     seen: dict[str, int] = {}

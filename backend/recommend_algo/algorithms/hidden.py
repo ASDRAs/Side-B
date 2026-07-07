@@ -135,8 +135,10 @@ async def hidden_discovery_by_artist(
         for candidate_score, track in zip(prescored_candidates, tracks_metadata):
             artist_rank, track_rank, artist_match, _ = candidate_score
             # 노래 재생횟수도 반영하여 비주류 점수 재계산
-            popularity = track.popularity if track.popularity is not None else 55
-            obscurity = max(0.0, min(1.0, (80 - popularity) / 80))
+            obscurity = scoring._popularity_obscurity(
+                track.popularity,
+                ceiling=scoring.OBSCURITY_CEILING,
+            )
             artist_affinity = (
                 artist_match
                 if artist_match > 0
@@ -155,7 +157,7 @@ async def hidden_discovery_by_artist(
         low_exposure_pool = [
             track
             for track in ranked_pool
-            if (track.popularity if track.popularity is not None else 55) < 70
+            if scoring._is_low_exposure(track.popularity)
         ]
         if len(low_exposure_pool) >= top_n:
             ranked_pool = low_exposure_pool

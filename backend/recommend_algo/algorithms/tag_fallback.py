@@ -42,10 +42,12 @@ async def tag_based_recommendations(
         track for track in pool if scoring._track_key(track) not in used_keys
     ]
     for index, track in enumerate(reverse_pool):
-        popularity = track.popularity if track.popularity is not None else 55
-        obscurity = max(0.0, min(1.0, (80 - popularity) / 80))
+        obscurity = scoring._popularity_obscurity(
+            track.popularity,
+            ceiling=scoring.OBSCURITY_CEILING,
+        )
         rank_depth = min(1.0, index / max(len(reverse_pool) - 1, 1))
-        tag_match = max(0.0, min(1.0, track.match_score or 0.0))
+        tag_match = scoring._clamp_score(track.match_score or 0.0)
         track.reverse_score = (
             (obscurity * 0.55) + (rank_depth * 0.25) + (tag_match * 0.20)
         )
@@ -53,7 +55,7 @@ async def tag_based_recommendations(
     low_exposure_pool = [
         track
         for track in reverse_pool
-        if (track.popularity if track.popularity is not None else 55) < 70
+        if scoring._is_low_exposure(track.popularity)
     ]
     if len(low_exposure_pool) >= top_n:
         reverse_pool = low_exposure_pool
@@ -94,7 +96,7 @@ async def tag_based_recommendations(
     ]
     hidden_candidates = sorted(
         scoring._cap_per_artist(hidden_pool, max_per=1),
-        key=lambda item: item.popularity if item.popularity is not None else 55,
+        key=scoring._resolved_popularity,
     )
     hidden_with_art = [track for track in hidden_candidates if track.album_art_url]
     hidden = (hidden_with_art if len(hidden_with_art) >= top_n else hidden_candidates)[
