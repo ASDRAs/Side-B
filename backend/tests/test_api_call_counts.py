@@ -15,6 +15,7 @@ TOP_N = 10
 ENRICH_LIMIT_SIMILAR = TOP_N
 ENRICH_LIMIT_REVERSE = TOP_N * 3
 ENRICH_LIMIT_HIDDEN = TOP_N * 3
+FINAL_METADATA_LIMIT = TOP_N
 
 
 # ── 공통 Fake 인프라 ──────────────────────────────────────────────
@@ -131,19 +132,21 @@ async def test_similar_enrich_count_is_at_most_top_n(monkeypatch):
         FakeSimilarResult(f"Artist{i}", f"Track{i}", 1.0 - i * 0.01) for i in range(50)
     ]
     lastfm = CombinedFakeLastFm(similar_tracks)
-    enrich_counts = []
+    metadata_calls = []
 
-    async def counting_enrich(http, tracks):
-        enrich_counts.append(len(tracks))
+    async def counting_enrich(http, tracks, *args, **kwargs):
+        metadata_calls.append((tuple(kwargs.get("fields") or ()), len(tracks)))
         for t in tracks:
             t.album_art_url = "https://example.com/art.jpg"
         return tracks
 
-    monkeypatch.setattr("recommend_algo._enrich_metadata", counting_enrich)
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", counting_enrich
+    )
 
     await similar_listening_pattern("Seed", "Artist", EmptyHttp(), lastfm, top_n=TOP_N)
 
-    total = sum(enrich_counts)
+    total = sum(count for _, count in metadata_calls)
     assert total <= ENRICH_LIMIT_SIMILAR, (
         f"similar_listening_pattern이 {total}개를 enrich함. 기대: <= {ENRICH_LIMIT_SIMILAR}"
     )
@@ -161,21 +164,35 @@ async def test_reverse_enrich_count_is_at_most_top_n_times_3(monkeypatch):
         for i in range(3)
     ]
     lastfm = CombinedFakeLastFm(similar_tracks, similar_artists)
-    enrich_counts = []
+    metadata_calls = []
 
-    async def counting_enrich(http, tracks):
-        enrich_counts.append(len(tracks))
+    async def counting_enrich(http, tracks, *args, **kwargs):
+        metadata_calls.append((tuple(kwargs.get("fields") or ()), len(tracks)))
         for t in tracks:
             t.album_art_url = "https://example.com/art.jpg"
         return tracks
 
-    monkeypatch.setattr("recommend_algo._enrich_metadata", counting_enrich)
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", counting_enrich
+    )
 
     await reverse_top100("Seed", "Artist", EmptyHttp(), lastfm, top_n=TOP_N)
 
-    total = sum(enrich_counts)
-    assert total <= ENRICH_LIMIT_REVERSE, (
-        f"reverse_top100이 {total}개를 enrich함. 기대: <= {ENRICH_LIMIT_REVERSE}"
+    popularity_total = sum(
+        count for fields, count in metadata_calls if fields == ("popularity",)
+    )
+    final_total = sum(
+        count
+        for fields, count in metadata_calls
+        if fields == ("album_art", "source_id")
+    )
+    assert popularity_total <= ENRICH_LIMIT_REVERSE, (
+        f"reverse_top100이 {popularity_total}개를 popularity enrich함. "
+        f"기대: <= {ENRICH_LIMIT_REVERSE}"
+    )
+    assert final_total <= FINAL_METADATA_LIMIT, (
+        f"reverse_top100이 {final_total}개를 최종 metadata enrich함. "
+        f"기대: <= {FINAL_METADATA_LIMIT}"
     )
 
 
@@ -186,19 +203,33 @@ async def test_hidden_enrich_count_is_at_most_top_n_times_3(monkeypatch):
         for i in range(30)
     ]
     lastfm = HiddenFakeLastFm(similar_artists)
-    enrich_counts = []
+    metadata_calls = []
 
-    async def counting_enrich(http, tracks):
-        enrich_counts.append(len(tracks))
+    async def counting_enrich(http, tracks, *args, **kwargs):
+        metadata_calls.append((tuple(kwargs.get("fields") or ()), len(tracks)))
         for t in tracks:
             t.album_art_url = "https://example.com/art.jpg"
         return tracks
 
-    monkeypatch.setattr("recommend_algo._enrich_metadata", counting_enrich)
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", counting_enrich
+    )
 
     await hidden_discovery_by_artist("Artist", EmptyHttp(), lastfm, top_n=TOP_N)
 
-    total = sum(enrich_counts)
-    assert total <= ENRICH_LIMIT_HIDDEN, (
-        f"hidden_discovery가 {total}개를 enrich함. 기대: <= {ENRICH_LIMIT_HIDDEN}"
+    popularity_total = sum(
+        count for fields, count in metadata_calls if fields == ("popularity",)
+    )
+    final_total = sum(
+        count
+        for fields, count in metadata_calls
+        if fields == ("album_art", "source_id")
+    )
+    assert popularity_total <= ENRICH_LIMIT_HIDDEN, (
+        f"hidden_discovery가 {popularity_total}개를 popularity enrich함. "
+        f"기대: <= {ENRICH_LIMIT_HIDDEN}"
+    )
+    assert final_total <= FINAL_METADATA_LIMIT, (
+        f"hidden_discovery가 {final_total}개를 최종 metadata enrich함. "
+        f"기대: <= {FINAL_METADATA_LIMIT}"
     )

@@ -295,14 +295,16 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
     }
     lastfm = TagFakeLastFm(tracks_by_tag)
 
-    async def fake_enrich_metadata(http, tracks):
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
         for index, track in enumerate(tracks):
             track.album_art_url = f"https://example.com/{index}.jpg"
             track.source_id = f"fake:{index}"
             track.popularity = 20 + index
         return tracks
 
-    monkeypatch.setattr("recommend_algo._enrich_metadata", fake_enrich_metadata)
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
 
     result = await tag_based_recommendations(
         "감성적인 시티팝", EmptyHttp(), lastfm, top_n=3
@@ -325,12 +327,14 @@ async def test_reverse_top100_skips_visible_similar_and_prefers_low_exposure(
     popularity = {f"Track {index}": 65 for index in range(5, 10)}
     popularity.update({f"Track {index}": 15 for index in range(10, 16)})
 
-    async def fake_enrich_metadata(http, tracks):
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
         for track in tracks:
             track.popularity = popularity.get(track.name)
         return tracks
 
-    monkeypatch.setattr("recommend_algo._enrich_metadata", fake_enrich_metadata)
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
 
     similar = await similar_listening_pattern(
         "Seed", "Seed Artist", EmptyHttp(), lastfm, top_n=5
@@ -359,12 +363,14 @@ async def test_similar_listening_pattern_uses_track_alias_when_primary_is_empty(
         }
     )
 
-    async def fake_enrich_metadata(http, tracks):
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
         for track in tracks:
             track.album_art_url = "https://example.com/art.jpg"
         return tracks
 
-    monkeypatch.setattr("recommend_algo._enrich_metadata", fake_enrich_metadata)
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
 
     result = await similar_listening_pattern(
         "혜성", "Younha", EmptyHttp(), lastfm, top_n=2
@@ -387,13 +393,15 @@ async def test_reverse_top100_fills_top_n_after_artist_diversity_cap(monkeypatch
     ]
     lastfm = CombinedFakeLastFm([], similar_artists)
 
-    async def fake_enrich_metadata(http, tracks):
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
         for track in tracks:
             track.album_art_url = "https://example.com/art.jpg"
             track.popularity = 40
         return tracks
 
-    monkeypatch.setattr("recommend_algo._enrich_metadata", fake_enrich_metadata)
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
 
     result = await reverse_top100("혜성", "Younha", EmptyHttp(), lastfm, top_n=10)
 
@@ -423,12 +431,14 @@ async def test_hidden_discovery_excludes_seed_artist_and_expands_to_similar_arti
         "B Hidden": 20,
     }
 
-    async def fake_enrich_metadata(http, tracks):
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
         for track in tracks:
             track.popularity = popularity.get(track.name)
         return tracks
 
-    monkeypatch.setattr("recommend_algo._enrich_metadata", fake_enrich_metadata)
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
 
     result = await hidden_discovery_by_artist("Younha", EmptyHttp(), lastfm, top_n=2)
 
