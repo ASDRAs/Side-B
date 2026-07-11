@@ -60,11 +60,9 @@ async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
     return result
 
 
-_QUERY_ALIASES = ((("윤하", "사건의지평선"), "Event Horizon", "Younha"),)
-
-
 async def preprocess_input(
     query: str,
+    alternative_queries: list[str],
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
 ) -> tuple[str | None, str | None, str | None]:
@@ -74,60 +72,41 @@ async def preprocess_input(
     만약, itunes에서 검색결과가 없는 경우는 lastfm에서 search하고 track name과 artist를 return
     """
 
-    # NOTE : 이거 필요한가? 그냥 하드코딩 같은데.
-    alias = _known_query_alias(query)
+    search_queries = [query] + alternative_queries
 
-    if alias:
-        alias_name, alias_artist = alias
-        item = await _itunes_search(
-            http, alias_name, alias_artist, limit=8, min_score=0.65
-        )
+    for refined_query in search_queries:
+        item = await _itunes_search(http, refined_query, limit=8, min_score=0.35)
         if item:
             name = str(item.get("trackName") or "").strip()
             artist = str(item.get("artistName") or "").strip()
             itunes_source_id = _itunes_source_id(item)
             if name and artist:
-                logger.info("[Normalize] known alias via iTunes: %s - %s", name, artist)
+                logger.info("[Normalize] iTunes: %s - %s", name, artist)
                 return name, artist, itunes_source_id
-
-        logger.info(
-            "[Normalize] known alias fallback: %s - %s", alias_name, alias_artist
-        )
-        return alias_name, alias_artist, None
-
-    # itunes search API로 노래의 이름, 아티스트, itunes에 등록된 id를 가져옴
-    item = await _itunes_search(http, query, limit=8, min_score=0.35)
-    if item:
-        name = str(item.get("trackName") or "").strip()
-        artist = str(item.get("artistName") or "").strip()
-        itunes_source_id = _itunes_source_id(item)
-        if name and artist:
-            logger.info("[Normalize] iTunes: %s - %s", name, artist)
-            return name, artist, itunes_source_id
 
     # itunes search API로 노래가 검색되지 않는 경우
     try:
-        # lastfm에서 검색
-        search = lastfm.search_for_track("", query)
-        results = await _lf_call(
-            f"lf:search_track:{compact_text(query)}",
-            300,
-            search.get_next_page,
-        )
+        for refined_query in search_queries:
+            search = lastfm.search_for_track("", refined_query)
+            results = await _lf_call(
+                f"lf:search_track:{compact_text(refined_query)}",
+                300,
+                search.get_next_page,
+            )
+            if not results:
+                logger.warning(
+                    "[Normalize] No search in Last.fm for query: %s", refined_query
+                )
+                continue
 
-        # 검색결과가 없는 경우
-        if not results:
-            logger.warning("[Normalize] No search in Last.fm")
-            return None, None, None
-
-        for track in results:
-            name = str(track.get_name() or "").strip()
-            artist = str(track.get_artist().get_name() or "").strip()
-            if name and artist and artist.lower() != "[unknown]":
-                logger.info("[Normalize] Last.fm fallback: %s - %s", name, artist)
-                return name, artist, None
+            for track in results:
+                name = str(track.get_name() or "").strip()
+                artist = str(track.get_artist().get_name() or "").strip()
+                if name and artist and artist.lower() != "[unknown]":
+                    logger.info("[Normalize] Last.fm: %s - %s", name, artist)
+                    return name, artist, None
     except Exception as exc:
-        logger.warning("[Normalize] Last.fm fallback failed: %s", exc)
+        logger.warning("[Normalize] Last.fm search failed: %s", exc)
 
     return None, None, None
 
@@ -289,14 +268,6 @@ async def get_tracks_metadata(
         return track
 
     return list(await asyncio.gather(*[_fetch(t) for t in tracks]))
-
-
-def _known_query_alias(query: str) -> tuple[str, str] | None:
-    compact_query = compact_text(query)
-    for tokens, title, artist in _QUERY_ALIASES:
-        if all(compact_text(token) in compact_query for token in tokens):
-            return title, artist
-    return None
 
 
 def _itunes_artwork(item: dict[str, Any]) -> str | None:
