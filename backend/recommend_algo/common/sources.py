@@ -9,6 +9,9 @@ import httpx
 import pylast
 from async_lru import alru_cache
 
+from app.llm.llm_response import MusicQueryAnalysis
+from app.llm.llm_wrapper import GeminiWrapper
+from app.llm.prompt import MUSIC_QUERY_ANALYSIS_PROMPT
 from app.services.catalog import CatalogClient, DeezerRateLimitError
 from app.utils.text import compact_text
 from recommend_algo.common.models import TrackInfo
@@ -311,3 +314,17 @@ def _itunes_source_id(item: dict[str, Any]) -> str | None:
 def _deezer_source_id(item: dict[str, Any]) -> str | None:
     track_id = item.get("id")
     return f"deezer:{track_id}" if track_id else None
+
+
+def analyze_music_query(
+    query: str,
+    gemini_wrapper: GeminiWrapper,
+) -> MusicQueryAnalysis:
+    raw_response = gemini_wrapper.request(
+        system_prompt=MUSIC_QUERY_ANALYSIS_PROMPT,
+        user_prompt=query,
+        temperature=0.1,
+        max_output_tokens=500,
+        response_schema=MusicQueryAnalysis,
+    )
+    return raw_response

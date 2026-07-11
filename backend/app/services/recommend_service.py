@@ -5,6 +5,7 @@ from dataclasses import asdict
 import httpx
 import pylast
 
+from app.llm.llm_wrapper import GeminiWrapper
 from recommend_algo import (
     TrackInfo,
     _track_similar_tracks,
@@ -16,6 +17,7 @@ from recommend_algo import (
     similar_listening_pattern,
     tag_based_recommendations,
 )
+from recommend_algo.common.sources import analyze_music_query
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,8 @@ async def run_recommend(
     유저의 free-form query를 받아 노래를 추천합니다.
     """
 
+    gemini_wrapper = GeminiWrapper()
+    query_analysis = analyze_music_query(query, gemini_wrapper)
     name, artist, source_id = await preprocess_input(query, http, lastfm)
     user_track_info = TrackInfo(name=name, artist=artist, source_id=source_id)
     # 유저 query에 name, artist가 없는 경우(mood tag query)

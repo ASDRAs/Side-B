@@ -1,0 +1,67 @@
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+# 만약 None이 올 수 있는 경우는 아래와 같이
+# specific_song: Optional[str] = Field( default=None, description="desc.." )
+
+
+class DirectSearchAnalysis(BaseModel):
+    search_query: str = Field(
+        description=(
+            "음원 API 검색에 사용할 정규화된 검색어. "
+            "곡과 아티스트가 모두 식별되면 '<곡 제목> <아티스트>' 형식을 사용한다."
+        )
+    )
+    track_title: str | None = Field(
+        default=None,
+        description="사용자 쿼리에서 식별하거나 정규화한 곡 제목",
+    )
+    artist_name: str | None = Field(
+        default=None,
+        description="사용자 쿼리에서 식별하거나 정규화한 아티스트 이름",
+    )
+    alternative_queries: list[str] = Field(
+        default_factory=list,
+        max_length=3,
+        description=(
+            "원 검색어로 결과를 찾지 못했을 때 사용할 검색어 변형. "
+            "영문명, 로마자 표기, 널리 쓰이는 번역 제목 등을 최대 3개 반환한다."
+        ),
+    )
+
+
+class MoodAnalysis(BaseModel):
+    tags: list[str] = Field(
+        min_length=1,
+        max_length=5,
+        description=(
+            "추천 검색에 사용할 lowercase 영문 음악 태그. "
+            "장르, 분위기, 활동, 시대 등의 정보를 중요도 순으로 반환한다."
+        ),
+    )
+    excluded_tags: list[str] = Field(
+        default_factory=list,
+        max_length=3,
+        description=(
+            "사용자가 원하지 않는 특성. "
+            "예: 'BTS 말고 신나는 케이팝'에서 BTS 또는 관련 제외 조건"
+        ),
+    )
+
+
+class MusicQueryAnalysis(BaseModel):
+    intent: Literal["direct", "mood", "meaningless"] = Field(
+        description=(
+            "특정 곡·아티스트 검색은 direct, 분위기·상황 기반 추천은 mood, "
+            "음악 검색 의도를 해석할 수 없으면 meaningless"
+        ),
+    )
+    direct: DirectSearchAnalysis | None = Field(
+        default=None,
+        description="intent가 direct일 때만 제공하는 검색어 분석 결과",
+    )
+    mood: MoodAnalysis | None = Field(
+        default=None,
+        description="intent가 mood일 때만 제공하는 음악 태그 분석 결과",
+    )

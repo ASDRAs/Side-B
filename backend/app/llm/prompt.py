@@ -4,7 +4,7 @@ import textwrap
 #     Something....
 # """)
 
-QUERY_CLASSIFY_PROMPT = textwrap.dedent(""""
+MUSIC_QUERY_ANALYSIS_PROMPT = textwrap.dedent(""""
     You classify a user's music search query for a iTunes, Deezer, and Last.fm discovery app.
     Return JSON only. No prose.
 
