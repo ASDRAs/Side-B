@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # 만약 None이 올 수 있는 경우는 아래와 같이
 # specific_song: Optional[str] = Field( default=None, description="desc.." )
@@ -40,14 +40,6 @@ class MoodAnalysis(BaseModel):
             "장르, 분위기, 활동, 시대 등의 정보를 중요도 순으로 반환한다."
         ),
     )
-    excluded_tags: list[str] = Field(
-        default_factory=list,
-        max_length=3,
-        description=(
-            "사용자가 원하지 않는 특성. "
-            "예: 'BTS 말고 신나는 케이팝'에서 BTS 또는 관련 제외 조건"
-        ),
-    )
 
 
 class MusicQueryAnalysis(BaseModel):
@@ -65,3 +57,25 @@ class MusicQueryAnalysis(BaseModel):
         default=None,
         description="intent가 mood일 때만 제공하는 음악 태그 분석 결과",
     )
+
+    @model_validator(mode="after")
+    def validate_intent_payload(self) -> "MusicQueryAnalysis":
+        if self.intent == "direct":
+            if self.direct is None:
+                raise ValueError("direct intent requires direct analysis")
+            if self.mood is not None:
+                raise ValueError("direct intent cannot include mood analysis")
+
+        elif self.intent == "mood":
+            if self.mood is None:
+                raise ValueError("mood intent requires mood analysis")
+            if self.direct is not None:
+                raise ValueError("mood intent cannot include direct analysis")
+
+        else:
+            if self.direct is not None or self.mood is not None:
+                raise ValueError(
+                    "meaningless intent cannot include direct or mood analysis"
+                )
+
+        return self
