@@ -28,6 +28,7 @@ MUSIC_QUERY_ANALYSIS_PROMPT = textwrap.dedent(
     - Put the most important tag first.
     - Use hyphens for multiword tags.
     - Do not infer a regional tag solely from the query's language.
+    - In each alternative query, use the same language for both the track title and artist name (e.g., "彗星 ユンナ", not "彗星 Younha").
 
     Output:
     - direct: direct=<analysis>, mood=null
