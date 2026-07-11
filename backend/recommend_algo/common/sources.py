@@ -9,6 +9,9 @@ import httpx
 import pylast
 from async_lru import alru_cache
 
+from app.llm.llm_response import MusicQueryAnalysis
+from app.llm.llm_wrapper import GeminiWrapper
+from app.llm.prompt import MUSIC_QUERY_ANALYSIS_PROMPT
 from app.services.catalog import CatalogClient, DeezerRateLimitError
 from app.utils.text import compact_text
 from recommend_algo.common.models import TrackInfo
@@ -57,11 +60,9 @@ async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
     return result
 
 
-_QUERY_ALIASES = ((("윤하", "사건의지평선"), "Event Horizon", "Younha"),)
-
-
 async def preprocess_input(
     query: str,
+    alternative_queries: list[str],
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
 ) -> tuple[str | None, str | None, str | None]:
@@ -71,60 +72,41 @@ async def preprocess_input(
     만약, itunes에서 검색결과가 없는 경우는 lastfm에서 search하고 track name과 artist를 return
     """
 
-    # NOTE : 이거 필요한가? 그냥 하드코딩 같은데.
-    alias = _known_query_alias(query)
+    search_queries = [query] + alternative_queries
 
-    if alias:
-        alias_name, alias_artist = alias
-        item = await _itunes_search(
-            http, alias_name, alias_artist, limit=8, min_score=0.65
-        )
+    for refined_query in search_queries:
+        item = await _itunes_search(http, refined_query, limit=8, min_score=0.35)
         if item:
             name = str(item.get("trackName") or "").strip()
             artist = str(item.get("artistName") or "").strip()
             itunes_source_id = _itunes_source_id(item)
             if name and artist:
-                logger.info("[Normalize] known alias via iTunes: %s - %s", name, artist)
+                logger.info("[Normalize] iTunes: %s - %s", name, artist)
                 return name, artist, itunes_source_id
-
-        logger.info(
-            "[Normalize] known alias fallback: %s - %s", alias_name, alias_artist
-        )
-        return alias_name, alias_artist, None
-
-    # itunes search API로 노래의 이름, 아티스트, itunes에 등록된 id를 가져옴
-    item = await _itunes_search(http, query, limit=8, min_score=0.35)
-    if item:
-        name = str(item.get("trackName") or "").strip()
-        artist = str(item.get("artistName") or "").strip()
-        itunes_source_id = _itunes_source_id(item)
-        if name and artist:
-            logger.info("[Normalize] iTunes: %s - %s", name, artist)
-            return name, artist, itunes_source_id
 
     # itunes search API로 노래가 검색되지 않는 경우
     try:
-        # lastfm에서 검색
-        search = lastfm.search_for_track("", query)
-        results = await _lf_call(
-            f"lf:search_track:{compact_text(query)}",
-            300,
-            search.get_next_page,
-        )
+        for refined_query in search_queries:
+            search = lastfm.search_for_track("", refined_query)
+            results = await _lf_call(
+                f"lf:search_track:{compact_text(refined_query)}",
+                300,
+                search.get_next_page,
+            )
+            if not results:
+                logger.warning(
+                    "[Normalize] No search in Last.fm for query: %s", refined_query
+                )
+                continue
 
-        # 검색결과가 없는 경우
-        if not results:
-            logger.warning("[Normalize] No search in Last.fm")
-            return None, None, None
-
-        for track in results:
-            name = str(track.get_name() or "").strip()
-            artist = str(track.get_artist().get_name() or "").strip()
-            if name and artist and artist.lower() != "[unknown]":
-                logger.info("[Normalize] Last.fm fallback: %s - %s", name, artist)
-                return name, artist, None
+            for track in results:
+                name = str(track.get_name() or "").strip()
+                artist = str(track.get_artist().get_name() or "").strip()
+                if name and artist and artist.lower() != "[unknown]":
+                    logger.info("[Normalize] Last.fm: %s - %s", name, artist)
+                    return name, artist, None
     except Exception as exc:
-        logger.warning("[Normalize] Last.fm fallback failed: %s", exc)
+        logger.warning("[Normalize] Last.fm search failed: %s", exc)
 
     return None, None, None
 
@@ -288,14 +270,6 @@ async def get_tracks_metadata(
     return list(await asyncio.gather(*[_fetch(t) for t in tracks]))
 
 
-def _known_query_alias(query: str) -> tuple[str, str] | None:
-    compact_query = compact_text(query)
-    for tokens, title, artist in _QUERY_ALIASES:
-        if all(compact_text(token) in compact_query for token in tokens):
-            return title, artist
-    return None
-
-
 def _itunes_artwork(item: dict[str, Any]) -> str | None:
     url = str(item.get("artworkUrl100") or "").strip()
     if not url:
@@ -311,3 +285,23 @@ def _itunes_source_id(item: dict[str, Any]) -> str | None:
 def _deezer_source_id(item: dict[str, Any]) -> str | None:
     track_id = item.get("id")
     return f"deezer:{track_id}" if track_id else None
+
+
+def analyze_music_query(
+    query: str,
+    gemini_wrapper: GeminiWrapper,
+) -> MusicQueryAnalysis:
+    """
+    유저의 자유로운 형태의 query를 분석하여 direct, mood, meaningless 중 하나로 분류합니다.
+    * direct인 경우에는 검색어, 곡 제목, 아티스트 이름, 대체 검색어를 반환
+    * mood인 경우에는 추천 검색에 사용할 음악 태그와 제외할 태그를 반환
+    """
+    raw_response = gemini_wrapper.request(
+        system_prompt=MUSIC_QUERY_ANALYSIS_PROMPT,
+        user_prompt=query,
+        temperature=0.1,
+        max_output_tokens=500,
+        response_schema=MusicQueryAnalysis,
+        response_validator=MusicQueryAnalysis,
+    )
+    return raw_response

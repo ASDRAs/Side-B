@@ -1,8 +1,11 @@
 import os
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TypeVar
 
 from google import genai
 from google.genai import types
+from pydantic import BaseModel
+
+ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 
 
 class GeminiWrapper:
@@ -23,8 +26,9 @@ class GeminiWrapper:
         temperature: float = 0.7,
         max_output_tokens: int = 300,
         response_schema=None,
+        response_validator: type[ResponseModelT] | None = None,
         postprocess_func: Optional[Callable[[str], Any]] = None,
-    ) -> str:
+    ) -> ResponseModelT | str:
         mime_type = "application/json" if response_schema else "text/plain"
 
         config = types.GenerateContentConfig(
@@ -41,10 +45,10 @@ class GeminiWrapper:
         )
         raw_text = response.text
 
-        # 👈 후처리 함수가 등록되어 있다면 실행 후 결과 리턴, 없으면 원본 텍스트 리턴
+        if response_validator:
+            return response_validator.model_validate_json(raw_text)
         if postprocess_func:
             return postprocess_func(raw_text)
-
         return raw_text
 
 

@@ -5,6 +5,7 @@ from dataclasses import asdict
 import httpx
 import pylast
 
+from app.llm.llm_wrapper import GeminiWrapper
 from recommend_algo import (
     TrackInfo,
     _track_similar_tracks,
@@ -16,6 +17,7 @@ from recommend_algo import (
     similar_listening_pattern,
     tag_based_recommendations,
 )
+from recommend_algo.common.sources import analyze_music_query
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +44,23 @@ async def run_recommend(
     유저의 free-form query를 받아 노래를 추천합니다.
     """
 
-    name, artist, source_id = await preprocess_input(query, http, lastfm)
-    user_track_info = TrackInfo(name=name, artist=artist, source_id=source_id)
+    gemini_wrapper = GeminiWrapper()
+    query_analysis = analyze_music_query(query, gemini_wrapper)
+    user_intent = query_analysis.intent
+
+    if user_intent == "meaningless":
+        logger.warning("Query is meaningless: %s", query)
+        return dict(
+            track_name=query,
+            artist="Unknown",
+            top_n=top_n,
+            source_id=None,
+            album_art_url=None,
+            result={"similar": [], "reverse": [], "opposite": [], "hidden": []},
+        )
+
     # 유저 query에 name, artist가 없는 경우(mood tag query)
-    if not name or not artist:
+    elif user_intent == "mood":
         tag_results = await tag_based_recommendations(query, http, lastfm, top_n=top_n)
         if tag_results and any(tag_results.values()):
             processed = {k: [asdict(t) for t in v] for k, v in tag_results.items()}
@@ -71,6 +86,14 @@ async def run_recommend(
 
     # 유저 query에 name, artist가 있는 경우(direct query)
     else:
+        user_music_query = query_analysis.direct.search_query
+        alternative_queries = query_analysis.direct.alternative_queries
+
+        name, artist, source_id = await preprocess_input(
+            user_music_query, alternative_queries, http, lastfm
+        )
+        user_track_info = TrackInfo(name=name, artist=artist, source_id=source_id)
+
         user_track_info = await get_tracks_metadata(
             http, [user_track_info], lastfm, fields=["album_art", "source_id"]
         )
