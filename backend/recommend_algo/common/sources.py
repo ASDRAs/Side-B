@@ -320,11 +320,17 @@ def analyze_music_query(
     query: str,
     gemini_wrapper: GeminiWrapper,
 ) -> MusicQueryAnalysis:
+    """
+    유저의 자유로운 형태의 query를 분석하여 direct, mood, meaningless 중 하나로 분류합니다.
+    * direct인 경우에는 검색어, 곡 제목, 아티스트 이름, 대체 검색어를 반환
+    * mood인 경우에는 추천 검색에 사용할 음악 태그와 제외할 태그를 반환
+    """
     raw_response = gemini_wrapper.request(
         system_prompt=MUSIC_QUERY_ANALYSIS_PROMPT,
         user_prompt=query,
         temperature=0.1,
         max_output_tokens=500,
         response_schema=MusicQueryAnalysis,
+        response_validator=MusicQueryAnalysis,
     )
     return raw_response
