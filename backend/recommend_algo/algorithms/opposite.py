@@ -4,6 +4,9 @@ from typing import Any
 import httpx
 import pylast
 
+from app.llm.llm_response import OppositeTagAnalysis
+from app.llm.llm_wrapper import GeminiWrapper
+from app.llm.prompt import OPPOSITE_TAG_PROMPT
 from app.utils.text import compact_text, text_ratio
 from recommend_algo.common import scoring, seeds, sources
 from recommend_algo.common.models import TrackInfo
@@ -16,6 +19,7 @@ async def opposite_emotion(
     artist: str,
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
+    gemini_wrapper: GeminiWrapper,
     top_n=10,
 ) -> list[TrackInfo]:
     """
@@ -23,76 +27,80 @@ async def opposite_emotion(
     만약, track에서 tag를 검색할 수 없는 경우에는 artist를 기준으로 추천
     """
     MAX_TAG_CNT = 8
-    try:
-        # 주어진 track과 artist의 tag를 추출하고 이에 반대되는 opposite tag 추출
-        seed_tags = await _seed_tags(track_name, artist, lastfm)
-        seed_tags = seed_tags[:MAX_TAG_CNT]
-        opp_tags = seeds._get_opposite_tags(seed_tags, artist)
-        opp_tags = opp_tags[:MAX_TAG_CNT]
-        collected: list[TrackInfo] = []
 
-        # seed tag와 반대 속성의 tag의 곡들 중에서 인기도 순으로 lastfm에서 검색
-        for tag in opp_tags:
-            tag_obj = lastfm.get_tag(tag)
-            response = await sources._lf_call(
-                f"lf:tag_top:{compact_text(tag)}:{top_n * 4}",
-                600,
-                tag_obj.get_top_tracks,
-                top_n * 4,
-            )
-            for track_metadata in response or []:
-                opp_track_name = track_metadata.item.get_name()
-                opp_artist = track_metadata.item.get_artist().get_name()
-                if _is_same_track(opp_track_name, opp_artist, track_name, artist):
-                    continue
-                collected.append(
-                    TrackInfo(
-                        name=opp_track_name,
-                        artist=opp_artist,
-                        algo="opposite_emotion",
-                        label=f"#{tag} 반전 무드",
-                    )
-                )
-            collected = scoring._cap_per_artist(
-                scoring._dedupe_tracks(collected), max_per=1
-            )
-            if len(collected) >= top_n:
-                break
+    # 주어진 track과 artist의 tag를 추출하고 이에 반대되는 opposite tag 추출
+    seed_tags = await _seed_tags(track_name, artist, lastfm)
+    seed_tags = seed_tags[:MAX_TAG_CNT]
+    user_prompt = f"track: {track_name}, artist: {artist}, lastfm_tags: {seed_tags}"
+    gemini_response = gemini_wrapper.request(
+        system_prompt=OPPOSITE_TAG_PROMPT,
+        user_prompt=user_prompt,
+        temperature=0.1,
+        max_output_tokens=200,
+        response_schema=OppositeTagAnalysis,
+        response_validator=OppositeTagAnalysis,
+    )
+    opp_tags = gemini_response.opposite_tags
+    collected: list[TrackInfo] = []
 
-        # NOTE : get_similar로 검색하고 reverse 해야하는거 아닌지? 수정 필요해 보임
-        if not collected:
-            lf_track = lastfm.get_track(artist, track_name)
-
-            response = await sources._lf_call(
-                f"lf:track_similar:{compact_text(artist)}:{compact_text(track_name)}:{top_n * 4}",
-                600,
-                lf_track.get_similar,
-                top_n * 4,
-            )
-
-            collected = [
+    # seed tag와 반대 속성의 tag의 곡들 중에서 인기도 순으로 lastfm에서 검색
+    for tag in opp_tags:
+        tag_obj = lastfm.get_tag(tag)
+        response = await sources._lf_call(
+            f"lf:tag_top:{compact_text(tag)}:{top_n * 4}",
+            600,
+            tag_obj.get_top_tracks,
+            top_n * 4,
+        )
+        for track_metadata in response or []:
+            opp_track_name = track_metadata.item.get_name()
+            opp_artist = track_metadata.item.get_artist().get_name()
+            if _is_same_track(opp_track_name, opp_artist, track_name, artist):
+                continue
+            collected.append(
                 TrackInfo(
-                    name=item.item.get_name(),
-                    artist=item.item.get_artist().get_name(),
-                    match_score=float(item.match),
+                    name=opp_track_name,
+                    artist=opp_artist,
                     algo="opposite_emotion",
-                    label="유사곡 기반 반전 추천",
+                    label=f"#{tag} 반전 무드",
                 )
-                for item in response or []
-            ]
-            collected = scoring._cap_per_artist(
-                scoring._dedupe_tracks(collected), max_per=1
             )
-        collected = collected[:top_n]
-        opp_emotion_tracks = await sources.get_tracks_metadata(http, collected, lastfm)
-        for track in opp_emotion_tracks:
-            track.algo = track.algo or "opposite_emotion"
-            track.label = track.label or "반전 무드 추천"
-        return opp_emotion_tracks
+        collected = scoring._cap_per_artist(
+            scoring._dedupe_tracks(collected), max_per=1
+        )
+        if len(collected) >= top_n:
+            break
 
-    except Exception as exc:
-        logger.warning("[opposite_emotion] failed: %s", exc)
-        return []
+    # NOTE : get_similar로 검색하고 reverse 해야하는거 아닌지? 수정 필요해 보임
+    if not collected:
+        lf_track = lastfm.get_track(artist, track_name)
+
+        response = await sources._lf_call(
+            f"lf:track_similar:{compact_text(artist)}:{compact_text(track_name)}:{top_n * 4}",
+            600,
+            lf_track.get_similar,
+            top_n * 4,
+        )
+
+        collected = [
+            TrackInfo(
+                name=item.item.get_name(),
+                artist=item.item.get_artist().get_name(),
+                match_score=float(item.match),
+                algo="opposite_emotion",
+                label="유사곡 기반 반전 추천",
+            )
+            for item in response or []
+        ]
+        collected = scoring._cap_per_artist(
+            scoring._dedupe_tracks(collected), max_per=1
+        )
+    collected = collected[:top_n]
+    opp_emotion_tracks = await sources.get_tracks_metadata(http, collected, lastfm)
+    for track in opp_emotion_tracks:
+        track.algo = track.algo or "opposite_emotion"
+        track.label = track.label or "반전 무드 추천"
+    return opp_emotion_tracks
 
 
 async def _seed_tags(

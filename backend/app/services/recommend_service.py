@@ -88,7 +88,6 @@ async def run_recommend(
     else:
         user_music_query = query_analysis.direct.search_query
         alternative_queries = query_analysis.direct.alternative_queries
-
         name, artist, source_id = await preprocess_input(
             user_music_query, alternative_queries, http, lastfm
         )
@@ -113,6 +112,8 @@ async def run_recommend(
             prefetched_similar = None
 
         # similar, reverse, oppsite, hidden 취향의 곡들 추천
+        # NOTE : 디버깅이 불편해서 exception 발생하면 error raise하게 변경
+        # 나중에 exception 처리 다 하면 return_exception=True로 하면 될 것 같음.
         raw_results = await asyncio.gather(
             similar_listening_pattern(
                 name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
@@ -120,9 +121,11 @@ async def run_recommend(
             reverse_top100(
                 name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
             ),
-            opposite_emotion(name, artist, http, lastfm, top_n=top_n),
+            opposite_emotion(
+                name, artist, http, lastfm, gemini_wrapper=gemini_wrapper, top_n=top_n
+            ),
             hidden_discovery_by_artist(artist, http, lastfm, top_n=top_n),
-            return_exceptions=True,
+            # return_exceptions=True,
         )
 
         rcmd_results = {
