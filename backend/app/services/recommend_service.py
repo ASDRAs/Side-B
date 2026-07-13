@@ -5,6 +5,7 @@ from dataclasses import asdict
 import httpx
 import pylast
 
+from app.config import Settings
 from app.llm.llm_wrapper import GeminiWrapper
 from recommend_algo import (
     TrackInfo,
@@ -39,12 +40,13 @@ async def run_recommend(
     top_n: int,
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
+    settings: Settings,
 ) -> dict:
     """
     유저의 free-form query를 받아 노래를 추천합니다.
     """
 
-    gemini_wrapper = GeminiWrapper()
+    gemini_wrapper = GeminiWrapper(settings.gemini_api_key, settings.gemini_model)
     query_analysis = analyze_music_query(query, gemini_wrapper)
     user_intent = query_analysis.intent
 

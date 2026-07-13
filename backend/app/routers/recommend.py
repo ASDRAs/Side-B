@@ -2,6 +2,7 @@ import logging
 
 from fastapi import APIRouter, Request
 
+from app.config import get_settings
 from app.schemas.recommend import RecommendRequest, RecommendResponse
 from app.services.recommend_service import run_recommend
 
@@ -16,7 +17,8 @@ async def recommend(req: RecommendRequest, request: Request):
     """
     http = request.app.state.http
     lastfm = request.app.state.lastfm_pylast
+    settings = get_settings()
 
     logger.info("recommend request - query=%r, top_n=%d", req.query, req.top_n)
-    result = await run_recommend(req.query, req.top_n, http, lastfm)
+    result = await run_recommend(req.query, req.top_n, http, lastfm, settings)
     return RecommendResponse(**result)

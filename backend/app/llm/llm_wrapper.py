@@ -1,4 +1,3 @@
-import os
 from typing import Any, Callable, Optional, TypeVar
 
 from google import genai
@@ -9,14 +8,9 @@ ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 
 
 class GeminiWrapper:
-    def __init__(self, api_key=None, model_name=None):
-        self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
-        self.model_name = model_name or os.environ.get("GEMINI_MODEL")
-        if not self.api_key:
-            raise ValueError(
-                "Gemini API 키가 필요합니다. 환경변수에 등록하거나 직접 입력해주세요."
-            )
-
+    def __init__(self, api_key, model_name):
+        self.api_key = api_key
+        self.model_name = model_name
         self.client = genai.Client(api_key=self.api_key)
 
     def request(
