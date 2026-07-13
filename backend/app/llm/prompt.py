@@ -52,3 +52,19 @@ MUSIC_QUERY_ANALYSIS_PROMPT = textwrap.dedent(
     -> meaningless
     """
 ).strip()
+
+
+OPPOSITE_TAG_PROMPT = textwrap.dedent("""
+    Analyze a track's musical mood and return JSON matching the response schema.
+
+    Input contains:
+    - track title
+    - artist
+    - track tags
+
+    Rules:
+    - opposite_tags: return 1-5 tags with clearly contrasting mood or energy.
+    - Preserve genre or regional identity when possible; change the mood rather than selecting an unrelated genre.
+    - Use lowercase, common Last.fm-friendly tags only.
+    - Do not return artist names, track titles, explanations, or duplicate tags.
+""").strip()

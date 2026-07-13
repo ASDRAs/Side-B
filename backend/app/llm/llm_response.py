@@ -79,3 +79,7 @@ class MusicQueryAnalysis(BaseModel):
                 )
 
         return self
+
+
+class OppositeTagAnalysis(BaseModel):
+    opposite_tags: list[str] = Field(min_length=1, max_length=5)
