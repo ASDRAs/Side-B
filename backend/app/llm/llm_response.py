@@ -36,8 +36,16 @@ class MoodAnalysis(BaseModel):
         min_length=1,
         max_length=5,
         description=(
-            "추천 검색에 사용할 lowercase 영문 음악 태그. "
-            "장르, 분위기, 활동, 시대 등의 정보를 중요도 순으로 반환한다."
+            "추천 검색에 사용할 lowercase 영문 음악 태그."
+            "장르, 분위기 등의 정보를 중요도 순으로 반환한다."
+        ),
+    )
+    opposite_tags: list[str] = Field(
+        min_length=1,
+        max_length=5,
+        description=(
+            "추천 검색에 사용할 lowercase 영문 음악 태그."
+            "유저 쿼리에 반대되는 장르, 분위기 등의 정보를 중요도 순으로 반환한다."
         ),
     )
 

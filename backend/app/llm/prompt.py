@@ -21,14 +21,16 @@ MUSIC_QUERY_ANALYSIS_PROMPT = textwrap.dedent(
     - Remove filler words such as 노래, 음악, 추천, 틀어줘, play, and find.
     - Normalize names only when confident; never invent information.
     - Return at most 3 distinct alternative queries.
+    - In each alternative query, use the same language for both the track title and artist name (e.g., "彗星 ユンナ", not "彗星 Younha").
+
 
     For mood:
-    - Extract 1-5 lowercase English tags for Last.fm tag search.
+    - Extract 1-5 lowercase English tags & opposite tags for Last.fm tag search.
+    - opposite_tags: return 1-5 tags with clearly contrasting mood or energy.
     - Prefer broad, commonly used Last.fm tags over descriptive phrases.
     - Put the most important tag first.
     - Use hyphens for multiword tags.
     - Do not infer a regional tag solely from the query's language.
-    - In each alternative query, use the same language for both the track title and artist name (e.g., "彗星 ユンナ", not "彗星 Younha").
 
     Output:
     - direct: direct=<analysis>, mood=null
@@ -46,7 +48,7 @@ MUSIC_QUERY_ANALYSIS_PROMPT = textwrap.dedent(
     -> direct, search_query="Hymne à l'amour Édith Piaf", alternative_queries=["Hymn to Love Edith Piaf"]
 
     "새벽에 들을 잔잔한 노래"
-    -> mood, tags=["late-night", "calm", "acoustic"]
+    -> mood, tags=["late-night", "calm", "acoustic"], opposite_tags=["upbeat", "energetic", "dance"]
 
     "asdfqwer"
     -> meaningless

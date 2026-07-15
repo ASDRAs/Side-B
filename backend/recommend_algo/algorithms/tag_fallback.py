@@ -6,10 +6,10 @@ from recommend_algo.common.models import TrackInfo
 
 
 async def tag_based_recommendations(
-    query: str,
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
     tags: list[str],
+    opposite_tags: list[str],
     top_n: int = 10,
 ) -> dict[str, list[TrackInfo]] | None:
     """Fallback for mood/genre queries such as '감성적인 시티팝'."""
@@ -85,8 +85,9 @@ async def tag_based_recommendations(
     recommended_tracks.update(scoring._track_key(track) for track in reverse_tracks)
 
     # 3. 반대 감정의 노래 추천
-    # 3-1. opposite_tag 기반 노래 검색
-    opposite_tags = seeds._get_opposite_tags(tags, "")
+
+    # FIXME : enriched_candidates는 tags와 동일한 case. tags가 여러개여도 맨 앞 tag만 사용
+    # 3-1. opposite_tags 기반 노래 검색
     opposite_candidates = await seeds._collect_tag_tracks(
         opposite_tags, lastfm, limit=max(top_n * 3, 20)
     )
