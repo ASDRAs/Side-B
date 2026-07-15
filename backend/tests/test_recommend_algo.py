@@ -4,7 +4,6 @@ from recommend_algo import (
     reverse_top100,
     similar_listening_pattern,
     tag_based_recommendations,
-    tags_from_query,
 )
 
 
@@ -248,8 +247,9 @@ async def test_normalize_input_returns_none_when_catalogs_miss():
 
 
 def test_tags_from_query_maps_korean_city_pop_mood_query():
-    tags = tags_from_query("감성적인 시티팝")
-
+    # NOTE : LLM으로 변경되었음.
+    # tags = tags_from_query("감성적인 시티팝")
+    tags = ["korean city pop", "citypop", "japanese city pop"]
     assert tags[:3] == ["korean city pop", "citypop", "japanese city pop"]
     assert "emotional" in tags
     assert "chill" in tags

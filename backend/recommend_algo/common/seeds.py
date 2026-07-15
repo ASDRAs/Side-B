@@ -3,7 +3,6 @@ import logging
 
 import pylast
 
-from app.config.rules import MOOD_QUERY_RULES as _MOOD_QUERY_RULES
 from app.utils.text import compact_text
 from recommend_algo.common import sources
 from recommend_algo.common.models import TrackInfo
@@ -13,48 +12,6 @@ logger = logging.getLogger(__name__)
 _TRACK_SIMILAR_ALIASES = {
     (compact_text("Younha"), compact_text("혜성")): [("ほうき星", "Younha")],
 }
-
-_KNOWN_KOREAN_ARTISTS = {
-    "younha",
-    "iu",
-    "bts",
-    "blackpink",
-    "newjeans",
-    "qwer",
-    "day6",
-    "akmu",
-    "taeyeon",
-    "aespa",
-    "twice",
-    "ive",
-    "le sserafim",
-}
-
-_OPPOSITE_TAGS = {
-    "ballad": ["upbeat", "dance", "pop"],
-    "sad": ["happy", "upbeat", "dance"],
-    "melancholy": ["happy", "upbeat", "pop"],
-    "acoustic": ["electronic", "synthpop", "dance"],
-    "rock": ["acoustic", "chill", "pop"],
-    "indie": ["pop", "dance", "electronic"],
-    "pop": ["indie", "alternative", "electronic"],
-    "k-pop": ["indie pop", "synthpop", "pop"],
-    "female vocalists": ["indie", "alternative", "pop"],
-}
-
-_TAG_QUERY_RULES = (
-    (
-        ("시티팝", "citypop", "city pop"),
-        ["korean city pop", "citypop", "japanese city pop", "city pop"],
-    ),
-    (("케이팝", "kpop", "k-pop", "아이돌"), ["k-pop", "dance-pop", "korean"]),
-    (("발라드", "ballad"), ["k-ballad", "ballad", "korean"]),
-    (("인디", "indie"), ["indie", "indie pop", "k-indie"]),
-    (("알앤비", "rnb", "r&b"), ["rnb", "soul", "k-rnb"]),
-    (("재즈", "jazz"), ["jazz", "vocal jazz"]),
-    (("락", "록", "rock"), ["rock", "alternative"]),
-    (("로파이", "lofi", "lo-fi"), ["lo-fi", "chill", "instrumental"]),
-)
 
 
 async def _track_similar_tracks(
@@ -122,29 +79,6 @@ async def _track_similar_tracks(
     return []
 
 
-def tags_from_query(query: str) -> list[str]:
-    """Map free-form genre/mood text to Last.fm tags without calling an LLM."""
-    compact_query = compact_text(query)
-    lowered_query = query.lower()
-    tags: list[str] = []
-
-    for keywords, rule_tags in _TAG_QUERY_RULES:
-        if any(
-            keyword.lower() in lowered_query or compact_text(keyword) in compact_query
-            for keyword in keywords
-        ):
-            tags.extend(rule_tags)
-
-    for keywords, rule_tags in _MOOD_QUERY_RULES:
-        if any(
-            keyword.lower() in lowered_query or compact_text(keyword) in compact_query
-            for keyword in keywords
-        ):
-            tags.extend(rule_tags)
-
-    return _unique_preserve_order(tags)[:8]
-
-
 async def _collect_tag_tracks(
     tags: list[str],
     lastfm: pylast.LastFMNetwork,
@@ -187,26 +121,6 @@ async def _collect_tag_tracks(
     return list(
         await asyncio.gather(*[_fetch(tag, index) for index, tag in enumerate(tags)])
     )
-
-
-def _get_opposite_tags(seed_tags: list[str], artist: str) -> list[str]:
-    """
-    seed tag를 받아 해당 tag의 속성과 반대 속성의 tag
-    """
-    candidates: list[str] = []
-
-    # TODO : 미리 oppsite tag 설정도 좋지만 LLM으로 바꾸는 게 좋은듯
-    for tag in seed_tags:
-        normalized = tag.lower().replace("-", " ")
-        for key, alternatives in _OPPOSITE_TAGS.items():
-            if key.replace("-", " ") in normalized:
-                candidates.extend(alternatives)
-
-    # if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
-    #   candidates.extend(["k-pop", "indie pop", "female vocalists"])
-
-    # candidates.extend(["pop", "indie", "alternative", "electronic"])
-    return _unique_preserve_order(candidates)
 
 
 def _unique_preserve_order(values: list[str]) -> list[str]:
