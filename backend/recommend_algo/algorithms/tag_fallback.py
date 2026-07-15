@@ -9,38 +9,56 @@ async def tag_based_recommendations(
     query: str,
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
+    tags: list[str],
     top_n: int = 10,
 ) -> dict[str, list[TrackInfo]] | None:
     """Fallback for mood/genre queries such as '감성적인 시티팝'."""
-    tags = seeds.tags_from_query(query)
-    if not tags:
-        return None
 
-    primary_rows = await seeds._collect_tag_tracks(
-        tags, lastfm, limit=max(top_n * 5, 30)
+    candidates = await seeds._collect_tag_tracks(tags, lastfm, limit=max(top_n * 5, 30))
+    candidates = scoring._dedupe_tracks(
+        [track for rows in candidates for track in rows]
     )
-    pool = scoring._dedupe_tracks([track for rows in primary_rows for track in rows])
-    if not pool:
+    if not candidates:
         return None
 
     # TODO : 리팩 후 field 설정(모든 field 필요한지 확인 필요)
-    pool = await sources.get_tracks_metadata(
-        http, scoring._cap_per_artist(pool, max_per=3)[: max(top_n * 5, 40)], lastfm
+    raw_enriched_candidates = await sources.get_tracks_metadata(
+        http,
+        scoring._cap_per_artist(candidates, max_per=3)[: max(top_n * 5, 40)],
+        lastfm,
     )
-    similar_candidates = scoring._cap_per_artist(pool, max_per=2)
-    similar_with_art = [track for track in similar_candidates if track.album_art_url]
-    similar = (
-        similar_with_art if len(similar_with_art) >= top_n else similar_candidates
+
+    # FIXME : enriched_candidates는 tags 순서대로 되어있음
+    # FIXME :예를 들어, tags = [lofi, dance]면 [lofi1, lofi2, ..., dance1, dance2, ...])
+    # FIXME :그래서 rank로 정렬하든, 아예 random으로 섞든 or 순서에 따라 가중치를 두든 해야 함.
+    # 앨범 커버가 있는 노래만 사용(빈 문자열도 체크하기 위해 bool)
+    enriched_candidates = [
+        track for track in raw_enriched_candidates if bool(track.album_art_url)
+    ]
+
+    # 1. 비슷한 느낌의 노래 추천
+    # 1-1. 아티스트 당 2곡 씩 추천되도록 하되, 만약 top_n보다 적어지면 drop하지 않고 사용한다.
+    drop_by_artist = scoring._cap_per_artist(enriched_candidates, max_per=2)
+    similar_tracks = (
+        enriched_candidates if len(enriched_candidates) >= top_n else drop_by_artist
     )[:top_n]
-    for track in similar:
+
+    for track in similar_tracks:
         tag = track.reason_tags[0] if track.reason_tags else tags[0]
         track.algo, track.label = "tag_similarity", f"#{tag} 태그 추천"
         track.reverse_score = track.match_score
 
-    used_keys = {scoring._track_key(track) for track in similar}
+    # 이미 추천된 곡들은 제외하기 위해 관리
+    recommended_tracks = {scoring._track_key(track) for track in similar_tracks}
+
+    # 2. 반대 감정의 노래 추천
     reverse_pool = [
-        track for track in pool if scoring._track_key(track) not in used_keys
+        track
+        for track in enriched_candidates
+        if scoring._track_key(track) not in recommended_tracks
     ]
+
+    # 2-1. 비주류 점수 계산
     for index, track in enumerate(reverse_pool):
         obscurity = scoring._popularity_obscurity(
             track.popularity,
@@ -52,62 +70,63 @@ async def tag_based_recommendations(
             (obscurity * 0.55) + (rank_depth * 0.25) + (tag_match * 0.20)
         )
 
+    # 2-2. 비주류 곡 추천
     low_exposure_pool = [
-        track
-        for track in reverse_pool
-        if scoring._is_low_exposure(track.popularity)
+        track for track in reverse_pool if scoring._is_low_exposure(track.popularity)
     ]
     if len(low_exposure_pool) >= top_n:
         reverse_pool = low_exposure_pool
-    reverse_candidates = sorted(
+    reverse_tracks = sorted(
         reverse_pool, key=lambda item: item.reverse_score or 0, reverse=True
     )
-    reverse_with_art = [track for track in reverse_candidates if track.album_art_url]
-    reverse = (
-        reverse_with_art if len(reverse_with_art) >= top_n else reverse_candidates
-    )[:top_n]
-    for track in reverse:
+    for track in reverse_tracks:
         track.algo, track.label = "tag_reverse", "태그 속 저노출곡"
 
-    used_keys.update(scoring._track_key(track) for track in reverse)
+    recommended_tracks.update(scoring._track_key(track) for track in reverse_tracks)
+
+    # 3. 반대 감정의 노래 추천
+    # 3-1. opposite_tag 기반 노래 검색
     opposite_tags = seeds._get_opposite_tags(tags, "")
-    opposite_rows = await seeds._collect_tag_tracks(
+    opposite_candidates = await seeds._collect_tag_tracks(
         opposite_tags, lastfm, limit=max(top_n * 3, 20)
     )
+
+    # 3-2. 이미 추천된 곡 & 중복 제거
     opposite_pool = scoring._dedupe_tracks(
         [
             track
-            for rows in opposite_rows
+            for rows in opposite_candidates
             for track in rows
-            if scoring._track_key(track) not in used_keys
+            if scoring._track_key(track) not in recommended_tracks
         ]
     )
-    # TODO : 리팩 후 모든 field 필요한지 확인 필요
-    opposite = await sources.get_tracks_metadata(
+    # 3-3. metadata 추가
+    opposite_tracks = await sources.get_tracks_metadata(
         http, scoring._cap_per_artist(opposite_pool, max_per=1)[:top_n], lastfm
     )
-    for track in opposite:
+    for track in opposite_tracks:
         tag = track.reason_tags[0] if track.reason_tags else "contrast"
         track.algo, track.label = "tag_opposite", f"#{tag} 반대 결 추천"
 
-    used_keys.update(scoring._track_key(track) for track in opposite)
+    recommended_tracks.update(scoring._track_key(track) for track in opposite_tracks)
+
+    # 4. 숨겨진 명곡 추천
     hidden_pool = [
-        track for track in pool if scoring._track_key(track) not in used_keys
+        track
+        for track in enriched_candidates
+        if scoring._track_key(track) not in recommended_tracks
     ]
     hidden_candidates = sorted(
         scoring._cap_per_artist(hidden_pool, max_per=1),
         key=scoring._resolved_popularity,
     )
-    hidden_with_art = [track for track in hidden_candidates if track.album_art_url]
-    hidden = (hidden_with_art if len(hidden_with_art) >= top_n else hidden_candidates)[
-        :top_n
-    ]
-    for track in hidden:
+    hidden_tracks = hidden_candidates[:top_n]
+    for track in hidden_tracks:
         track.algo, track.label = "tag_hidden", "태그에서 더 파볼 곡"
 
     return {
-        "similar": similar,
-        "reverse": reverse,
-        "opposite": opposite,
-        "hidden": hidden,
+        "similar": similar_tracks,
+        "reverse": reverse_tracks,
+        "opposite": opposite_tracks,
+        "hidden": hidden_tracks,
     }
