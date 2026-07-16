@@ -50,7 +50,7 @@ async def tag_based_recommendations(
     # 이미 추천된 곡들은 제외하기 위해 관리
     recommended_tracks = {scoring._track_key(track) for track in similar_tracks}
 
-    # 2. 반대 감정의 노래 추천
+    # 2. 태그 내 저노출곡 추천
     reverse_pool = [
         track
         for track in enriched_candidates
@@ -83,7 +83,7 @@ async def tag_based_recommendations(
 
     recommended_tracks.update(scoring._track_key(track) for track in reverse_tracks)
 
-    # 3. 반대 감정의 노래 추천
+    # 3. opposite_tags 기반 반대 분위기 추천
 
     # FIXME : enriched_candidates는 tags와 동일한 case. tags가 여러개여도 맨 앞 tag만 사용
     # 3-1. opposite_tags 기반 노래 검색

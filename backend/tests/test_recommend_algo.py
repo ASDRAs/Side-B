@@ -1,3 +1,4 @@
+from app.llm.llm_response import MoodAnalysis
 from recommend_algo import (
     hidden_discovery_by_artist,
     preprocess_input,
@@ -5,6 +6,12 @@ from recommend_algo import (
     similar_listening_pattern,
     tag_based_recommendations,
 )
+
+
+def test_mood_analysis_allows_missing_opposite_tags():
+    analysis = MoodAnalysis(tags=["calm"])
+
+    assert analysis.opposite_tags == []
 
 
 class FakeResponse:

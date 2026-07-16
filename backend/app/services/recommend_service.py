@@ -65,7 +65,13 @@ async def run_recommend(
     elif user_intent == "mood":
         seed_tags = query_analysis.mood.tags
         opposite_tags = query_analysis.mood.opposite_tags
-        tag_results = await tag_based_recommendations(http, lastfm, seed_tags, opposite_tags, top_n=top_n)
+        tag_results = await tag_based_recommendations(
+            http,
+            lastfm,
+            seed_tags,
+            opposite_tags,
+            top_n=top_n,
+        )
         if tag_results and any(tag_results.values()):
             processed = {k: [asdict(t) for t in v] for k, v in tag_results.items()}
             representative = _pick_representative_track(tag_results)

@@ -41,7 +41,7 @@ class MoodAnalysis(BaseModel):
         ),
     )
     opposite_tags: list[str] = Field(
-        min_length=1,
+        default_factory=list,
         max_length=5,
         description=(
             "추천 검색에 사용할 lowercase 영문 음악 태그. "
