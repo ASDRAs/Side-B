@@ -29,7 +29,7 @@ MUSIC_QUERY_ANALYSIS_PROMPT = textwrap.dedent(
     - opposite_tags: return 1-5 tags with clearly contrasting mood or energy.
     - Prefer broad, commonly used Last.fm tags over descriptive phrases.
     - Put the most important tag first.
-    - Use hyphens for multiword tags.
+    - Use the canonical Last.fm spelling for multiword tags. Do not force hyphens when a common tag uses spaces (e.g., "city pop", "female vocalists"), and preserve established hyphenated tags such as "late-night".
     - Do not infer a regional tag solely from the query's language.
 
     Output:

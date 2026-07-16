@@ -31,17 +31,16 @@ async def tag_based_recommendations(
     # FIXME : enriched_candidates는 tags 순서대로 되어있음
     # FIXME :예를 들어, tags = [lofi, dance]면 [lofi1, lofi2, ..., dance1, dance2, ...])
     # FIXME :그래서 rank로 정렬하든, 아예 random으로 섞든 or 순서에 따라 가중치를 두든 해야 함.
-    # 앨범 커버가 있는 노래만 사용(빈 문자열도 체크하기 위해 bool)
-    enriched_candidates = [
-        track for track in raw_enriched_candidates if bool(track.album_art_url)
-    ]
+    enriched_candidates = raw_enriched_candidates
 
     # 1. 비슷한 느낌의 노래 추천
     # 1-1. 아티스트 당 2곡 씩 추천되도록 하되, 만약 top_n보다 적어지면 drop하지 않고 사용한다.
     drop_by_artist = scoring._cap_per_artist(enriched_candidates, max_per=2)
-    similar_tracks = (
-        enriched_candidates if len(enriched_candidates) >= top_n else drop_by_artist
-    )[:top_n]
+    similar_tracks = scoring._fill_from_ranked_pool(
+        drop_by_artist,
+        enriched_candidates,
+        top_n,
+    )
 
     for track in similar_tracks:
         tag = track.reason_tags[0] if track.reason_tags else tags[0]
@@ -78,7 +77,7 @@ async def tag_based_recommendations(
         reverse_pool = low_exposure_pool
     reverse_tracks = sorted(
         reverse_pool, key=lambda item: item.reverse_score or 0, reverse=True
-    )
+    )[:top_n]
     for track in reverse_tracks:
         track.algo, track.label = "tag_reverse", "태그 속 저노출곡"
 
