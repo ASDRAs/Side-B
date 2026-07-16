@@ -1,11 +1,17 @@
+from app.llm.llm_response import MoodAnalysis
 from recommend_algo import (
     hidden_discovery_by_artist,
     preprocess_input,
     reverse_top100,
     similar_listening_pattern,
     tag_based_recommendations,
-    tags_from_query,
 )
+
+
+def test_mood_analysis_allows_missing_opposite_tags():
+    analysis = MoodAnalysis(tags=["calm"])
+
+    assert analysis.opposite_tags == []
 
 
 class FakeResponse:
@@ -211,10 +217,18 @@ async def test_normalize_input_uses_itunes_candidate():
     http = FakeHttp([ITUNES_EVENT_HORIZON])
     lastfm = SearchableFakeLastFm([])
 
-    result = await preprocess_input("윤하 사건의 지평선", http, lastfm)
+    result = await preprocess_input(
+        "윤하 사건의 지평선",
+        ["Event Horizon Younha"],
+        http,
+        lastfm,
+    )
 
     assert result == ("Event Horizon", "Younha", "itunes:123")
-    assert http.requests[0][1]["term"] == "Event Horizon Younha"
+    assert [request[1]["term"] for request in http.requests] == [
+        "윤하 사건의 지평선",
+        "Event Horizon Younha",
+    ]
     assert lastfm.search_queries == []
 
 
@@ -222,7 +236,12 @@ async def test_normalize_input_uses_known_alias_over_karaoke_candidate():
     http = FakeHttp([ITUNES_MUSICMARU, ITUNES_EVENT_HORIZON])
     lastfm = SearchableFakeLastFm([])
 
-    result = await preprocess_input("윤하 사건의 지평선", http, lastfm)
+    result = await preprocess_input(
+        "윤하 사건의 지평선",
+        ["Event Horizon Younha"],
+        http,
+        lastfm,
+    )
 
     assert result == ("Event Horizon", "Younha", "itunes:123")
     assert lastfm.search_queries == []
@@ -232,7 +251,7 @@ async def test_normalize_input_ignores_bad_itunes_candidate_and_uses_lastfm():
     http = FakeHttp([ITUNES_COVER])
     lastfm = SearchableFakeLastFm([FakeTrack("아이유", "좋은날")])
 
-    result = await preprocess_input("아이유 좋은날", http, lastfm)
+    result = await preprocess_input("아이유 좋은날", [], http, lastfm)
 
     assert result == ("좋은날", "아이유", None)
     assert lastfm.search_queries == [("", "아이유 좋은날")]
@@ -242,17 +261,9 @@ async def test_normalize_input_returns_none_when_catalogs_miss():
     http = EmptyHttp()
     lastfm = SearchableFakeLastFm([])
 
-    result = await preprocess_input("asdfqwer", http, lastfm)
+    result = await preprocess_input("asdfqwer", [], http, lastfm)
 
     assert result == (None, None, None)
-
-
-def test_tags_from_query_maps_korean_city_pop_mood_query():
-    tags = tags_from_query("감성적인 시티팝")
-
-    assert tags[:3] == ["korean city pop", "citypop", "japanese city pop"]
-    assert "emotional" in tags
-    assert "chill" in tags
 
 
 async def test_tag_based_recommendations_returns_results_for_city_pop_query(
@@ -307,11 +318,17 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
     )
 
     result = await tag_based_recommendations(
-        "감성적인 시티팝", EmptyHttp(), lastfm, top_n=3
+        EmptyHttp(),
+        lastfm,
+        ["korean city pop", "citypop", "japanese city pop"],
+        ["emotional", "chill"],
+        top_n=3,
     )
 
     assert result is not None
     assert len(result["similar"]) == 3
+    assert all(len(tracks) <= 3 for tracks in result.values())
+    assert result["hidden"]
     assert result["similar"][0].artist == "Stella Jang"
     assert all(track.album_art_url for tracks in result.values() for track in tracks)
 
