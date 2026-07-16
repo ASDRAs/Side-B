@@ -305,12 +305,18 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
         ],
     }
     lastfm = TagFakeLastFm(tracks_by_tag)
+    metadata_calls = []
 
     async def fake_enrich_metadata(http, tracks, *args, **kwargs):
+        fields = kwargs.get("fields", "all")
+        metadata_calls.append((len(tracks), tuple(fields)))
         for index, track in enumerate(tracks):
-            track.album_art_url = f"https://example.com/{index}.jpg"
-            track.source_id = f"fake:{index}"
-            track.popularity = 20 + index
+            if fields == "all" or "album_art" in fields:
+                track.album_art_url = f"https://example.com/{index}.jpg"
+            if fields == "all" or "source_id" in fields:
+                track.source_id = f"fake:{index}"
+            if fields == "all" or "popularity" in fields:
+                track.popularity = 20 + index
         return tracks
 
     monkeypatch.setattr(
@@ -331,6 +337,10 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
     assert result["hidden"]
     assert result["similar"][0].artist == "Stella Jang"
     assert all(track.album_art_url for tracks in result.values() for track in tracks)
+    assert metadata_calls == [
+        (15, ("popularity",)),
+        (12, ("album_art", "source_id")),
+    ]
 
 
 async def test_reverse_top100_skips_visible_similar_and_prefers_low_exposure(
