@@ -4,7 +4,7 @@ import logging
 import pylast
 
 from app.utils.text import compact_text
-from recommend_algo.common import sources
+from recommend_algo.common import scoring, sources
 from recommend_algo.common.models import TrackInfo
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,8 @@ async def _collect_tag_tracks(
     lastfm: pylast.LastFMNetwork,
     limit: int,
 ) -> list[list[TrackInfo]]:
+    tags = _unique_preserve_order(tags)
+
     async def _fetch(tag: str, tag_index: int) -> list[TrackInfo]:
         try:
             tag_obj = lastfm.get_tag(tag)
@@ -106,7 +108,7 @@ async def _collect_tag_tracks(
                 continue
             if not name or not artist:
                 continue
-            tag_priority = max(0.0, 1.0 - (tag_index * 0.08))
+            tag_priority = scoring._tag_weight(tag_index)
             rank_score = max(0.0, 1.0 - (rank / max(limit, 1)))
             tracks.append(
                 TrackInfo(
