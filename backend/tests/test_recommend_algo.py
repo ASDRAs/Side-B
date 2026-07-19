@@ -1,3 +1,5 @@
+from collections import Counter
+
 from app.llm.llm_response import MoodAnalysis
 from recommend_algo import (
     hidden_discovery_by_artist,
@@ -6,6 +8,8 @@ from recommend_algo import (
     similar_listening_pattern,
     tag_based_recommendations,
 )
+from recommend_algo.common import scoring, seeds
+from recommend_algo.common.models import TrackInfo
 
 
 def test_mood_analysis_allows_missing_opposite_tags():
@@ -186,8 +190,10 @@ class FakeTag:
 class TagFakeLastFm:
     def __init__(self, tracks_by_tag):
         self.tracks_by_tag = tracks_by_tag
+        self.tag_queries = []
 
     def get_tag(self, tag):
+        self.tag_queries.append(tag)
         return FakeTag(self.tracks_by_tag.get(tag, []))
 
 
@@ -266,6 +272,93 @@ async def test_normalize_input_returns_none_when_catalogs_miss():
     assert result == (None, None, None)
 
 
+def _tag_tracks(tag, count):
+    return [
+        TrackInfo(
+            name=f"{tag} Track {index}",
+            artist=f"{tag} Artist {index}",
+            reason_tags=[tag],
+        )
+        for index in range(count)
+    ]
+
+
+def test_weighted_round_robin_reduces_first_tag_concentration():
+    groups = [
+        _tag_tracks("first", 20),
+        _tag_tracks("second", 20),
+        _tag_tracks("third", 20),
+    ]
+    control = scoring._dedupe_tracks(
+        [track for group in groups for track in group]
+    )[:10]
+
+    treatment = scoring._weighted_round_robin(groups, 10)
+
+    assert Counter(track.reason_tags[0] for track in control) == {"first": 10}
+    assert Counter(track.reason_tags[0] for track in treatment) == {
+        "first": 4,
+        "second": 3,
+        "third": 3,
+    }
+
+
+def test_weighted_round_robin_merges_duplicate_tag_reasons_and_fills():
+    shared_first = TrackInfo(
+        name="Shared",
+        artist="Shared Artist",
+        match_score=0.8,
+        reason_tags=["first"],
+    )
+    shared_second = TrackInfo(
+        name="Shared",
+        artist="Shared Artist",
+        match_score=0.9,
+        reason_tags=["second"],
+    )
+    groups = [
+        [shared_first, *_tag_tracks("first", 1)],
+        [shared_second, *_tag_tracks("second", 2)],
+    ]
+
+    result = scoring._weighted_round_robin(groups, 4)
+
+    assert len(result) == 4
+    assert len({scoring._track_key(track) for track in result}) == 4
+    assert result[0].reason_tags == ["first", "second"]
+    assert result[0].match_score == 0.9
+
+
+def test_weighted_round_robin_respects_artist_limit():
+    groups = [
+        [
+            TrackInfo(name=f"Shared {index}", artist="Same Artist", reason_tags=["a"])
+            for index in range(3)
+        ]
+        + _tag_tracks("a", 2),
+        _tag_tracks("b", 3),
+    ]
+
+    result = scoring._weighted_round_robin(groups, 5, max_per_artist=1)
+
+    assert len(result) == 5
+    assert Counter(track.artist for track in result)["Same Artist"] == 1
+
+
+async def test_collect_tag_tracks_dedupes_tag_queries():
+    lastfm = TagFakeLastFm({"rr unique tag": [("Artist", "Track")]})
+
+    groups = await seeds._collect_tag_tracks(
+        ["rr unique tag", "RR UNIQUE TAG", "", "  "],
+        lastfm,
+        limit=10,
+    )
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 1
+    assert lastfm.tag_queries == ["rr unique tag"]
+
+
 async def test_tag_based_recommendations_returns_results_for_city_pop_query(
     monkeypatch,
 ):
@@ -336,6 +429,15 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
     assert all(len(tracks) <= 3 for tracks in result.values())
     assert result["hidden"]
     assert result["similar"][0].artist == "Stella Jang"
+    assert {track.reason_tags[0] for track in result["similar"]} == {
+        "korean city pop",
+        "citypop",
+        "japanese city pop",
+    }
+    assert {track.reason_tags[0] for track in result["opposite"]} == {
+        "emotional",
+        "chill",
+    }
     assert all(track.album_art_url for tracks in result.values() for track in tracks)
     assert metadata_calls == [
         (15, ("popularity",)),
