@@ -1,5 +1,7 @@
 from collections import Counter
 
+import pytest
+
 from app.llm.llm_response import MoodAnalysis
 from recommend_algo import (
     hidden_discovery_by_artist,
@@ -301,6 +303,15 @@ def test_weighted_round_robin_reduces_first_tag_concentration():
         "second": 3,
         "third": 3,
     }
+
+
+def test_weighted_round_robin_rejects_explicit_empty_weights():
+    with pytest.raises(ValueError, match="weights must match track_groups"):
+        scoring._weighted_round_robin(
+            [_tag_tracks("first", 1)],
+            1,
+            weights=[],
+        )
 
 
 def test_weighted_round_robin_merges_duplicate_tag_reasons_and_fills():

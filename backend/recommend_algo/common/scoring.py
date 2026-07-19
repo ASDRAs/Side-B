@@ -71,9 +71,11 @@ def _weighted_round_robin(
     if max_per_artist is not None and max_per_artist <= 0:
         return []
 
-    resolved_weights = weights or [
-        _tag_weight(index) for index in range(len(track_groups))
-    ]
+    resolved_weights = (
+        [_tag_weight(index) for index in range(len(track_groups))]
+        if weights is None
+        else list(weights)
+    )
     if len(resolved_weights) != len(track_groups):
         raise ValueError("weights must match track_groups")
     if any(weight <= 0 or not math.isfinite(weight) for weight in resolved_weights):
