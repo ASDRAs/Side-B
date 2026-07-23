@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from dataclasses import asdict
 
@@ -18,6 +17,7 @@ from recommend_algo import (
     similar_listening_pattern,
     tag_based_recommendations,
 )
+from recommend_algo.common import scoring
 from recommend_algo.common.sources import analyze_music_query
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,78 @@ def _pick_representative_track(tag_results: dict):
         ),
         None,
     ) or next((track for tracks in tag_results.values() for track in tracks), None)
+
+
+def _accept_unseen_tracks(
+    tracks: list[TrackInfo],
+    seen_keys: set[str],
+) -> list[TrackInfo]:
+    accepted: list[TrackInfo] = []
+    for track in tracks:
+        key = scoring._track_key(track)
+        if not key.strip(":") or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        accepted.append(track)
+    return accepted
+
+
+async def _run_direct_recommendations(
+    name: str,
+    artist: str,
+    http: httpx.AsyncClient,
+    lastfm: pylast.LastFMNetwork,
+    gemini_wrapper: GeminiWrapper,
+    top_n: int,
+    prefetched_similar,
+) -> dict[str, list[TrackInfo]]:
+    """Run buckets in display order so later buckets can backfill around duplicates."""
+    seen_keys: set[str] = set()
+    results: dict[str, list[TrackInfo]] = {}
+
+    similar = await similar_listening_pattern(
+        name,
+        artist,
+        http,
+        lastfm,
+        top_n=top_n,
+        prefetched=prefetched_similar,
+        excluded_keys=seen_keys,
+    )
+    results["similar"] = _accept_unseen_tracks(similar, seen_keys)
+
+    reverse = await reverse_top100(
+        name,
+        artist,
+        http,
+        lastfm,
+        top_n=top_n,
+        prefetched=prefetched_similar,
+        excluded_keys=seen_keys,
+    )
+    results["reverse"] = _accept_unseen_tracks(reverse, seen_keys)
+
+    opposite = await opposite_emotion(
+        name,
+        artist,
+        http,
+        lastfm,
+        gemini_wrapper=gemini_wrapper,
+        top_n=top_n,
+        excluded_keys=seen_keys,
+    )
+    results["opposite"] = _accept_unseen_tracks(opposite, seen_keys)
+
+    hidden = await hidden_discovery_by_artist(
+        artist,
+        http,
+        lastfm,
+        top_n=top_n,
+        excluded_keys=seen_keys,
+    )
+    results["hidden"] = _accept_unseen_tracks(hidden, seen_keys)
+
+    return results
 
 
 async def run_recommend(
@@ -121,29 +193,18 @@ async def run_recommend(
             )
             prefetched_similar = None
 
-        # similar, reverse, oppsite, hidden 취향의 곡들 추천
+        # similar, reverse, opposite, hidden 취향의 곡들 추천
         # NOTE : 디버깅이 불편해서 exception 발생하면 error raise하게 변경
         # 나중에 exception 처리 다 하면 return_exception=True로 하면 될 것 같음.
-        raw_results = await asyncio.gather(
-            similar_listening_pattern(
-                name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
-            ),
-            reverse_top100(
-                name, artist, http, lastfm, top_n=top_n, prefetched=prefetched_similar
-            ),
-            opposite_emotion(
-                name, artist, http, lastfm, gemini_wrapper=gemini_wrapper, top_n=top_n
-            ),
-            hidden_discovery_by_artist(artist, http, lastfm, top_n=top_n),
-            # return_exceptions=True,
+        rcmd_results = await _run_direct_recommendations(
+            name,
+            artist,
+            http,
+            lastfm,
+            gemini_wrapper,
+            top_n,
+            prefetched_similar,
         )
-
-        rcmd_results = {
-            "similar": raw_results[0],
-            "reverse": raw_results[1],
-            "opposite": raw_results[2],
-            "hidden": raw_results[3],
-        }
 
         processed_rcmd_results = {}
         for rcmd_type, rcmd_result in rcmd_results.items():

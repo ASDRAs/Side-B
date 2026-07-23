@@ -17,6 +17,7 @@ async def similar_listening_pattern(
     top_n=10,
     *,
     prefetched=None,
+    excluded_keys: set[str] | None = None,
 ) -> list[TrackInfo]:
     """
     유저가 검색한 track과 유사한 tack을 추천하는 함수
@@ -46,7 +47,12 @@ async def similar_listening_pattern(
         sorted_tracks = sorted(
             unique_tracks, key=lambda t: t.match_score or 0, reverse=True
         )
-        top_tracks = sorted_tracks[:top_n]
+        excluded = excluded_keys or set()
+        top_tracks = [
+            track
+            for track in sorted_tracks
+            if scoring._track_key(track) not in excluded
+        ][:top_n]
         top_tracks = await sources.get_tracks_metadata(http, top_tracks, lastfm)
         for track in top_tracks:
             track.reverse_score = track.match_score or 0
