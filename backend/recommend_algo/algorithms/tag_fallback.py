@@ -14,23 +14,25 @@ async def tag_based_recommendations(
 ) -> dict[str, list[TrackInfo]] | None:
     """Fallback for mood/genre queries such as '감성적인 시티팝'."""
 
-    candidates = await seeds._collect_tag_tracks(tags, lastfm, limit=max(top_n * 5, 30))
-    candidates = scoring._dedupe_tracks(
-        [track for rows in candidates for track in rows]
+    tags = seeds._unique_preserve_order(tags)
+    opposite_tags = seeds._unique_preserve_order(opposite_tags)
+    candidate_groups = await seeds._collect_tag_tracks(
+        tags, lastfm, limit=max(top_n * 5, 30)
+    )
+    candidates = scoring._weighted_round_robin(
+        candidate_groups,
+        max(top_n * 5, 40),
+        max_per_artist=3,
     )
     if not candidates:
         return None
 
     enriched_candidates = await sources.get_tracks_metadata(
         http,
-        scoring._cap_per_artist(candidates, max_per=3)[: max(top_n * 5, 40)],
+        candidates,
         lastfm,
         fields=["popularity"],
     )
-
-    # FIXME : enriched_candidates는 tags 순서대로 되어있음
-    # FIXME :예를 들어, tags = [lofi, dance]면 [lofi1, lofi2, ..., dance1, dance2, ...])
-    # FIXME :그래서 rank로 정렬하든, 아예 random으로 섞든 or 순서에 따라 가중치를 두든 해야 함.
 
     # 1. 비슷한 느낌의 노래 추천
     # 1-1. 아티스트 당 2곡 씩 추천되도록 하되, 만약 top_n보다 적어지면 drop하지 않고 사용한다.
@@ -84,22 +86,18 @@ async def tag_based_recommendations(
 
     # 3. opposite_tags 기반 반대 분위기 추천
 
-    # FIXME : enriched_candidates는 tags와 동일한 case. tags가 여러개여도 맨 앞 tag만 사용
     # 3-1. opposite_tags 기반 노래 검색
-    opposite_candidates = await seeds._collect_tag_tracks(
+    opposite_candidate_groups = await seeds._collect_tag_tracks(
         opposite_tags, lastfm, limit=max(top_n * 3, 20)
     )
 
     # 3-2. 이미 추천된 곡 & 중복 제거
-    opposite_pool = scoring._dedupe_tracks(
-        [
-            track
-            for rows in opposite_candidates
-            for track in rows
-            if scoring._track_key(track) not in recommended_tracks
-        ]
+    opposite_tracks = scoring._weighted_round_robin(
+        opposite_candidate_groups,
+        top_n,
+        max_per_artist=1,
+        excluded_keys=recommended_tracks,
     )
-    opposite_tracks = scoring._cap_per_artist(opposite_pool, max_per=1)[:top_n]
     for track in opposite_tracks:
         tag = track.reason_tags[0] if track.reason_tags else "contrast"
         track.algo, track.label = "tag_opposite", f"#{tag} 반대 결 추천"

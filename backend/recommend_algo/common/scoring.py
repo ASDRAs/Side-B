@@ -7,6 +7,7 @@ from recommend_algo.common.models import TrackInfo
 DEFAULT_POPULARITY = 55
 LOW_EXPOSURE_CUTOFF = 70
 OBSCURITY_CEILING = 80
+TAG_PRIORITY_STEP = 0.08
 
 
 def _clamp_score(value: float) -> float:
@@ -50,6 +51,98 @@ def _cap_per_artist(tracks: list[TrackInfo], max_per: int = 1) -> list[TrackInfo
             seen[key] = seen.get(key, 0) + 1
             result.append(track)
     return result
+
+
+def _tag_weight(tag_index: int) -> float:
+    return max(0.1, 1.0 - (tag_index * TAG_PRIORITY_STEP))
+
+
+def _weighted_round_robin(
+    track_groups: list[list[TrackInfo]],
+    limit: int,
+    *,
+    weights: list[float] | None = None,
+    max_per_artist: int | None = None,
+    excluded_keys: set[str] | None = None,
+) -> list[TrackInfo]:
+    """Merge ranked tag results while preserving tag-priority proportions."""
+    if limit <= 0 or not track_groups:
+        return []
+    if max_per_artist is not None and max_per_artist <= 0:
+        return []
+
+    resolved_weights = (
+        [_tag_weight(index) for index in range(len(track_groups))]
+        if weights is None
+        else list(weights)
+    )
+    if len(resolved_weights) != len(track_groups):
+        raise ValueError("weights must match track_groups")
+    if any(weight <= 0 or not math.isfinite(weight) for weight in resolved_weights):
+        raise ValueError("weights must be finite positive numbers")
+
+    canonical_tracks: dict[str, TrackInfo] = {}
+    for group in track_groups:
+        for track in group:
+            key = _track_key(track)
+            if not key.strip(":"):
+                continue
+            existing = canonical_tracks.get(key)
+            if existing is None:
+                canonical_tracks[key] = track
+                continue
+            existing.reason_tags = list(
+                dict.fromkeys(existing.reason_tags + track.reason_tags)
+            )
+            existing.match_score = max(
+                existing.match_score or 0.0,
+                track.match_score or 0.0,
+            )
+
+    positions = [0] * len(track_groups)
+    current_weights = [0.0] * len(track_groups)
+    active = {index for index, group in enumerate(track_groups) if group}
+    excluded = excluded_keys or set()
+    selected_keys: set[str] = set()
+    artist_counts: dict[str, int] = {}
+    selected: list[TrackInfo] = []
+
+    while active and len(selected) < limit:
+        active_weight = sum(resolved_weights[index] for index in active)
+        for index in active:
+            current_weights[index] += resolved_weights[index]
+        group_index = max(active, key=lambda index: (current_weights[index], -index))
+        current_weights[group_index] -= active_weight
+
+        candidate: TrackInfo | None = None
+        group = track_groups[group_index]
+        while positions[group_index] < len(group):
+            track = group[positions[group_index]]
+            positions[group_index] += 1
+            key = _track_key(track)
+            canonical = canonical_tracks.get(key)
+            if canonical is None or key in excluded or key in selected_keys:
+                continue
+            artist_key = canonical.artist.lower()
+            if (
+                max_per_artist is not None
+                and artist_counts.get(artist_key, 0) >= max_per_artist
+            ):
+                continue
+            candidate = canonical
+            break
+
+        if candidate is None:
+            active.remove(group_index)
+            continue
+
+        key = _track_key(candidate)
+        artist_key = candidate.artist.lower()
+        selected.append(candidate)
+        selected_keys.add(key)
+        artist_counts[artist_key] = artist_counts.get(artist_key, 0) + 1
+
+    return selected
 
 
 def _diverse_top_n(
