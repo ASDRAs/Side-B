@@ -218,8 +218,6 @@ async def run_recommend(
             prefetched_similar = None
 
         # similar, reverse, opposite, hidden 취향의 곡들 추천
-        # NOTE : 디버깅이 불편해서 exception 발생하면 error raise하게 변경
-        # 나중에 exception 처리 다 하면 return_exception=True로 하면 될 것 같음.
         rcmd_results = await _run_direct_recommendations(
             name,
             artist,
@@ -230,17 +228,10 @@ async def run_recommend(
             prefetched_similar,
         )
 
-        processed_rcmd_results = {}
-        for rcmd_type, rcmd_result in rcmd_results.items():
-            if isinstance(rcmd_result, Exception):
-                logger.error(
-                    "recommendation algorithm error: %s", rcmd_result, exc_info=True
-                )
-                processed_rcmd_results[rcmd_type] = []
-            else:
-                processed_rcmd_results[rcmd_type] = [
-                    asdict(track) for track in rcmd_result
-                ]
+        processed_rcmd_results = {
+            rcmd_type: [asdict(track) for track in rcmd_result]
+            for rcmd_type, rcmd_result in rcmd_results.items()
+        }
 
         return dict(
             track_name=user_track_info.name,
