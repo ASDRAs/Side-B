@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Awaitable
 from dataclasses import asdict
 
 import httpx
@@ -49,6 +50,17 @@ def _accept_unseen_tracks(
     return accepted
 
 
+async def _run_recommendation_bucket(
+    bucket: str,
+    operation: Awaitable[list[TrackInfo]],
+) -> list[TrackInfo]:
+    try:
+        return await operation
+    except Exception:
+        logger.exception("recommendation bucket failed: %s", bucket)
+        return []
+
+
 async def _run_direct_recommendations(
     name: str,
     artist: str,
@@ -62,45 +74,57 @@ async def _run_direct_recommendations(
     seen_keys: set[str] = set()
     results: dict[str, list[TrackInfo]] = {}
 
-    similar = await similar_listening_pattern(
-        name,
-        artist,
-        http,
-        lastfm,
-        top_n=top_n,
-        prefetched=prefetched_similar,
-        excluded_keys=seen_keys,
+    similar = await _run_recommendation_bucket(
+        "similar",
+        similar_listening_pattern(
+            name,
+            artist,
+            http,
+            lastfm,
+            top_n=top_n,
+            prefetched=prefetched_similar,
+            excluded_keys=seen_keys,
+        ),
     )
     results["similar"] = _accept_unseen_tracks(similar, seen_keys)
 
-    reverse = await reverse_top100(
-        name,
-        artist,
-        http,
-        lastfm,
-        top_n=top_n,
-        prefetched=prefetched_similar,
-        excluded_keys=seen_keys,
+    reverse = await _run_recommendation_bucket(
+        "reverse",
+        reverse_top100(
+            name,
+            artist,
+            http,
+            lastfm,
+            top_n=top_n,
+            prefetched=prefetched_similar,
+            excluded_keys=seen_keys,
+        ),
     )
     results["reverse"] = _accept_unseen_tracks(reverse, seen_keys)
 
-    opposite = await opposite_emotion(
-        name,
-        artist,
-        http,
-        lastfm,
-        gemini_wrapper=gemini_wrapper,
-        top_n=top_n,
-        excluded_keys=seen_keys,
+    opposite = await _run_recommendation_bucket(
+        "opposite",
+        opposite_emotion(
+            name,
+            artist,
+            http,
+            lastfm,
+            gemini_wrapper=gemini_wrapper,
+            top_n=top_n,
+            excluded_keys=seen_keys,
+        ),
     )
     results["opposite"] = _accept_unseen_tracks(opposite, seen_keys)
 
-    hidden = await hidden_discovery_by_artist(
-        artist,
-        http,
-        lastfm,
-        top_n=top_n,
-        excluded_keys=seen_keys,
+    hidden = await _run_recommendation_bucket(
+        "hidden",
+        hidden_discovery_by_artist(
+            artist,
+            http,
+            lastfm,
+            top_n=top_n,
+            excluded_keys=seen_keys,
+        ),
     )
     results["hidden"] = _accept_unseen_tracks(hidden, seen_keys)
 

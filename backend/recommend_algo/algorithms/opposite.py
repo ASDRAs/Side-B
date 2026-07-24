@@ -38,7 +38,7 @@ async def opposite_emotion(
         system_prompt=OPPOSITE_TAG_PROMPT,
         user_prompt=user_prompt,
         temperature=0.1,
-        max_output_tokens=200,
+        max_output_tokens=500,
         response_schema=OppositeTagAnalysis,
         response_validator=OppositeTagAnalysis,
     )

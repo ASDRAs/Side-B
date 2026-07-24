@@ -13,6 +13,11 @@ class DeezerRateLimitError(Exception):
         self.retry_after = retry_after
 
 
+class ItunesRateLimitError(Exception):
+    def __init__(self, retry_after: int = 60) -> None:
+        self.retry_after = retry_after
+
+
 class CatalogClient:
     ITUNES_URL = "https://itunes.apple.com/search"
     DEEZER_URL = "https://api.deezer.com"
@@ -79,8 +84,13 @@ class CatalogClient:
                 },
                 timeout=5.0,
             )
+            if getattr(response, "status_code", 200) == 429:
+                headers = getattr(response, "headers", {})
+                raise ItunesRateLimitError(int(headers.get("Retry-After", 60)))
             response.raise_for_status()
             results = response.json().get("results", [])
+        except ItunesRateLimitError:
+            raise
         except Exception:
             return None
         best: tuple[float, dict[str, Any]] | None = None

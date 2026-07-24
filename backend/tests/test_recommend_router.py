@@ -129,3 +129,50 @@ async def test_direct_recommendations_are_disjoint_and_backfilled(monkeypatch):
         "hidden",
     ]
     assert [len(excluded) for _, excluded in calls] == [0, 2, 4, 6]
+
+
+async def test_direct_recommendations_continue_after_bucket_failure(monkeypatch):
+    calls = []
+
+    async def fake_similar(*args, **kwargs):
+        calls.append("similar")
+        return [TrackInfo(name="Similar", artist="Artist A")]
+
+    async def fake_reverse(*args, **kwargs):
+        calls.append("reverse")
+        return [TrackInfo(name="Reverse", artist="Artist B")]
+
+    async def fake_opposite(*args, **kwargs):
+        calls.append("opposite")
+        raise ValueError("invalid structured response")
+
+    async def fake_hidden(*args, **kwargs):
+        calls.append("hidden")
+        return [TrackInfo(name="Hidden", artist="Artist C")]
+
+    monkeypatch.setattr(
+        "app.services.recommend_service.similar_listening_pattern", fake_similar
+    )
+    monkeypatch.setattr("app.services.recommend_service.reverse_top100", fake_reverse)
+    monkeypatch.setattr(
+        "app.services.recommend_service.opposite_emotion", fake_opposite
+    )
+    monkeypatch.setattr(
+        "app.services.recommend_service.hidden_discovery_by_artist", fake_hidden
+    )
+
+    result = await _run_direct_recommendations(
+        "Seed",
+        "Seed Artist",
+        None,
+        None,
+        None,
+        top_n=1,
+        prefetched_similar=[],
+    )
+
+    assert calls == ["similar", "reverse", "opposite", "hidden"]
+    assert [track.name for track in result["similar"]] == ["Similar"]
+    assert [track.name for track in result["reverse"]] == ["Reverse"]
+    assert result["opposite"] == []
+    assert [track.name for track in result["hidden"]] == ["Hidden"]

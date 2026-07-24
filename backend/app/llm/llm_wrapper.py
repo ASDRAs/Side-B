@@ -40,6 +40,11 @@ class GeminiWrapper:
         raw_text = response.text
 
         if response_validator:
+            parsed = response.parsed
+            if parsed is not None:
+                if isinstance(parsed, response_validator):
+                    return parsed
+                return response_validator.model_validate(parsed)
             return response_validator.model_validate_json(raw_text)
         if postprocess_func:
             return postprocess_func(raw_text)
