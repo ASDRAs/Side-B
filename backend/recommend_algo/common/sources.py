@@ -12,7 +12,11 @@ from async_lru import alru_cache
 from app.llm.llm_response import MusicQueryAnalysis
 from app.llm.llm_wrapper import GeminiWrapper
 from app.llm.prompt import MUSIC_QUERY_ANALYSIS_PROMPT
-from app.services.catalog import CatalogClient, DeezerRateLimitError
+from app.services.catalog import (
+    CatalogClient,
+    DeezerRateLimitError,
+    ItunesRateLimitError,
+)
 from app.utils.text import compact_text
 from recommend_algo.common.models import TrackInfo
 
@@ -21,9 +25,11 @@ logger = logging.getLogger(__name__)
 ITUNES_URL = "https://itunes.apple.com/search"
 DEEZER_URL = "https://api.deezer.com"
 _API_SEMAPHORE = asyncio.Semaphore(25)
+_ITUNES_SEMAPHORE = asyncio.Semaphore(8)
 
 # Deezer circuit breaker — 429 감지 시 해당 시각까지 모든 Deezer 호출 스킵
 _DZ_RATE_LIMIT_UNTIL: float = 0.0
+_ITUNES_RATE_LIMIT_UNTIL: float = 0.0
 
 
 def _is_dz_rate_limited() -> bool:
@@ -35,6 +41,19 @@ def _mark_dz_rate_limited(headers: dict) -> None:
     retry_after = int(headers.get("Retry-After", 60))
     _DZ_RATE_LIMIT_UNTIL = max(_DZ_RATE_LIMIT_UNTIL, time.monotonic() + retry_after)
     logger.warning("[Deezer] 429 — %d초 차단", retry_after)
+
+
+def _is_itunes_rate_limited() -> bool:
+    return time.monotonic() < _ITUNES_RATE_LIMIT_UNTIL
+
+
+def _mark_itunes_rate_limited(retry_after: int) -> None:
+    global _ITUNES_RATE_LIMIT_UNTIL
+    _ITUNES_RATE_LIMIT_UNTIL = max(
+        _ITUNES_RATE_LIMIT_UNTIL,
+        time.monotonic() + retry_after,
+    )
+    logger.warning("[iTunes] 429 — %d초 차단", retry_after)
 
 
 _cache: dict[str, tuple[float, Any]] = {}
@@ -75,7 +94,12 @@ async def preprocess_input(
     search_queries = [query] + alternative_queries
 
     for refined_query in search_queries:
-        item = await _itunes_search(http, refined_query, limit=8, min_score=0.35)
+        item = await _itunes_or_none(
+            http,
+            refined_query,
+            limit=8,
+            min_score=0.35,
+        )
         if item:
             name = str(item.get("trackName") or "").strip()
             artist = str(item.get("artistName") or "").strip()
@@ -125,9 +149,29 @@ async def _itunes_search(
     term = f"{track_name} {artist}".strip()
     if not term:
         return None
-    return await CatalogClient(http).itunes_search_best(
-        track_name, artist, limit, min_score
-    )
+    async with _ITUNES_SEMAPHORE:
+        if _is_itunes_rate_limited():
+            raise ItunesRateLimitError()
+        try:
+            return await CatalogClient(http).itunes_search_best(
+                track_name, artist, limit, min_score
+            )
+        except ItunesRateLimitError as exc:
+            _mark_itunes_rate_limited(exc.retry_after)
+            raise
+
+
+async def _itunes_or_none(
+    http: httpx.AsyncClient,
+    track_name: str,
+    artist: str = "",
+    limit: int = 5,
+    min_score: float = 0.5,
+) -> dict[str, Any] | None:
+    try:
+        return await _itunes_search(http, track_name, artist, limit, min_score)
+    except ItunesRateLimitError:
+        return None
 
 
 @alru_cache(maxsize=500, ttl=3600)
@@ -192,7 +236,13 @@ async def get_tracks_metadata(
             tasks.append(_deezer_or_none(http, track.name, track.artist))
         if needs_itunes:
             tasks.append(
-                _itunes_search(http, track.name, track.artist, limit=8, min_score=0.45)
+                _itunes_or_none(
+                    http,
+                    track.name,
+                    track.artist,
+                    limit=8,
+                    min_score=0.45,
+                )
             )
 
         async with _API_SEMAPHORE:

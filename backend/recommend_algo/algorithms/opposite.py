@@ -21,6 +21,8 @@ async def opposite_emotion(
     lastfm: pylast.LastFMNetwork,
     gemini_wrapper: GeminiWrapper,
     top_n=10,
+    *,
+    excluded_keys: set[str] | None = None,
 ) -> list[TrackInfo]:
     """
     lastfm에서 track의 tag를 검색하고, 해당 tag의 반대되는 emotion의 track 추천
@@ -36,11 +38,12 @@ async def opposite_emotion(
         system_prompt=OPPOSITE_TAG_PROMPT,
         user_prompt=user_prompt,
         temperature=0.1,
-        max_output_tokens=200,
+        max_output_tokens=500,
         response_schema=OppositeTagAnalysis,
         response_validator=OppositeTagAnalysis,
     )
     opp_tags = gemini_response.opposite_tags
+    excluded = excluded_keys or set()
     collected: list[TrackInfo] = []
 
     # seed tag와 반대 속성의 tag의 곡들 중에서 인기도 순으로 lastfm에서 검색
@@ -57,14 +60,14 @@ async def opposite_emotion(
             opp_artist = track_metadata.item.get_artist().get_name()
             if _is_same_track(opp_track_name, opp_artist, track_name, artist):
                 continue
-            collected.append(
-                TrackInfo(
-                    name=opp_track_name,
-                    artist=opp_artist,
-                    algo="opposite_emotion",
-                    label=f"#{tag} 반전 무드",
-                )
+            candidate = TrackInfo(
+                name=opp_track_name,
+                artist=opp_artist,
+                algo="opposite_emotion",
+                label=f"#{tag} 반전 무드",
             )
+            if scoring._track_key(candidate) not in excluded:
+                collected.append(candidate)
         collected = scoring._cap_per_artist(
             scoring._dedupe_tracks(collected), max_per=1
         )
@@ -82,16 +85,17 @@ async def opposite_emotion(
             top_n * 4,
         )
 
-        collected = [
-            TrackInfo(
+        collected = []
+        for item in response or []:
+            candidate = TrackInfo(
                 name=item.item.get_name(),
                 artist=item.item.get_artist().get_name(),
                 match_score=float(item.match),
                 algo="opposite_emotion",
                 label="유사곡 기반 반전 추천",
             )
-            for item in response or []
-        ]
+            if scoring._track_key(candidate) not in excluded:
+                collected.append(candidate)
         collected = scoring._cap_per_artist(
             scoring._dedupe_tracks(collected), max_per=1
         )

@@ -2,9 +2,10 @@ from collections import Counter
 
 import pytest
 
-from app.llm.llm_response import MoodAnalysis
+from app.llm.llm_response import MoodAnalysis, OppositeTagAnalysis
 from recommend_algo import (
     hidden_discovery_by_artist,
+    opposite_emotion,
     preprocess_input,
     reverse_top100,
     similar_listening_pattern,
@@ -520,6 +521,35 @@ async def test_similar_listening_pattern_uses_track_alias_when_primary_is_empty(
     assert lastfm.track_calls[:2] == [("Younha", "혜성"), ("Younha", "ほうき星")]
 
 
+async def test_similar_listening_pattern_backfills_around_excluded_tracks(monkeypatch):
+    similar_items = [
+        FakeSimilarResult("Artist", f"Track {index}", 1.0 - (index * 0.1))
+        for index in range(5)
+    ]
+    lastfm = SimilarFakeLastFm(similar_items)
+
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
+        return tracks
+
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
+
+    result = await similar_listening_pattern(
+        "Excluded Seed",
+        "Excluded Seed Artist",
+        EmptyHttp(),
+        lastfm,
+        top_n=3,
+        excluded_keys={
+            scoring._track_key(TrackInfo(name="Track 0", artist="Artist")),
+            scoring._track_key(TrackInfo(name="Track 1", artist="Artist")),
+        },
+    )
+
+    assert [track.name for track in result] == ["Track 2", "Track 3", "Track 4"]
+
+
 async def test_reverse_top100_fills_top_n_after_artist_diversity_cap(monkeypatch):
     similar_artists = [
         FakeSimilarArtistResult(
@@ -549,6 +579,48 @@ async def test_reverse_top100_fills_top_n_after_artist_diversity_cap(monkeypatch
     assert len({track.artist for track in result}) >= 5
 
 
+async def test_opposite_emotion_backfills_around_excluded_tracks(monkeypatch):
+    lastfm = TagFakeLastFm(
+        {
+            "bright": [
+                (f"Artist {index}", f"Track {index}") for index in range(5)
+            ]
+        }
+    )
+
+    async def fake_seed_tags(*args, **kwargs):
+        return ["calm"]
+
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
+        return tracks
+
+    class FakeGemini:
+        def request(self, **kwargs):
+            return OppositeTagAnalysis(opposite_tags=["bright"])
+
+    monkeypatch.setattr(
+        "recommend_algo.algorithms.opposite._seed_tags", fake_seed_tags
+    )
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
+
+    result = await opposite_emotion(
+        "Seed",
+        "Seed Artist",
+        EmptyHttp(),
+        lastfm,
+        gemini_wrapper=FakeGemini(),
+        top_n=3,
+        excluded_keys={
+            scoring._track_key(TrackInfo(name="Track 0", artist="Artist 0")),
+            scoring._track_key(TrackInfo(name="Track 1", artist="Artist 1")),
+        },
+    )
+
+    assert [track.name for track in result] == ["Track 2", "Track 3", "Track 4"]
+
+
 async def test_hidden_discovery_excludes_seed_artist_and_expands_to_similar_artists(
     monkeypatch,
 ):
@@ -562,6 +634,9 @@ async def test_hidden_discovery_excludes_seed_artist_and_expands_to_similar_arti
         FakeSimilarArtistResult(
             FakeSimilarArtist("Artist B", ["B Known", "B Hidden"]), 0.74
         ),
+        FakeSimilarArtistResult(
+            FakeSimilarArtist("Artist C", ["C Known", "C Hidden"]), 0.62
+        ),
     ]
     lastfm = HiddenFakeLastFm(similar_artists)
     popularity = {
@@ -569,6 +644,8 @@ async def test_hidden_discovery_excludes_seed_artist_and_expands_to_similar_arti
         "A Hidden": 18,
         "B Known": 66,
         "B Hidden": 20,
+        "C Known": 64,
+        "C Hidden": 22,
     }
 
     async def fake_enrich_metadata(http, tracks, *args, **kwargs):
@@ -580,9 +657,24 @@ async def test_hidden_discovery_excludes_seed_artist_and_expands_to_similar_arti
         "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
     )
 
-    result = await hidden_discovery_by_artist("Younha", EmptyHttp(), lastfm, top_n=2)
+    excluded_track = TrackInfo(name="A Hidden", artist="Artist A")
+    result = await hidden_discovery_by_artist(
+        "Younha",
+        EmptyHttp(),
+        lastfm,
+        top_n=2,
+        excluded_keys={scoring._track_key(excluded_track)},
+    )
 
     assert result
     assert all(track.artist != "Younha" for track in result)
-    assert {track.artist for track in result} <= {"Artist A", "Artist B"}
+    assert len(result) == 2
+    assert scoring._track_key(excluded_track) not in {
+        scoring._track_key(track) for track in result
+    }
+    assert {track.artist for track in result} <= {
+        "Artist A",
+        "Artist B",
+        "Artist C",
+    }
     assert len({track.artist for track in result}) == len(result)

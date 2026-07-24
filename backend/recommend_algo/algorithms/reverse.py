@@ -41,6 +41,7 @@ async def reverse_top100(
     top_n=10,
     *,
     prefetched=None,
+    excluded_keys: set[str] | None = None,
 ) -> list[TrackInfo]:
     """
     유저가 검색한 track, artist와 비슷한 노래를 추천하는 함수.
@@ -104,13 +105,14 @@ async def reverse_top100(
 
         # 소스 A,B 병합 및 중복 제거
         input_key = (track_name.lower(), artist.lower())
+        excluded = excluded_keys or set()
         seen: set[str] = set()
         merged_candidates: list[TrackInfo] = []
         for track in pool_a + pool_b:
             if (track.name.lower(), track.artist.lower()) == input_key:
                 continue
             key = scoring._track_key(track)
-            if key not in seen:
+            if key not in excluded and key not in seen:
                 seen.add(key)
                 merged_candidates.append(track)
 

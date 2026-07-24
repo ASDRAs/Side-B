@@ -1,7 +1,11 @@
 from app.routers.recommend import RecommendRequest, RecommendResponse
-from app.services.recommend_service import _pick_representative_track
+from app.services.recommend_service import (
+    _pick_representative_track,
+    _run_direct_recommendations,
+)
 from main import app
 from recommend_algo import TrackInfo
+from recommend_algo.common import scoring
 
 
 def test_search_route_is_registered():
@@ -42,3 +46,133 @@ def test_tag_fallback_seed_label_uses_representative_track():
     }
 
     assert _pick_representative_track(tag_results) == representative
+
+
+async def test_direct_recommendations_are_disjoint_and_backfilled(monkeypatch):
+    calls = []
+    candidates = {
+        "similar": [
+            TrackInfo(name="A", artist="Artist A"),
+            TrackInfo(name="B", artist="Artist B"),
+        ],
+        "reverse": [
+            TrackInfo(name="A", artist="Artist A"),
+            TrackInfo(name="C", artist="Artist C"),
+            TrackInfo(name="D", artist="Artist D"),
+        ],
+        "opposite": [
+            TrackInfo(name="C", artist="Artist C"),
+            TrackInfo(name="E", artist="Artist E"),
+            TrackInfo(name="F", artist="Artist F"),
+        ],
+        "hidden": [
+            TrackInfo(name="E", artist="Artist E"),
+            TrackInfo(name="G", artist="Artist G"),
+            TrackInfo(name="H", artist="Artist H"),
+        ],
+    }
+
+    def fake_runner(bucket):
+        async def _run(*args, top_n, excluded_keys, **kwargs):
+            calls.append((bucket, set(excluded_keys)))
+            return [
+                track
+                for track in candidates[bucket]
+                if scoring._track_key(track) not in excluded_keys
+            ][:top_n]
+
+        return _run
+
+    monkeypatch.setattr(
+        "app.services.recommend_service.similar_listening_pattern",
+        fake_runner("similar"),
+    )
+    monkeypatch.setattr(
+        "app.services.recommend_service.reverse_top100",
+        fake_runner("reverse"),
+    )
+    monkeypatch.setattr(
+        "app.services.recommend_service.opposite_emotion",
+        fake_runner("opposite"),
+    )
+    monkeypatch.setattr(
+        "app.services.recommend_service.hidden_discovery_by_artist",
+        fake_runner("hidden"),
+    )
+
+    result = await _run_direct_recommendations(
+        "Seed",
+        "Seed Artist",
+        None,
+        None,
+        None,
+        top_n=2,
+        prefetched_similar=[],
+    )
+
+    assert {bucket: len(tracks) for bucket, tracks in result.items()} == {
+        "similar": 2,
+        "reverse": 2,
+        "opposite": 2,
+        "hidden": 2,
+    }
+    all_keys = [
+        scoring._track_key(track)
+        for tracks in result.values()
+        for track in tracks
+    ]
+    assert len(all_keys) == len(set(all_keys))
+    assert [bucket for bucket, _ in calls] == [
+        "similar",
+        "reverse",
+        "opposite",
+        "hidden",
+    ]
+    assert [len(excluded) for _, excluded in calls] == [0, 2, 4, 6]
+
+
+async def test_direct_recommendations_continue_after_bucket_failure(monkeypatch):
+    calls = []
+
+    async def fake_similar(*args, **kwargs):
+        calls.append("similar")
+        return [TrackInfo(name="Similar", artist="Artist A")]
+
+    async def fake_reverse(*args, **kwargs):
+        calls.append("reverse")
+        return [TrackInfo(name="Reverse", artist="Artist B")]
+
+    async def fake_opposite(*args, **kwargs):
+        calls.append("opposite")
+        raise ValueError("invalid structured response")
+
+    async def fake_hidden(*args, **kwargs):
+        calls.append("hidden")
+        return [TrackInfo(name="Hidden", artist="Artist C")]
+
+    monkeypatch.setattr(
+        "app.services.recommend_service.similar_listening_pattern", fake_similar
+    )
+    monkeypatch.setattr("app.services.recommend_service.reverse_top100", fake_reverse)
+    monkeypatch.setattr(
+        "app.services.recommend_service.opposite_emotion", fake_opposite
+    )
+    monkeypatch.setattr(
+        "app.services.recommend_service.hidden_discovery_by_artist", fake_hidden
+    )
+
+    result = await _run_direct_recommendations(
+        "Seed",
+        "Seed Artist",
+        None,
+        None,
+        None,
+        top_n=1,
+        prefetched_similar=[],
+    )
+
+    assert calls == ["similar", "reverse", "opposite", "hidden"]
+    assert [track.name for track in result["similar"]] == ["Similar"]
+    assert [track.name for track in result["reverse"]] == ["Reverse"]
+    assert result["opposite"] == []
+    assert [track.name for track in result["hidden"]] == ["Hidden"]

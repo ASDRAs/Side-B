@@ -12,11 +12,17 @@ logger = logging.getLogger(__name__)
 
 
 async def hidden_discovery_by_artist(
-    artist: str, http: httpx.AsyncClient, lastfm: pylast.LastFMNetwork, top_n=10
+    artist: str,
+    http: httpx.AsyncClient,
+    lastfm: pylast.LastFMNetwork,
+    top_n=10,
+    *,
+    excluded_keys: set[str] | None = None,
 ) -> list[TrackInfo]:
     """유저가 입력한 artist와 유사한 artist의 숨은 명곡을 추천하는 함수"""
 
     HIDDEN_LIMIT = max(top_n * 3, 18)
+    excluded = excluded_keys or set()
     try:
         # lastfm에서 유저가 검색한 artist와 유사한 artist를 가져옴
         seed_artist = compact_text(artist)
@@ -85,18 +91,16 @@ async def hidden_discovery_by_artist(
 
                 if not track_name:
                     continue
+                candidate = TrackInfo(
+                    name=track_name,
+                    artist=artist_name,
+                    match_score=artist_match,
+                    reason_tags=[artist_name],
+                )
+                if scoring._track_key(candidate) in excluded:
+                    continue
                 results.append(
-                    (
-                        artist_rank,
-                        track_rank,
-                        artist_match,
-                        TrackInfo(
-                            name=track_name,
-                            artist=artist_name,
-                            match_score=artist_match,
-                            reason_tags=[artist_name],
-                        ),
-                    )
+                    (artist_rank, track_rank, artist_match, candidate)
                 )
             return results
 
