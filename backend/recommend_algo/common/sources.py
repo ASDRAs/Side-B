@@ -3,6 +3,7 @@ import logging
 import math
 import re
 import time
+from collections import OrderedDict
 from typing import Any, Literal
 
 import httpx
@@ -26,6 +27,14 @@ ITUNES_URL = "https://itunes.apple.com/search"
 DEEZER_URL = "https://api.deezer.com"
 _API_SEMAPHORE = asyncio.Semaphore(25)
 _ITUNES_SEMAPHORE = asyncio.Semaphore(8)
+
+# Last.fm은 동기 라이브러리(pylast)를 to_thread로 호출한다. 기본 스레드풀이 32개뿐이라
+# hidden 버킷의 팬아웃(유사 아티스트 최대 30명)만으로도 풀을 점유할 수 있어 상한을 둔다.
+_LASTFM_SEMAPHORE = asyncio.Semaphore(8)
+# pylast 호출에는 자체 데드라인이 없다. 행이 걸리면 요청이 무한 대기하므로 상한을 건다.
+# ponytail: to_thread는 취소가 안 되므로 타임아웃 시 스레드는 남아서 끝까지 돈다.
+# 스레드 누수가 실제로 문제되면 pylast를 async HTTP 호출로 교체해야 한다.
+_LASTFM_CALL_TIMEOUT = 8.0
 
 # Deezer circuit breaker — 429 감지 시 해당 시각까지 모든 Deezer 호출 스킵
 _DZ_RATE_LIMIT_UNTIL: float = 0.0
@@ -56,25 +65,43 @@ def _mark_itunes_rate_limited(retry_after: int) -> None:
     logger.warning("[iTunes] 429 — %d초 차단", retry_after)
 
 
-_cache: dict[str, tuple[float, Any]] = {}
+# 만료 항목은 조회 시 버리고, 그래도 남는 증가분은 LRU로 잘라낸다.
+# 상한이 없으면 lf:cover:{artist}:{track} 키가 본 곡 수만큼 계속 쌓인다.
+# ponytail: 프로세스 로컬 캐시. 인스턴스가 여러 개로 늘면 공용 캐시로 옮겨야 적중률이 산다.
+_CACHE_MAX_ENTRIES = 2000
+_cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
 
 
 def _cache_get(key: str, ttl: float) -> tuple[bool, Any]:
     entry = _cache.get(key)
-    if entry and time.monotonic() - entry[0] < ttl:
-        return True, entry[1]
-    return False, None
+    if entry is None:
+        return False, None
+    if time.monotonic() - entry[0] >= ttl:
+        del _cache[key]
+        return False, None
+    _cache.move_to_end(key)
+    return True, entry[1]
 
 
 def _cache_set(key: str, value: Any) -> None:
     _cache[key] = (time.monotonic(), value)
+    _cache.move_to_end(key)
+    while len(_cache) > _CACHE_MAX_ENTRIES:
+        _cache.popitem(last=False)
 
 
 async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
     hit, cached = _cache_get(key, ttl)
     if hit:
         return cached
-    result = await asyncio.to_thread(fn, *args)
+    await _LASTFM_SEMAPHORE.acquire()
+    try:
+        task = asyncio.create_task(asyncio.to_thread(fn, *args))
+    except Exception:
+        _LASTFM_SEMAPHORE.release()
+        raise
+    task.add_done_callback(lambda _: _LASTFM_SEMAPHORE.release())
+    result = await asyncio.wait_for(asyncio.shield(task), timeout=_LASTFM_CALL_TIMEOUT)
     _cache_set(key, result)
     return result
 

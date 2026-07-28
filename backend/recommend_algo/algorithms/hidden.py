@@ -36,6 +36,8 @@ async def hidden_discovery_by_artist(
         artist_candidates = []
 
         for artist_rank, artist_metadata in enumerate(response_artists or []):
+            # 아래 try에서 이름을 얻기 전에 실패할 수 있으므로 로깅용 기본값을 먼저 잡는다.
+            similar_artist_name = ""
             try:
                 similar_artist = artist_metadata.item
                 similar_artist_name = str(similar_artist.get_name() or "").strip()

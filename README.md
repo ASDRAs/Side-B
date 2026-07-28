@@ -1,10 +1,94 @@
-### Pre-commit 설정 방법
+# Side-B
+
+## Docker로 백엔드 실행
+
+Docker Compose를 사용하면 로컬 Python이나 Poetry 환경을 별도로 구성하지 않고
+Cloud Run과 동일한 Linux 컨테이너 환경에서 백엔드를 실행할 수 있습니다.
+
+### 준비
+
+- Docker Desktop 또는 Docker Engine
+- Docker Compose v2 이상
+
+최초 실행 전 예시 환경변수 파일을 복사하고 실제 API 키를 입력합니다.
+
+```powershell
+Copy-Item .env.example .env
+```
+
+macOS와 Linux에서는 다음 명령을 사용합니다.
+
+```bash
+cp .env.example .env
+```
+
+`.env`는 Git과 Docker 이미지에 포함되지 않습니다. Gemini 관련 변수는 로컬 태그
+분류 모델로 교체하기 전까지만 사용합니다.
+
+### 실행
+
+프로젝트 루트에서 다음 명령을 실행합니다.
+
+```bash
+docker compose up --build
+```
+
+백그라운드에서 실행하려면:
+
+```bash
+docker compose up -d --build
+```
+
+기본 백엔드 주소는 `http://127.0.0.1:8000`이며 상태 확인 주소는 다음과 같습니다.
+
+```text
+http://127.0.0.1:8000/api/health
+```
+
+8000 포트를 다른 프로그램이 사용 중이면 호스트 포트만 변경할 수 있습니다.
+
+PowerShell:
+
+```powershell
+$env:BACKEND_PORT = "8081"
+docker compose up --build
+```
+
+macOS와 Linux:
+
+```bash
+BACKEND_PORT=8081 docker compose up --build
+```
+
+컨테이너 내부 포트는 Cloud Run과 동일하게 항상 8080을 사용합니다.
+
+### 자주 사용하는 명령
+
+```bash
+# 상태 확인
+docker compose ps
+
+# 로그 확인
+docker compose logs -f backend
+
+# 코드나 의존성 변경 후 다시 빌드
+docker compose up -d --build
+
+# 컨테이너 종료 및 제거
+docker compose down
+```
+
+Docker 이미지는 실행에 필요한 코드와 의존성만 포함합니다. `.env`, 로컬 가상환경,
+테스트 캐시와 출력물은 이미지에서 제외됩니다.
+
+## Pre-commit 설정 방법
+
 commit하기 전에 코드 검사하는 tool.
 현재 프로젝트에서는 breakpoint()같이 디버깅 코드가 올라가는게 싫어서 검사하는 용도로 사용
 `poetry install` 이후에 `poetry run pre-commit install`만 쳐주기
 디버킹 코드가 있는 경우는 커밋이 강제 취소된다!!
 
-### Poetry 설정 방법
+## Poetry 설정 방법
 
 pip로 하는 것 보다 의존성 관리가 편해서 poetry로 사용하길 권장.
 
@@ -72,7 +156,7 @@ poetry add pytest --group dev
 1. **`poetry.lock` 파일은 반드시 Git에 커밋**해야 합니다. 이 파일이 있어야 모든 팀원이 소수점 자리까지 완벽히 일치하는 동일한 환경에서 버그 없이 개발할 수 있습니다.
 2. 다른 팀원이 패키지를 추가하여 내가 레포지토리를 `git pull` 받았을 때는, `backend/` 폴더에서 다시 한번 **`poetry install`**만 입력해 주면 새 패키지가 내 로컬 가상환경에 즉시 반영됩니다.
 
-### Ruff 설정 방법
+## Ruff 설정 방법
 
 python formatter인데 원래 isort+black으로 했었는데 poetry랑 연동 + 요즘 ruff가 좋다는 것 같아서 추가해봤음. ruff 세팅은(최대 줄 길이, 린터 등등..)은 project.toml에서 하면 됨. 기본적인건 추가해서 그냥 쓰면 될듯
 
@@ -96,4 +180,4 @@ python formatter인데 원래 isort+black으로 했었는데 poetry랑 연동 + 
 4. ctrl + s로 formatting 되는지 확인
 5. 전체 파일에 formatting 적용하고 싶은 경우에는
 `poetry run ruff check --fix . && poetry run ruff format .`
-> ruff format은 코드 스타일 전체 적용 / check --fux는 immport 순서 수정 및 논리적 오류 수정
+> ruff format은 코드 스타일 전체 적용 / check --fix는 import 순서 수정 및 논리적 오류 수정

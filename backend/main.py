@@ -22,6 +22,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+# httpx의 INFO 로그에는 외부 API URL과 쿼리 파라미터가 포함될 수 있다.
+# 운영 로그에 API 키가 노출되지 않도록 요청 URL 로깅을 비활성화한다.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

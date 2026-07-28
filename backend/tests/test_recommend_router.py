@@ -1,7 +1,15 @@
+import logging
+from types import SimpleNamespace
+
+import pytest
+from pydantic import ValidationError
+
+from app.llm.llm_response import DirectSearchAnalysis, MusicQueryAnalysis
 from app.routers.recommend import RecommendRequest, RecommendResponse
 from app.services.recommend_service import (
     _pick_representative_track,
     _run_direct_recommendations,
+    run_recommend,
 )
 from main import app
 from recommend_algo import TrackInfo
@@ -15,20 +23,30 @@ def test_search_route_is_registered():
     assert "/search" in paths
 
 
+def test_http_client_request_urls_are_not_logged_at_info_level():
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+
+
 def test_recommend_contract_uses_query_source_and_hidden_bucket():
-    request = RecommendRequest(query="아이유 너랑나", top_n=3)
+    request = RecommendRequest(query="아이유 너랑나")
     response = RecommendResponse(
         track_name="너랑나",
         artist="IU",
         top_n=request.top_n,
         source_id="itunes:1",
         album_art_url="https://example.com/art.jpg",
-        result={"similar": [], "reverse": [], "opposite": [], "hidden": []},
+        result={"similar": [], "reverse": [], "hidden": []},
     )
 
     assert request.query == "아이유 너랑나"
+    assert request.top_n == 10
     assert response.result["hidden"] == []
     assert response.source_id == "itunes:1"
+
+
+def test_recommend_contract_rejects_non_ten_track_bucket_size():
+    with pytest.raises(ValidationError):
+        RecommendRequest(query="아이유 너랑나", top_n=3)
 
 
 def test_tag_fallback_seed_label_uses_representative_track():
@@ -40,7 +58,6 @@ def test_tag_fallback_seed_label_uses_representative_track():
     )
     tag_results = {
         "similar": [representative],
-        "reverse": [],
         "opposite": [],
         "hidden": [],
     }
@@ -59,11 +76,6 @@ async def test_direct_recommendations_are_disjoint_and_backfilled(monkeypatch):
             TrackInfo(name="A", artist="Artist A"),
             TrackInfo(name="C", artist="Artist C"),
             TrackInfo(name="D", artist="Artist D"),
-        ],
-        "opposite": [
-            TrackInfo(name="C", artist="Artist C"),
-            TrackInfo(name="E", artist="Artist E"),
-            TrackInfo(name="F", artist="Artist F"),
         ],
         "hidden": [
             TrackInfo(name="E", artist="Artist E"),
@@ -92,10 +104,6 @@ async def test_direct_recommendations_are_disjoint_and_backfilled(monkeypatch):
         fake_runner("reverse"),
     )
     monkeypatch.setattr(
-        "app.services.recommend_service.opposite_emotion",
-        fake_runner("opposite"),
-    )
-    monkeypatch.setattr(
         "app.services.recommend_service.hidden_discovery_by_artist",
         fake_runner("hidden"),
     )
@@ -105,7 +113,6 @@ async def test_direct_recommendations_are_disjoint_and_backfilled(monkeypatch):
         "Seed Artist",
         None,
         None,
-        None,
         top_n=2,
         prefetched_similar=[],
     )
@@ -113,7 +120,6 @@ async def test_direct_recommendations_are_disjoint_and_backfilled(monkeypatch):
     assert {bucket: len(tracks) for bucket, tracks in result.items()} == {
         "similar": 2,
         "reverse": 2,
-        "opposite": 2,
         "hidden": 2,
     }
     all_keys = [
@@ -125,10 +131,9 @@ async def test_direct_recommendations_are_disjoint_and_backfilled(monkeypatch):
     assert [bucket for bucket, _ in calls] == [
         "similar",
         "reverse",
-        "opposite",
         "hidden",
     ]
-    assert [len(excluded) for _, excluded in calls] == [0, 2, 4, 6]
+    assert [len(excluded) for _, excluded in calls] == [0, 2, 4]
 
 
 async def test_direct_recommendations_continue_after_bucket_failure(monkeypatch):
@@ -140,10 +145,6 @@ async def test_direct_recommendations_continue_after_bucket_failure(monkeypatch)
 
     async def fake_reverse(*args, **kwargs):
         calls.append("reverse")
-        return [TrackInfo(name="Reverse", artist="Artist B")]
-
-    async def fake_opposite(*args, **kwargs):
-        calls.append("opposite")
         raise ValueError("invalid structured response")
 
     async def fake_hidden(*args, **kwargs):
@@ -155,9 +156,6 @@ async def test_direct_recommendations_continue_after_bucket_failure(monkeypatch)
     )
     monkeypatch.setattr("app.services.recommend_service.reverse_top100", fake_reverse)
     monkeypatch.setattr(
-        "app.services.recommend_service.opposite_emotion", fake_opposite
-    )
-    monkeypatch.setattr(
         "app.services.recommend_service.hidden_discovery_by_artist", fake_hidden
     )
 
@@ -166,13 +164,59 @@ async def test_direct_recommendations_continue_after_bucket_failure(monkeypatch)
         "Seed Artist",
         None,
         None,
-        None,
         top_n=1,
         prefetched_similar=[],
     )
 
-    assert calls == ["similar", "reverse", "opposite", "hidden"]
+    assert calls == ["similar", "reverse", "hidden"]
     assert [track.name for track in result["similar"]] == ["Similar"]
-    assert [track.name for track in result["reverse"]] == ["Reverse"]
-    assert result["opposite"] == []
+    assert result["reverse"] == []
     assert [track.name for track in result["hidden"]] == ["Hidden"]
+
+
+async def test_unresolved_direct_query_returns_empty_result_instead_of_raising(
+    monkeypatch,
+):
+    """iTunes/Last.fm 모두 곡을 특정하지 못한 direct 쿼리가 500으로 새지 않아야 한다."""
+
+    class StubGeminiWrapper:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    def fake_analyze(query, gemini_wrapper):
+        return MusicQueryAnalysis(
+            intent="direct",
+            direct=DirectSearchAnalysis(
+                search_query=query,
+                alternative_queries=[],
+            ),
+        )
+
+    async def fake_preprocess_input(*args, **kwargs):
+        return None, None, None
+
+    monkeypatch.setattr(
+        "app.services.recommend_service.GeminiWrapper", StubGeminiWrapper
+    )
+    monkeypatch.setattr(
+        "app.services.recommend_service.analyze_music_query", fake_analyze
+    )
+    monkeypatch.setattr(
+        "app.services.recommend_service.preprocess_input", fake_preprocess_input
+    )
+
+    result = await run_recommend(
+        "존재하지 않는 곡 제목",
+        10,
+        None,
+        None,
+        SimpleNamespace(gemini_api_key=None, gemini_model="test-model"),
+    )
+
+    assert result["result"] == {"similar": [], "reverse": [], "hidden": []}
+    assert result["source_id"] is None
+    assert result["album_art_url"] is None
+
+    # 응답 스키마가 None을 거부하므로 계약 검증까지 통과해야 한다.
+    response = RecommendResponse(**result)
+    assert response.track_name == "존재하지 않는 곡 제목"
