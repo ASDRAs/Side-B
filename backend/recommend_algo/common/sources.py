@@ -94,10 +94,14 @@ async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
     hit, cached = _cache_get(key, ttl)
     if hit:
         return cached
-    async with _LASTFM_SEMAPHORE:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(fn, *args), timeout=_LASTFM_CALL_TIMEOUT
-        )
+    await _LASTFM_SEMAPHORE.acquire()
+    try:
+        task = asyncio.create_task(asyncio.to_thread(fn, *args))
+    except Exception:
+        _LASTFM_SEMAPHORE.release()
+        raise
+    task.add_done_callback(lambda _: _LASTFM_SEMAPHORE.release())
+    result = await asyncio.wait_for(asyncio.shield(task), timeout=_LASTFM_CALL_TIMEOUT)
     _cache_set(key, result)
     return result
 
