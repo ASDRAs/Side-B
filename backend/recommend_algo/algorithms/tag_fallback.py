@@ -51,38 +51,42 @@ async def tag_based_recommendations(
     # 이미 추천된 곡들은 제외하기 위해 관리
     recommended_tracks = {scoring._track_key(track) for track in similar_tracks}
 
-    # 2. 태그 내 저노출곡 추천
-    reverse_pool = [
+    # 2. 태그 유사도는 유지하면서 저노출곡과 숨은 명곡 역할을 하나로 합친다.
+    hidden_pool = [
         track
         for track in enriched_candidates
         if scoring._track_key(track) not in recommended_tracks
     ]
 
-    # 2-1. 비주류 점수 계산
-    for index, track in enumerate(reverse_pool):
+    for index, track in enumerate(hidden_pool):
         obscurity = scoring._popularity_obscurity(
             track.popularity,
             ceiling=scoring.OBSCURITY_CEILING,
         )
-        rank_depth = min(1.0, index / max(len(reverse_pool) - 1, 1))
+        rank_depth = min(1.0, index / max(len(hidden_pool) - 1, 1))
         tag_match = scoring._clamp_score(track.match_score or 0.0)
         track.reverse_score = (
             (obscurity * 0.55) + (rank_depth * 0.25) + (tag_match * 0.20)
         )
 
-    # 2-2. 비주류 곡 추천
     low_exposure_pool = [
-        track for track in reverse_pool if scoring._is_low_exposure(track.popularity)
+        track for track in hidden_pool if scoring._is_low_exposure(track.popularity)
     ]
     if len(low_exposure_pool) >= top_n:
-        reverse_pool = low_exposure_pool
-    reverse_tracks = sorted(
-        reverse_pool, key=lambda item: item.reverse_score or 0, reverse=True
-    )[:top_n]
-    for track in reverse_tracks:
-        track.algo, track.label = "tag_reverse", "태그 속 저노출곡"
+        hidden_pool = low_exposure_pool
+    ranked_hidden_pool = sorted(
+        hidden_pool, key=lambda item: item.reverse_score or 0, reverse=True
+    )
+    diverse_hidden_pool = scoring._cap_per_artist(ranked_hidden_pool, max_per=1)
+    hidden_tracks = scoring._fill_from_ranked_pool(
+        diverse_hidden_pool,
+        ranked_hidden_pool,
+        top_n,
+    )
+    for track in hidden_tracks:
+        track.algo, track.label = "tag_hidden", "태그 속 숨은 발견곡"
 
-    recommended_tracks.update(scoring._track_key(track) for track in reverse_tracks)
+    recommended_tracks.update(scoring._track_key(track) for track in hidden_tracks)
 
     # 3. opposite_tags 기반 반대 분위기 추천
 
@@ -104,22 +108,8 @@ async def tag_based_recommendations(
 
     recommended_tracks.update(scoring._track_key(track) for track in opposite_tracks)
 
-    # 4. 숨겨진 명곡 추천
-    hidden_pool = [
-        track
-        for track in enriched_candidates
-        if scoring._track_key(track) not in recommended_tracks
-    ]
-    hidden_candidates = sorted(
-        scoring._cap_per_artist(hidden_pool, max_per=1),
-        key=scoring._resolved_popularity,
-    )
-    hidden_tracks = hidden_candidates[:top_n]
-    for track in hidden_tracks:
-        track.algo, track.label = "tag_hidden", "태그에서 더 파볼 곡"
-
     selected_tracks = scoring._dedupe_tracks(
-        similar_tracks + reverse_tracks + opposite_tracks + hidden_tracks
+        similar_tracks + opposite_tracks + hidden_tracks
     )
     await sources.get_tracks_metadata(
         http,
@@ -130,7 +120,6 @@ async def tag_based_recommendations(
 
     return {
         "similar": similar_tracks,
-        "reverse": reverse_tracks,
         "opposite": opposite_tracks,
         "hidden": hidden_tracks,
     }

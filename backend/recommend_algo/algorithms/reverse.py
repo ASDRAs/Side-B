@@ -136,12 +136,12 @@ async def reverse_top100(
 
         # ── 비주류 점수 계산 ───────────────────────────────────────
         # 1단계: 너무 뻔한 상위 추천곡 제외하기 (Obvious Filter)
-        obvious_keys = set()
-
-        # 추천 리스트가 요구하는 개수(top_n)보다 충분히 많을 때만 상위 곡을 걸러냅니다.
-        if len(enriched_candidates) > top_n:
-            for track in enriched_candidates[:top_n]:
-                obvious_keys.add(scoring._track_key(track))
+        # 상위 곡을 최대 top_n개까지 걸러내되, 남는 곡이 top_n 미만이 되지 않도록
+        # 후보 여유분만큼만 제거합니다. (후보가 11개일 때 10개를 지워 1곡만 남는 문제 방지)
+        drop_count = max(0, min(top_n, len(enriched_candidates) - top_n))
+        obvious_keys = {
+            scoring._track_key(track) for track in enriched_candidates[:drop_count]
+        }
 
         # 뻔한 곡 목록에 없는 곡들만 새로운 풀에 담습니다.
         discovery_pool = []

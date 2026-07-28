@@ -433,18 +433,17 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
         lastfm,
         ["korean city pop", "citypop", "japanese city pop"],
         ["emotional", "chill"],
-        top_n=3,
+        top_n=2,
     )
 
     assert result is not None
-    assert len(result["similar"]) == 3
-    assert all(len(tracks) <= 3 for tracks in result.values())
-    assert result["hidden"]
+    assert set(result) == {"similar", "opposite", "hidden"}
+    assert all(len(tracks) == 2 for tracks in result.values())
+    assert all(track.algo == "tag_hidden" for track in result["hidden"])
     assert result["similar"][0].artist == "Stella Jang"
     assert {track.reason_tags[0] for track in result["similar"]} == {
         "korean city pop",
         "citypop",
-        "japanese city pop",
     }
     assert {track.reason_tags[0] for track in result["opposite"]} == {
         "emotional",
@@ -453,7 +452,7 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
     assert all(track.album_art_url for tracks in result.values() for track in tracks)
     assert metadata_calls == [
         (15, ("popularity",)),
-        (12, ("album_art", "source_id")),
+        (6, ("album_art", "source_id")),
     ]
 
 
@@ -491,6 +490,66 @@ async def test_reverse_top100_skips_visible_similar_and_prefers_low_exposure(
     assert reverse_names <= {f"Track {index}" for index in range(10, 16)}
 
 
+async def test_reverse_top100_keeps_top_n_when_candidate_pool_is_thin(monkeypatch):
+    """후보가 top_n보다 조금 많을 때 상위 제외 필터가 결과를 깎지 않아야 한다."""
+    similar_items = [
+        FakeSimilarResult(f"Artist {index}", f"Track {index}", 1.0 - (index * 0.04))
+        for index in range(7)
+    ]
+    lastfm = SimilarFakeLastFm(similar_items)
+
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
+        for track in tracks:
+            track.popularity = 30
+        return tracks
+
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
+
+    reverse = await reverse_top100("Seed", "Seed Artist", EmptyHttp(), lastfm, top_n=5)
+
+    assert len(reverse) == 5
+
+
+async def test_hidden_discovery_survives_broken_similar_artist_entry(monkeypatch):
+    """유사 아티스트 한 건이 깨져도 hidden 버킷 전체가 비지 않아야 한다."""
+
+    class BrokenSimilarArtistResult:
+        match = 0.99
+
+        @property
+        def item(self):
+            raise ValueError("broken similar artist payload")
+
+    similar_artists = [
+        BrokenSimilarArtistResult(),
+        FakeSimilarArtistResult(
+            FakeSimilarArtist("Artist A", ["A Known", "A Hidden"]), 0.92
+        ),
+        FakeSimilarArtistResult(
+            FakeSimilarArtist("Artist B", ["B Known", "B Hidden"]), 0.74
+        ),
+    ]
+    lastfm = HiddenFakeLastFm(similar_artists)
+
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
+        for track in tracks:
+            track.popularity = 20
+        return tracks
+
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
+
+    result = await hidden_discovery_by_artist(
+        "Seed Artist", EmptyHttp(), lastfm, top_n=2
+    )
+
+    assert result
+    assert {track.artist for track in result} <= {"Artist A", "Artist B"}
+
+
 async def test_similar_listening_pattern_uses_track_alias_when_primary_is_empty(
     monkeypatch,
 ):
@@ -519,6 +578,68 @@ async def test_similar_listening_pattern_uses_track_alias_when_primary_is_empty(
 
     assert [track.name for track in result] == ["SMILEY", "Event Horizon"]
     assert lastfm.track_calls[:2] == [("Younha", "혜성"), ("Younha", "ほうき星")]
+
+
+async def test_similar_listening_pattern_uses_iu_catalog_title_alias(monkeypatch):
+    lastfm = AliasSimilarFakeLastFm(
+        {
+            ("IU", "너랑 나 (YOU&I)"): [],
+            ("IU", "You & I"): [
+                FakeSimilarResult("TAEYEON", "I", 0.9),
+                FakeSimilarResult("Heize", "And July", 0.8),
+            ],
+        }
+    )
+
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
+        return tracks
+
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
+
+    result = await similar_listening_pattern(
+        "너랑 나 (YOU&I)", "IU", EmptyHttp(), lastfm, top_n=2
+    )
+
+    assert [track.name for track in result] == ["I", "And July"]
+    assert lastfm.track_calls[:2] == [
+        ("IU", "너랑 나 (YOU&I)"),
+        ("IU", "You & I"),
+    ]
+
+
+async def test_similar_listening_pattern_backfills_from_similar_artists(monkeypatch):
+    similar_artists = [
+        FakeSimilarArtistResult(
+            FakeSimilarArtist("Artist A", ["Popular A", "Deep A"]),
+            0.9,
+        ),
+        FakeSimilarArtistResult(
+            FakeSimilarArtist("Artist B", ["Popular B", "Deep B"]),
+            0.8,
+        ),
+    ]
+    lastfm = CombinedFakeLastFm([], similar_artists)
+
+    async def fake_enrich_metadata(http, tracks, *args, **kwargs):
+        return tracks
+
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
+    )
+
+    result = await similar_listening_pattern(
+        "Unknown Track",
+        "Seed Artist",
+        EmptyHttp(),
+        lastfm,
+        top_n=2,
+        prefetched=[],
+    )
+
+    assert len(result) == 2
+    assert {track.artist for track in result} == {"Artist A", "Artist B"}
 
 
 async def test_similar_listening_pattern_backfills_around_excluded_tracks(monkeypatch):

@@ -1,4 +1,3 @@
-import math
 import re
 from typing import Any
 
@@ -171,12 +170,6 @@ def _upgrade_itunes_artwork(url: str) -> str:
     if not url:
         return ""
     return re.sub(r"/\d+x\d+bb\.(jpg|png)$", r"/600x600bb.\1", url)
-
-
-def deezer_rank_to_popularity(rank: int | None) -> int:
-    if not rank or rank <= 0:
-        return 0
-    return max(0, min(100, int(math.log10(rank + 1) * 10)))
 
 
 _BAD_VERSION_MARKERS = (

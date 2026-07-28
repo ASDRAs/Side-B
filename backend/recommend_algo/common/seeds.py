@@ -11,6 +11,14 @@ logger = logging.getLogger(__name__)
 
 _TRACK_SIMILAR_ALIASES = {
     (compact_text("Younha"), compact_text("혜성")): [("ほうき星", "Younha")],
+    (compact_text("IU"), compact_text("너랑 나 (YOU&I)")): [
+        ("You & I", "IU"),
+        ("You&I", "IU"),
+    ],
+    (compact_text("IU"), compact_text("너랑나")): [
+        ("You & I", "IU"),
+        ("You&I", "IU"),
+    ],
 }
 
 

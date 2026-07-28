@@ -12,7 +12,6 @@ from recommend_algo import (
     _track_similar_tracks,
     get_tracks_metadata,
     hidden_discovery_by_artist,
-    opposite_emotion,
     preprocess_input,
     reverse_top100,
     similar_listening_pattern,
@@ -50,6 +49,18 @@ def _accept_unseen_tracks(
     return accepted
 
 
+def _empty_recommendation(query: str, top_n: int, buckets: tuple[str, ...]) -> dict:
+    """추천 결과를 만들지 못했을 때 돌려줄 빈 응답."""
+    return dict(
+        track_name=query,
+        artist="Unknown",
+        top_n=top_n,
+        source_id=None,
+        album_art_url=None,
+        result={bucket: [] for bucket in buckets},
+    )
+
+
 async def _run_recommendation_bucket(
     bucket: str,
     operation: Awaitable[list[TrackInfo]],
@@ -66,7 +77,6 @@ async def _run_direct_recommendations(
     artist: str,
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
-    gemini_wrapper: GeminiWrapper,
     top_n: int,
     prefetched_similar,
 ) -> dict[str, list[TrackInfo]]:
@@ -102,20 +112,6 @@ async def _run_direct_recommendations(
     )
     results["reverse"] = _accept_unseen_tracks(reverse, seen_keys)
 
-    opposite = await _run_recommendation_bucket(
-        "opposite",
-        opposite_emotion(
-            name,
-            artist,
-            http,
-            lastfm,
-            gemini_wrapper=gemini_wrapper,
-            top_n=top_n,
-            excluded_keys=seen_keys,
-        ),
-    )
-    results["opposite"] = _accept_unseen_tracks(opposite, seen_keys)
-
     hidden = await _run_recommendation_bucket(
         "hidden",
         hidden_discovery_by_artist(
@@ -148,14 +144,7 @@ async def run_recommend(
 
     if user_intent == "meaningless":
         logger.warning("Query is meaningless: %s", query)
-        return dict(
-            track_name=query,
-            artist="Unknown",
-            top_n=top_n,
-            source_id=None,
-            album_art_url=None,
-            result={"similar": [], "reverse": [], "opposite": [], "hidden": []},
-        )
+        return _empty_recommendation(query, top_n, ("similar", "reverse", "hidden"))
 
     # 유저 query에 name, artist가 없는 경우(mood tag query)
     elif user_intent == "mood":
@@ -181,14 +170,7 @@ async def run_recommend(
                 result=processed,
             )
         logger.warning("No results found for query: %s", query)
-        return dict(
-            track_name=query,
-            artist="Unknown",
-            top_n=top_n,
-            source_id=None,
-            album_art_url=None,
-            result={"similar": [], "reverse": [], "opposite": [], "hidden": []},
-        )
+        return _empty_recommendation(query, top_n, ("similar", "opposite", "hidden"))
 
     # 유저 query에 name, artist가 있는 경우(direct query)
     else:
@@ -197,6 +179,12 @@ async def run_recommend(
         name, artist, source_id = await preprocess_input(
             user_music_query, alternative_queries, http, lastfm
         )
+        # iTunes/Last.fm 모두 곡을 특정하지 못하면 (None, None, None)이 돌아온다.
+        # 그대로 진행하면 메타데이터 조회에서 TypeError가 나므로 여기서 끊는다.
+        if not name or not artist:
+            logger.warning("Direct query could not be resolved: %s", query)
+            return _empty_recommendation(query, top_n, ("similar", "reverse", "hidden"))
+
         user_track_info = TrackInfo(name=name, artist=artist, source_id=source_id)
 
         user_track_info = await get_tracks_metadata(
@@ -217,13 +205,12 @@ async def run_recommend(
             )
             prefetched_similar = None
 
-        # similar, reverse, opposite, hidden 취향의 곡들 추천
+        # direct 검색은 similar, reverse, hidden 세 방향으로 추천
         rcmd_results = await _run_direct_recommendations(
             name,
             artist,
             http,
             lastfm,
-            gemini_wrapper,
             top_n,
             prefetched_similar,
         )
@@ -242,7 +229,6 @@ async def run_recommend(
             result={
                 "similar": processed_rcmd_results["similar"],
                 "reverse": processed_rcmd_results["reverse"],
-                "opposite": processed_rcmd_results["opposite"],
                 "hidden": processed_rcmd_results["hidden"],
             },
         )

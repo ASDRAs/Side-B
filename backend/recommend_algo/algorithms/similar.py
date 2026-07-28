@@ -1,12 +1,75 @@
+import asyncio
 import logging
 
 import httpx
 import pylast
 
+from app.utils.text import compact_text
 from recommend_algo.common import scoring, seeds, sources
 from recommend_algo.common.models import TrackInfo
 
 logger = logging.getLogger(__name__)
+
+
+async def _similar_artist_fallback(
+    artist: str,
+    lastfm: pylast.LastFMNetwork,
+    top_n: int,
+) -> list[TrackInfo]:
+    """Track similarity가 비어 있을 때 유사 아티스트의 대표곡으로 백필한다."""
+    artist_limit = max(3, min(top_n * 2, 8))
+    track_limit = max(3, top_n * 2)
+    seed_artist = lastfm.get_artist(artist)
+    similar_artists = await sources._lf_call(
+        f"lf:artist_similar:{compact_text(artist)}:{artist_limit}",
+        600,
+        seed_artist.get_similar,
+        artist_limit,
+    )
+
+    async def _fetch(artist_result) -> list[TrackInfo]:
+        similar_artist = artist_result.item
+        similar_artist_name = str(similar_artist.get_name() or "").strip()
+        if not similar_artist_name:
+            return []
+        artist_match = float(getattr(artist_result, "match", 0) or 0)
+        top_tracks = await sources._lf_call(
+            f"lf:artist_top:{compact_text(similar_artist_name)}:{track_limit}",
+            600,
+            similar_artist.get_top_tracks,
+            track_limit,
+        )
+        return [
+            TrackInfo(
+                name=str(item.item.get_name() or "").strip(),
+                artist=similar_artist_name,
+                match_score=max(
+                    0.0,
+                    artist_match - (rank / max(track_limit, 1)) * 0.1,
+                ),
+                reason_tags=[similar_artist_name],
+            )
+            for rank, item in enumerate(top_tracks or [])
+            if str(item.item.get_name() or "").strip()
+        ]
+
+    fetched = await asyncio.gather(
+        *[_fetch(item) for item in similar_artists or []],
+        return_exceptions=True,
+    )
+    candidates = [
+        track
+        for result in fetched
+        if not isinstance(result, Exception)
+        for track in result
+    ]
+    ranked = sorted(
+        scoring._dedupe_tracks(candidates),
+        key=lambda track: track.match_score or 0,
+        reverse=True,
+    )
+    diverse = scoring._cap_per_artist(ranked, max_per=1)
+    return scoring._fill_from_ranked_pool(diverse, ranked, top_n)
 
 
 async def similar_listening_pattern(
@@ -32,15 +95,23 @@ async def similar_listening_pattern(
                 track_name, artist, lastfm, 50
             )
 
-        # 중복 제거
-        raw_tracks = [
-            TrackInfo(
-                name=item.item.get_name(),
-                artist=item.item.get_artist().get_name(),
-                match_score=float(item.match),
+        if raw_similar:
+            raw_tracks = [
+                TrackInfo(
+                    name=item.item.get_name(),
+                    artist=item.item.get_artist().get_name(),
+                    match_score=float(item.match),
+                )
+                for item in raw_similar
+            ]
+        else:
+            logger.info(
+                "[similar_listening_pattern] track similarity empty; "
+                "using similar artists"
             )
-            for item in raw_similar
-        ]
+            raw_tracks = await _similar_artist_fallback(artist, lastfm, top_n)
+
+        # 중복 제거
         unique_tracks = scoring._dedupe_tracks(raw_tracks)
 
         # score 기준으로 정렬
