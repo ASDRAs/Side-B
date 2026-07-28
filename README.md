@@ -180,4 +180,4 @@ python formatter인데 원래 isort+black으로 했었는데 poetry랑 연동 + 
 4. ctrl + s로 formatting 되는지 확인
 5. 전체 파일에 formatting 적용하고 싶은 경우에는
 `poetry run ruff check --fix . && poetry run ruff format .`
-> ruff format은 코드 스타일 전체 적용 / check --fux는 immport 순서 수정 및 논리적 오류 수정
+> ruff format은 코드 스타일 전체 적용 / check --fix는 import 순서 수정 및 논리적 오류 수정
