@@ -16,12 +16,13 @@ MUSIC_QUERY_ANALYSIS_PROMPT = textwrap.dedent(
     For direct:
     - Create search_query for searching Last.fm.
     - Prefer "<official track title> <official artist name>".
+    - Fill track_title and artist_name with the same spelling used in search_query. Leave a field null when the query does not identify it (e.g. artist-only requests).
     - Use the title and artist spelling from the track's original release (region: Japanese for Japanese releases, French for French releases, English for English releases, etc.)
-    - If the official native spelling may not search well on Last.fm, add English or romanized variants to alternative_queries.
+    - REQUIRED: whenever the track title or artist name is not in English, add an English or romanized variant to alternative_queries. Catalogs list most non-English releases under their English titles, so omitting this variant makes the track unresolvable.
     - Remove filler words such as 노래, 음악, 추천, 틀어줘, play, and find.
     - Normalize names only when confident; never invent information.
     - Return at most 3 distinct alternative queries.
-    - In each alternative query, use the same language for both the track title and artist name (e.g., "彗星 ユンナ", not "彗星 Younha").
+    - Each alternative query carries track_title and artist_name as separate fields. Use the same language for both (e.g. track_title="彗星", artist_name="ユンナ", not artist_name="Younha").
 
 
     For mood:
@@ -39,13 +40,16 @@ MUSIC_QUERY_ANALYSIS_PROMPT = textwrap.dedent(
 
     Examples:
     "아이유의 너랑나"
-    -> direct, search_query="너랑 나 IU", alternative_queries=["You & I IU"]
+    -> direct, search_query="너랑 나 아이유", track_title="너랑 나", artist_name="아이유",
+       alternative_queries=[{track_title: "You & I", artist_name: "IU"}]
 
     "히사이시 조 인생의 회전목마"
-    -> direct, search_query="人生のメリーゴーランド 久石譲", alternative_queries=["Merry-Go-Round of Life Joe Hisaishi"]
+    -> direct, search_query="人生のメリーゴーランド 久石譲", track_title="人生のメリーゴーランド", artist_name="久石譲",
+       alternative_queries=[{track_title: "Merry-Go-Round of Life", artist_name: "Joe Hisaishi"}]
 
     "에디트 피아프 사랑의 찬가"
-    -> direct, search_query="Hymne à l'amour Édith Piaf", alternative_queries=["Hymn to Love Edith Piaf"]
+    -> direct, search_query="Hymne à l'amour Édith Piaf", track_title="Hymne à l'amour", artist_name="Édith Piaf",
+       alternative_queries=[{track_title: "Hymn to Love", artist_name: "Edith Piaf"}]
 
     "새벽에 들을 잔잔한 노래"
     -> mood, tags=["late-night", "calm", "acoustic"], opposite_tags=["upbeat", "energetic", "dance"]

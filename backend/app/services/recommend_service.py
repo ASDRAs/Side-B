@@ -177,7 +177,12 @@ async def run_recommend(
         user_music_query = query_analysis.direct.search_query
         alternative_queries = query_analysis.direct.alternative_queries
         name, artist, source_id = await preprocess_input(
-            user_music_query, alternative_queries, http, lastfm
+            user_music_query,
+            alternative_queries,
+            http,
+            lastfm,
+            track_title=query_analysis.direct.track_title,
+            artist_name=query_analysis.direct.artist_name,
         )
         # iTunes/Last.fm 모두 곡을 특정하지 못하면 (None, None, None)이 돌아온다.
         # 그대로 진행하면 메타데이터 조회에서 TypeError가 나므로 여기서 끊는다.
