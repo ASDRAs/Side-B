@@ -1,5 +1,5 @@
 """
-FastAPI entrypoint — search pipeline (iTunes + Deezer + Last.fm + Gemini).
+FastAPI entrypoint — recommendation pipeline (iTunes + Deezer + Last.fm + Gemini).
 """
 
 import logging
@@ -12,10 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers.recommend import router as recommend_router
-from app.routers.search import router as search_router
-from app.services.catalog import CatalogClient
-from app.services.lastfm import LastFmClient
-from app.services.llm import GeminiClient
 from preview import router as preview_router
 
 logging.basicConfig(
@@ -38,9 +34,6 @@ async def lifespan(app: FastAPI):
 
     app.state.settings = settings
     app.state.http = http
-    app.state.catalog = CatalogClient(http)
-    app.state.lastfm = LastFmClient(settings.lastfm_api_key, http)
-    app.state.llm = GeminiClient(settings.gemini_api_key, settings.gemini_model, http)
     app.state.lastfm_pylast = pylast.LastFMNetwork(
         api_key=settings.lastfm_api_key or "",
         api_secret=settings.lastfm_api_secret or "",
@@ -70,7 +63,6 @@ app.add_middleware(
 # router 설정 fetch하면 아래의 기능들 불러옴. 실제 기능들이 수행되는 곳
 app.include_router(preview_router)
 app.include_router(recommend_router)
-app.include_router(search_router)
 
 
 @app.get("/health")
