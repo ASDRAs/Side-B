@@ -9,6 +9,7 @@ __pycache__/
 .cache
 .omc/
 outputs/
+/AI_HANDOFF.md
 backend/tests/quality_test_30*.py
 
 frontend/dist/
