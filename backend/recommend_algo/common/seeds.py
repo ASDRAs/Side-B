@@ -22,6 +22,17 @@ _TRACK_SIMILAR_ALIASES = {
 }
 
 
+def _lookup_key(artist: str, track_name: str) -> tuple[str, str]:
+    """Last.fm 조회 후보를 구분하는 키.
+
+    alias 테이블 조회에는 compact_text를 계속 쓴다. 들어오는 곡명의 문장부호가
+    어떻든 테이블에 걸려야 하기 때문이다. 반면 조회 후보끼리 구분할 때는
+    문장부호를 살려야 한다. Last.fm이 "You & I"와 "You&I"를 다른 트랙으로 보고
+    전자는 0개, 후자는 5개를 돌려주기 때문이다.
+    """
+    return (artist.strip().lower(), track_name.strip().lower())
+
+
 async def _track_similar_tracks(
     track_name: str,
     artist: str,
@@ -40,10 +51,12 @@ async def _track_similar_tracks(
         (compact_text(artist), compact_text(track_name)), []
     )
 
-    # 중복 제거
-    already_seen = {(compact_text(artist), compact_text(track_name))}
+    # 중복 제거. compact_text를 쓰면 안 된다 — &와 공백을 지워 "You & I"와 "You&I"가
+    # 같은 키가 되고 뒤엣것이 사라진다. Last.fm은 둘을 다른 트랙으로 취급하며
+    # 실제로 유사곡이 나오는 쪽이 "You&I"다.
+    already_seen = {_lookup_key(artist, track_name)}
     for alias_name, alias_artist in aliases:
-        key = (compact_text(alias_artist), compact_text(alias_name))
+        key = _lookup_key(alias_artist, alias_name)
         if key not in already_seen:
             already_seen.add(key)
             lookup_candidates.append((alias_name, alias_artist))
@@ -54,8 +67,11 @@ async def _track_similar_tracks(
         try:
             # lastfm에서 비슷한 track search
             lf_track = lastfm.get_track(lookup_artist, lookup_track_name)
+            # 캐시 키도 같은 이유로 문장부호를 보존해야 한다. compact_text를 쓰면
+            # 앞선 표기의 빈 결과가 캐시되어 뒤 표기가 호출조차 되지 않는다.
+            cache_artist, cache_name = _lookup_key(lookup_artist, lookup_track_name)
             raw = await sources._lf_call(
-                f"lf:track_similar:{compact_text(lookup_artist)}:{compact_text(lookup_track_name)}:{limit}",
+                f"lf:track_similar:{cache_artist}:{cache_name}:{limit}",
                 600,
                 lf_track.get_similar,
                 limit,

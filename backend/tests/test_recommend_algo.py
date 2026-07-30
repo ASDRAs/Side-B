@@ -446,6 +446,26 @@ def test_mixed_language_seed_reaches_lastfm_similar_alias():
     assert ("You&I", "IU") in seeds._TRACK_SIMILAR_ALIASES[key]
 
 
+async def test_track_similar_keeps_punctuation_variant_alias():
+    """Last.fm 실측: "너랑 나 (YOU&I)" 0개, "You & I" 0개, "You&I" 5개.
+
+    문장부호만 다른 표기를 중복으로 접으면 유일하게 결과가 나오는 표기가
+    사라진다. 중복 제거 키와 캐시 키 양쪽 모두 문장부호를 보존해야 한다.
+    """
+    lastfm = AliasSimilarFakeLastFm(
+        {("IU", "You&I"): [FakeSimilarResult("IU", "Palette", 0.9)]}
+    )
+
+    result = await seeds._track_similar_tracks("너랑 나 (YOU&I)", "IU", lastfm, 5)
+
+    assert lastfm.track_calls == [
+        ("IU", "너랑 나 (YOU&I)"),
+        ("IU", "You & I"),
+        ("IU", "You&I"),
+    ]
+    assert [item.item.get_name() for item in result] == ["Palette"]
+
+
 async def test_normalize_input_keeps_loose_path_for_artist_only_request():
     """곡 제목이 없는 artist-only 요청은 기존 문자열 검색을 그대로 쓴다."""
     http = FakeHttp([{"trackId": 904, "trackName": "Lilac", "artistName": "IU"}])
