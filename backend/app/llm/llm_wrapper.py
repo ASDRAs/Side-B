@@ -31,6 +31,11 @@ class GeminiWrapper:
             response_mime_type=mime_type,
             response_schema=response_schema,
             max_output_tokens=max_output_tokens,
+            thinking_config=(
+                types.ThinkingConfig(thinking_budget=0)
+                if self.model_name.startswith("gemini-3")
+                else None
+            ),
         )
         response = self.client.models.generate_content(
             model=self.model_name,

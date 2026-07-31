@@ -16,11 +16,12 @@ from recommend_algo import TrackInfo
 from recommend_algo.common import scoring
 
 
-def test_search_route_is_registered():
+def test_public_api_surface_is_recommend_only():
     paths = {route.path for route in app.routes}
 
     assert "/health" in paths
-    assert "/search" in paths
+    assert "/recommend" in paths
+    assert "/search" not in paths
 
 
 def test_http_client_request_urls_are_not_logged_at_info_level():

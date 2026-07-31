@@ -2,7 +2,8 @@ from collections import Counter
 
 import pytest
 
-from app.llm.llm_response import MoodAnalysis, OppositeTagAnalysis
+from app.llm.llm_response import AlternativeQuery, MoodAnalysis, OppositeTagAnalysis
+from app.utils.text import compact_text
 from recommend_algo import (
     hidden_discovery_by_artist,
     opposite_emotion,
@@ -222,22 +223,27 @@ ITUNES_MUSICMARU = {
 }
 
 
+def _alt(track_title, artist_name):
+    return AlternativeQuery(track_title=track_title, artist_name=artist_name)
+
+
 async def test_normalize_input_uses_itunes_candidate():
+    """원어 표기가 카탈로그와 어긋나면 영문 대체 표기가 곡을 확정한다."""
     http = FakeHttp([ITUNES_EVENT_HORIZON])
     lastfm = SearchableFakeLastFm([])
 
     result = await preprocess_input(
         "윤하 사건의 지평선",
-        ["Event Horizon Younha"],
+        [_alt("Event Horizon", "Younha")],
         http,
         lastfm,
+        track_title="사건의 지평선",
+        artist_name="윤하",
     )
 
     assert result == ("Event Horizon", "Younha", "itunes:123")
-    assert [request[1]["term"] for request in http.requests] == [
-        "윤하 사건의 지평선",
-        "Event Horizon Younha",
-    ]
+    # 표기별로 채점하지 않고 alias 전체로 채점하므로 첫 조회에서 완전 일치가 난다.
+    assert [request[1]["term"] for request in http.requests] == ["사건의 지평선 윤하"]
     assert lastfm.search_queries == []
 
 
@@ -247,9 +253,11 @@ async def test_normalize_input_uses_known_alias_over_karaoke_candidate():
 
     result = await preprocess_input(
         "윤하 사건의 지평선",
-        ["Event Horizon Younha"],
+        [_alt("Event Horizon", "Younha")],
         http,
         lastfm,
+        track_title="사건의 지평선",
+        artist_name="윤하",
     )
 
     assert result == ("Event Horizon", "Younha", "itunes:123")
@@ -264,6 +272,232 @@ async def test_normalize_input_ignores_bad_itunes_candidate_and_uses_lastfm():
 
     assert result == ("좋은날", "아이유", None)
     assert lastfm.search_queries == [("", "아이유 좋은날")]
+
+
+ITUNES_SPRING_DAY_IMPOSTOR = {
+    "trackId": 111,
+    "trackName": "봄날",
+    "artistName": "The Hit Crew",
+    "artworkUrl100": "https://example.com/hitcrew.jpg",
+}
+
+ITUNES_SPRING_DAY = {
+    "trackId": 222,
+    "trackName": "봄날",
+    "artistName": "BTS",
+    "artworkUrl100": "https://example.com/springday.jpg",
+}
+
+
+async def test_normalize_input_ranks_by_artist_when_llm_splits_title_and_artist():
+    """아티스트를 넘기지 않으면 두 후보의 점수가 같아 첫 결과(오답)가 뽑힌다."""
+    http = FakeHttp([ITUNES_SPRING_DAY_IMPOSTOR, ITUNES_SPRING_DAY])
+    lastfm = SearchableFakeLastFm([])
+
+    result = await preprocess_input(
+        "봄날 BTS",
+        [],
+        http,
+        lastfm,
+        track_title="봄날",
+        artist_name="BTS",
+    )
+
+    assert result == ("봄날", "BTS", "itunes:222")
+    assert http.requests[0][1]["term"] == "봄날 BTS"
+
+
+# 실측한 오답 기준곡들. 전부 제목은 정확히 맞고 아티스트만 다르며,
+# 총점만으로는 0.62를 넘기 때문에 아티스트 하한 없이는 통과한다.
+WRONG_ARTIST_CANDIDATES = [
+    pytest.param("Through the Night", "Slushii & Hatsune Miku", id="hatsune-miku"),
+    pytest.param("Through the Night", "Shin Giwon", id="shin-giwon"),
+    pytest.param("Through the Night", "TOMSSON", id="tomsson"),
+    pytest.param("You & I", "John Legend", id="john-legend"),
+    pytest.param("만약에 (태연)", "Yoon Min Soo", id="yoon-min-soo"),
+]
+
+
+@pytest.mark.parametrize("title,artist", WRONG_ARTIST_CANDIDATES)
+async def test_normalize_input_rejects_title_match_with_wrong_artist(title, artist):
+    http = FakeHttp(
+        [{"trackId": 900, "trackName": title, "artistName": artist}],
+    )
+    lastfm = SearchableFakeLastFm([])
+
+    result = await preprocess_input(
+        "아이유 밤편지",
+        [_alt("Through the Night", "IU")],
+        http,
+        lastfm,
+        track_title="밤편지",
+        artist_name="아이유",
+    )
+
+    assert result == (None, None, None)
+
+
+async def test_normalize_input_returns_unresolved_instead_of_loose_guess():
+    """제목·아티스트를 모두 아는 요청은 느슨한 문자열 검색으로 내려가지 않는다."""
+    http = FakeHttp([{"trackId": 901, "trackName": "Iu", "artistName": "TOMSSON"}])
+    lastfm = SearchableFakeLastFm([])
+
+    result = await preprocess_input(
+        "아이유 밤편지",
+        [_alt("Through the Night", "IU")],
+        http,
+        lastfm,
+        track_title="밤편지",
+        artist_name="아이유",
+    )
+
+    assert result == (None, None, None)
+    # 원표기와 대체표기만 조회하고, 결합 문자열은 시도하지 않는다.
+    assert [request[1]["term"] for request in http.requests] == [
+        "밤편지 아이유",
+        "Through the Night IU",
+    ]
+
+
+async def test_normalize_input_stops_at_exact_match():
+    """완전 일치가 나오면 남은 대체 표기를 조회하지 않는다."""
+    http = FakeHttp(
+        [{"trackId": 902, "trackName": "Through the Night", "artistName": "IU"}]
+    )
+    lastfm = SearchableFakeLastFm([])
+
+    result = await preprocess_input(
+        "아이유 밤편지",
+        [_alt("Through the Night", "IU"), _alt("Bam Pyeon Ji", "IU")],
+        http,
+        lastfm,
+        track_title="Through the Night",
+        artist_name="IU",
+    )
+
+    assert result == ("Through the Night", "IU", "itunes:902")
+    assert len(http.requests) == 1
+
+
+# 카탈로그가 제목과 아티스트의 표기 언어를 섞어 등록한 실제 레코드들.
+# 제목은 한쪽 표기와, 아티스트는 다른 쪽 표기와 맞으므로 (제목, 아티스트) 쌍
+# 단위로 비교하면 어느 쌍에서도 통과하지 못한다.
+# (카탈로그 제목, 카탈로그 아티스트, 원표기 pair, 대체표기 pair)
+MIXED_LANGUAGE_RECORDS = [
+    pytest.param(
+        "너랑 나 (YOU&I)",
+        "IU",
+        ("너랑 나", "아이유"),
+        ("You & I", "IU"),
+        id="ko-title-en-artist",
+    ),
+    pytest.param(
+        "사건의 지평선",
+        "Younha",
+        ("사건의 지평선", "윤하"),
+        ("Event Horizon", "Younha"),
+        id="ko-title-romanized-artist",
+    ),
+    pytest.param(
+        "人生のメリーゴーランド",
+        "Joe Hisaishi",
+        ("人生のメリーゴーランド", "久石譲"),
+        ("Merry-Go-Round of Life", "Joe Hisaishi"),
+        id="ja-title-en-artist",
+    ),
+    pytest.param(
+        "Through the Night",
+        "아이유",
+        ("밤편지", "아이유"),
+        ("Through the Night", "IU"),
+        id="en-title-ko-artist",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "catalog_title,catalog_artist,primary,alternative", MIXED_LANGUAGE_RECORDS
+)
+async def test_mixed_language_catalog_entry_resolves(
+    catalog_title, catalog_artist, primary, alternative
+):
+    http = FakeHttp(
+        [{"trackId": 903, "trackName": catalog_title, "artistName": catalog_artist}]
+    )
+    lastfm = SearchableFakeLastFm([])
+
+    result = await preprocess_input(
+        "query",
+        [_alt(*alternative)],
+        http,
+        lastfm,
+        track_title=primary[0],
+        artist_name=primary[1],
+    )
+
+    assert result == (catalog_title, catalog_artist, "itunes:903")
+
+
+def test_mixed_language_seed_reaches_lastfm_similar_alias():
+    """확정된 기준곡이 Last.fm 유사곡 조회용 alias 테이블에 걸려야 한다."""
+    key = (compact_text("IU"), compact_text("너랑 나 (YOU&I)"))
+
+    assert key in seeds._TRACK_SIMILAR_ALIASES
+    assert ("You&I", "IU") in seeds._TRACK_SIMILAR_ALIASES[key]
+
+
+async def test_track_similar_keeps_punctuation_variant_alias():
+    """Last.fm 실측: "너랑 나 (YOU&I)" 0개, "You & I" 0개, "You&I" 5개.
+
+    문장부호만 다른 표기를 중복으로 접으면 유일하게 결과가 나오는 표기가
+    사라진다. 중복 제거 키와 캐시 키 양쪽 모두 문장부호를 보존해야 한다.
+    """
+    lastfm = AliasSimilarFakeLastFm(
+        {("IU", "You&I"): [FakeSimilarResult("IU", "Palette", 0.9)]}
+    )
+
+    result = await seeds._track_similar_tracks("너랑 나 (YOU&I)", "IU", lastfm, 5)
+
+    assert lastfm.track_calls == [
+        ("IU", "너랑 나 (YOU&I)"),
+        ("IU", "You & I"),
+        ("IU", "You&I"),
+    ]
+    assert [item.item.get_name() for item in result] == ["Palette"]
+
+
+async def test_normalize_input_keeps_loose_path_for_artist_only_request():
+    """곡 제목이 없는 artist-only 요청은 기존 문자열 검색을 그대로 쓴다."""
+    http = FakeHttp([{"trackId": 904, "trackName": "Lilac", "artistName": "IU"}])
+    lastfm = SearchableFakeLastFm([])
+
+    result = await preprocess_input("IU", [], http, lastfm, artist_name="IU")
+
+    assert result == ("Lilac", "IU", "itunes:904")
+    assert http.requests[0][1]["term"] == "IU"
+
+
+async def test_normalize_input_skips_unscored_lastfm_hits():
+    """Last.fm 검색은 점수를 주지 않으므로 커버판과 무관한 곡을 직접 걸러야 한다."""
+    http = EmptyHttp()
+    lastfm = SearchableFakeLastFm(
+        [
+            FakeTrack("Karaoke Star", "봄날 (Instrumental Karaoke Version)"),
+            FakeTrack("Someone Else", "전혀 다른 곡"),
+            FakeTrack("BTS", "봄날"),
+        ]
+    )
+
+    result = await preprocess_input(
+        "Spring Day BTS",
+        [],
+        http,
+        lastfm,
+        track_title="봄날",
+        artist_name="BTS",
+    )
+
+    assert result == ("봄날", "BTS", None)
 
 
 async def test_normalize_input_returns_none_when_catalogs_miss():
@@ -292,9 +526,9 @@ def test_weighted_round_robin_reduces_first_tag_concentration():
         _tag_tracks("second", 20),
         _tag_tracks("third", 20),
     ]
-    control = scoring._dedupe_tracks(
-        [track for group in groups for track in group]
-    )[:10]
+    control = scoring._dedupe_tracks([track for group in groups for track in group])[
+        :10
+    ]
 
     treatment = scoring._weighted_round_robin(groups, 10)
 
@@ -702,11 +936,7 @@ async def test_reverse_top100_fills_top_n_after_artist_diversity_cap(monkeypatch
 
 async def test_opposite_emotion_backfills_around_excluded_tracks(monkeypatch):
     lastfm = TagFakeLastFm(
-        {
-            "bright": [
-                (f"Artist {index}", f"Track {index}") for index in range(5)
-            ]
-        }
+        {"bright": [(f"Artist {index}", f"Track {index}") for index in range(5)]}
     )
 
     async def fake_seed_tags(*args, **kwargs):
@@ -719,9 +949,7 @@ async def test_opposite_emotion_backfills_around_excluded_tracks(monkeypatch):
         def request(self, **kwargs):
             return OppositeTagAnalysis(opposite_tags=["bright"])
 
-    monkeypatch.setattr(
-        "recommend_algo.algorithms.opposite._seed_tags", fake_seed_tags
-    )
+    monkeypatch.setattr("recommend_algo.algorithms.opposite._seed_tags", fake_seed_tags)
     monkeypatch.setattr(
         "recommend_algo.common.sources.get_tracks_metadata", fake_enrich_metadata
     )

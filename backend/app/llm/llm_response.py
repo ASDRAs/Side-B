@@ -6,6 +6,13 @@ from pydantic import BaseModel, Field, model_validator
 # specific_song: Optional[str] = Field( default=None, description="desc.." )
 
 
+class AlternativeQuery(BaseModel):
+    track_title: str = Field(description="대체 표기의 곡 제목")
+    artist_name: str = Field(
+        description="대체 표기의 아티스트 이름. 곡 제목과 같은 언어를 사용한다."
+    )
+
+
 class DirectSearchAnalysis(BaseModel):
     search_query: str = Field(
         description=(
@@ -21,12 +28,13 @@ class DirectSearchAnalysis(BaseModel):
         default=None,
         description="사용자 쿼리에서 식별하거나 정규화한 아티스트 이름",
     )
-    alternative_queries: list[str] = Field(
+    alternative_queries: list[AlternativeQuery] = Field(
         default_factory=list,
         max_length=3,
         description=(
-            "원 검색어로 결과를 찾지 못했을 때 사용할 검색어 변형. "
-            "영문명, 로마자 표기, 널리 쓰이는 번역 제목 등을 최대 3개 반환한다."
+            "원 표기로 결과를 찾지 못했을 때 사용할 검색어 변형. "
+            "영문명, 로마자 표기, 널리 쓰이는 번역 제목 등을 최대 3개 반환한다. "
+            "제목과 아티스트를 반드시 분리해서 담는다."
         ),
     )
 

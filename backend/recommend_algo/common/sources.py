@@ -10,13 +10,16 @@ import httpx
 import pylast
 from async_lru import alru_cache
 
-from app.llm.llm_response import MusicQueryAnalysis
+from app.llm.llm_response import AlternativeQuery, MusicQueryAnalysis
 from app.llm.llm_wrapper import GeminiWrapper
 from app.llm.prompt import MUSIC_QUERY_ANALYSIS_PROMPT
 from app.services.catalog import (
     CatalogClient,
     DeezerRateLimitError,
     ItunesRateLimitError,
+    _alias_artist_score,
+    _alias_match_score,
+    _looks_like_bad_version,
 )
 from app.utils.text import compact_text
 from recommend_algo.common.models import TrackInfo
@@ -39,6 +42,18 @@ _LASTFM_CALL_TIMEOUT = 8.0
 # Deezer circuit breaker — 429 감지 시 해당 시각까지 모든 Deezer 호출 스킵
 _DZ_RATE_LIMIT_UNTIL: float = 0.0
 _ITUNES_RATE_LIMIT_UNTIL: float = 0.0
+
+# 후보를 곡으로 확정하는 최소 _catalog_match_score(title 0.68 / artist 0.32 가중).
+_ITUNES_CONFIRM_SCORE = 0.62
+_LASTFM_CONFIRM_SCORE = 0.5
+# 총점과 별개로 요구하는 아티스트 일치 하한. 제목만 정확한 오답은 총점이 0.68까지
+# 나오므로 총점 문턱만으로는 막을 수 없다.
+# ponytail: fixture로 검증한 정책값이지 증명된 상수가 아니다. 이 하한은 원어 표기
+# 시도를 통째로 탈락시키므로("밤편지/아이유" 대 iTunes의 "IU") 영문 대체 표기가
+# 반드시 함께 와야 한다. alias가 늘면 test_recommend_algo.py 회귀 케이스로 재보정한다.
+_ARTIST_MIN_SCORE = 0.5
+# 제목·아티스트가 모두 완전 일치. 더 나은 후보가 있을 수 없으므로 즉시 종료한다.
+_PERFECT_MATCH_SCORE = 1.0
 
 
 def _is_dz_rate_limited() -> bool:
@@ -106,11 +121,16 @@ async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
     return result
 
 
+ResolvedTrack = tuple[str, str, str | None]
+
+
 async def preprocess_input(
     query: str,
-    alternative_queries: list[str],
+    alternative_queries: list[AlternativeQuery],
     http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
+    track_title: str | None = None,
+    artist_name: str | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """
     유저에게 입력받은 자유로운 형태의 query(ex : 힙한 음악)를 track name, artist, itunes_uid 형식으로 return
@@ -118,48 +138,153 @@ async def preprocess_input(
     만약, itunes에서 검색결과가 없는 경우는 lastfm에서 search하고 track name과 artist를 return
     """
 
-    search_queries = [query] + alternative_queries
+    lookups = _structured_lookups(track_title, artist_name, alternative_queries)
 
-    for refined_query in search_queries:
+    if lookups:
+        resolved = await _itunes_structured(lookups, http)
+    else:
+        # 제목이나 아티스트를 특정하지 못한 요청(artist-only 등)만 문자열 검색을 쓴다.
+        resolved = await _itunes_loose(query, alternative_queries, http)
+    if resolved:
+        return resolved
+
+    return await _lastfm_search(query, lookups, lastfm) or (None, None, None)
+
+
+def _structured_lookups(
+    track_title: str | None,
+    artist_name: str | None,
+    alternative_queries: list[AlternativeQuery],
+) -> list[tuple[str, str]]:
+    """제목과 아티스트가 모두 있는 (원표기, 대체표기) 쌍만 중복 없이 모은다."""
+    pairs = [(track_title or "", artist_name or "")]
+    pairs += [(alt.track_title, alt.artist_name) for alt in alternative_queries]
+
+    seen: set[tuple[str, str]] = set()
+    lookups: list[tuple[str, str]] = []
+    for title, artist in pairs:
+        title, artist = title.strip(), artist.strip()
+        key = (compact_text(title), compact_text(artist))
+        if not title or not artist or key in seen:
+            continue
+        seen.add(key)
+        lookups.append((title, artist))
+    return lookups
+
+
+async def _itunes_structured(
+    lookups: list[tuple[str, str]], http: httpx.AsyncClient
+) -> ResolvedTrack | None:
+    """아티스트 하한을 통과한 후보만 모아 비교한다.
+
+    표기별로 즉시 반환하지 않는 이유는, 원표기에서 나온 약한 후보가 대체 표기의
+    정확한 후보를 가로막기 때문이다. 완전 일치는 더 나은 후보가 있을 수 없으므로
+    그 자리에서 끊어 iTunes 호출을 아낀다.
+    """
+    title_aliases = tuple(title for title, _ in lookups)
+    artist_aliases = tuple(artist for _, artist in lookups)
+
+    best: tuple[float, ResolvedTrack] | None = None
+    for title, artist in lookups:
         item = await _itunes_or_none(
             http,
-            refined_query,
+            title,
+            artist,
             limit=8,
-            min_score=0.35,
+            min_score=_ITUNES_CONFIRM_SCORE,
+            min_artist_score=_ARTIST_MIN_SCORE,
+            title_aliases=title_aliases,
+            artist_aliases=artist_aliases,
         )
-        if item:
-            name = str(item.get("trackName") or "").strip()
-            artist = str(item.get("artistName") or "").strip()
-            itunes_source_id = _itunes_source_id(item)
-            if name and artist:
-                logger.info("[Normalize] iTunes: %s - %s", name, artist)
-                return name, artist, itunes_source_id
+        track = _itunes_track(item)
+        if not track:
+            continue
+        score = _alias_match_score(track[0], track[1], title_aliases, artist_aliases)
+        if score >= _PERFECT_MATCH_SCORE:
+            logger.info("[Normalize] iTunes exact: %s - %s", track[0], track[1])
+            return track
+        if best is None or score > best[0]:
+            best = (score, track)
 
-    # itunes search API로 노래가 검색되지 않는 경우
+    if best:
+        logger.info("[Normalize] iTunes: %s - %s", best[1][0], best[1][1])
+        return best[1]
+    return None
+
+
+async def _itunes_loose(
+    query: str,
+    alternative_queries: list[AlternativeQuery],
+    http: httpx.AsyncClient,
+) -> ResolvedTrack | None:
+    terms = [query] + [
+        f"{alt.track_title} {alt.artist_name}".strip() for alt in alternative_queries
+    ]
+    for term in terms:
+        if not term.strip():
+            continue
+        item = await _itunes_or_none(http, term, limit=8, min_score=0.35)
+        track = _itunes_track(item)
+        if track:
+            logger.info("[Normalize] iTunes(loose): %s - %s", track[0], track[1])
+            return track
+    return None
+
+
+async def _lastfm_search(
+    query: str,
+    lookups: list[tuple[str, str]],
+    lastfm: pylast.LastFMNetwork,
+) -> ResolvedTrack | None:
+    terms = [f"{title} {artist}" for title, artist in lookups] or [query]
     try:
-        for refined_query in search_queries:
-            search = lastfm.search_for_track("", refined_query)
+        for term in terms:
+            search = lastfm.search_for_track("", term)
             results = await _lf_call(
-                f"lf:search_track:{compact_text(refined_query)}",
+                f"lf:search_track:{compact_text(term)}",
                 300,
                 search.get_next_page,
             )
             if not results:
-                logger.warning(
-                    "[Normalize] No search in Last.fm for query: %s", refined_query
-                )
+                logger.warning("[Normalize] No search in Last.fm for query: %s", term)
                 continue
 
             for track in results:
                 name = str(track.get_name() or "").strip()
                 artist = str(track.get_artist().get_name() or "").strip()
-                if name and artist and artist.lower() != "[unknown]":
-                    logger.info("[Normalize] Last.fm: %s - %s", name, artist)
-                    return name, artist, None
+                if not name or not artist or artist.lower() == "[unknown]":
+                    continue
+                if _looks_like_bad_version(name) or _looks_like_bad_version(artist):
+                    continue
+                # Last.fm 검색은 점수를 주지 않는다. 아는 표기가 있으면 iTunes와 같은
+                # 기준으로 거르고, 없으면 기존대로 첫 유효 결과를 쓴다.
+                if lookups and not _matches_lookups(name, artist, lookups):
+                    continue
+                logger.info("[Normalize] Last.fm: %s - %s", name, artist)
+                return name, artist, None
     except Exception as exc:
         logger.warning("[Normalize] Last.fm search failed: %s", exc)
+    return None
 
-    return None, None, None
+
+def _matches_lookups(name: str, artist: str, lookups: list[tuple[str, str]]) -> bool:
+    """iTunes와 같은 기준으로 거른다. 제목·아티스트를 표기별로 독립 채점한다."""
+    titles = tuple(title for title, _ in lookups)
+    artists = tuple(artist_alias for _, artist_alias in lookups)
+    return (
+        _alias_artist_score(artist, artists) >= _ARTIST_MIN_SCORE
+        and _alias_match_score(name, artist, titles, artists) >= _LASTFM_CONFIRM_SCORE
+    )
+
+
+def _itunes_track(item: dict[str, Any] | None) -> ResolvedTrack | None:
+    if not item:
+        return None
+    name = str(item.get("trackName") or "").strip()
+    artist = str(item.get("artistName") or "").strip()
+    if not name or not artist:
+        return None
+    return name, artist, _itunes_source_id(item)
 
 
 @alru_cache(maxsize=500, ttl=3600)
@@ -169,6 +294,9 @@ async def _itunes_search(
     artist: str = "",
     limit: int = 5,
     min_score: float = 0.5,
+    min_artist_score: float = 0.0,
+    title_aliases: tuple[str, ...] = (),
+    artist_aliases: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     """
     itunes search API를 활용하여 음원 정보 검색
@@ -181,7 +309,13 @@ async def _itunes_search(
             raise ItunesRateLimitError()
         try:
             return await CatalogClient(http).itunes_search_best(
-                track_name, artist, limit, min_score
+                track_name,
+                artist,
+                limit,
+                min_score,
+                min_artist_score,
+                title_aliases,
+                artist_aliases,
             )
         except ItunesRateLimitError as exc:
             _mark_itunes_rate_limited(exc.retry_after)
@@ -194,9 +328,21 @@ async def _itunes_or_none(
     artist: str = "",
     limit: int = 5,
     min_score: float = 0.5,
+    min_artist_score: float = 0.0,
+    title_aliases: tuple[str, ...] = (),
+    artist_aliases: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     try:
-        return await _itunes_search(http, track_name, artist, limit, min_score)
+        return await _itunes_search(
+            http,
+            track_name,
+            artist,
+            limit,
+            min_score,
+            min_artist_score,
+            title_aliases,
+            artist_aliases,
+        )
     except ItunesRateLimitError:
         return None
 

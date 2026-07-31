@@ -1,9 +1,9 @@
 import re
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
 
-from app.schemas.search import CandidateTrack
 from app.utils.text import text_ratio
 
 
@@ -24,55 +24,30 @@ class CatalogClient:
     def __init__(self, http: httpx.AsyncClient) -> None:
         self.http = http
 
-    async def search_tracks(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
-        safe_limit = max(1, min(limit, 10))
-        payload = await self._itunes_search(query, safe_limit)
-        return payload
-
-    async def search_track_by_artist_title(
-        self, artist: str, title: str
-    ) -> dict[str, Any] | None:
-        items = await self.search_tracks(f"{title} {artist}", limit=5)
-        return _select_best_item(items, title, artist)
-
-    @staticmethod
-    def normalize_track(track: dict[str, Any]) -> CandidateTrack | None:
-        title = str(track.get("trackName") or "").strip()
-        artist = str(track.get("artistName") or "").strip()
-        track_id = str(track.get("trackId") or "").strip()
-        album_art = _upgrade_itunes_artwork(str(track.get("artworkUrl100") or ""))
-
-        if not title or not artist or not track_id or not album_art:
-            return None
-
-        return CandidateTrack(
-            providerId=f"itunes:{track_id}",
-            artist=artist,
-            title=title,
-            albumArt=album_art,
-            popularity=50,
-            tags=[],
-        )
-
-    async def _itunes_search(self, query: str, limit: int) -> list[dict[str, Any]]:
-        response = await self.http.get(
-            self.ITUNES_URL,
-            params={"term": query, "entity": "song", "limit": limit},
-        )
-        response.raise_for_status()
-        items = response.json().get("results", [])
-        return items if isinstance(items, list) else []
-
     async def itunes_search_best(
         self,
         track_name: str,
         artist: str = "",
         limit: int = 5,
         min_score: float = 0.5,
+        min_artist_score: float = 0.0,
+        title_aliases: tuple[str, ...] = (),
+        artist_aliases: tuple[str, ...] = (),
     ) -> dict[str, Any] | None:
+        """min_artist_score는 총점과 별개로 요구하는 아티스트 일치 하한이다.
+
+        총점만으로는 제목이 정확한 오답을 막을 수 없다. 가중치가 title 0.68 /
+        artist 0.32라서 제목만 완전 일치해도 0.68이 나오기 때문이다. 하한은
+        argmax 전에 적용해야 오답이 최고점을 차지하는 것을 막을 수 있다.
+
+        검색어는 track_name/artist로 만들지만, 채점은 aliases 전체를 대상으로 한다.
+        카탈로그가 제목과 아티스트를 다른 언어로 섞어 등록하기 때문이다.
+        """
         term = f"{track_name} {artist}".strip()
         if not term:
             return None
+        expected_titles = title_aliases or (track_name,)
+        expected_artists = artist_aliases or ((artist,) if artist else ())
         try:
             response = await self.http.get(
                 self.ITUNES_URL,
@@ -100,7 +75,15 @@ class CatalogClient:
             item_artist = str(item.get("artistName") or "")
             if _looks_like_bad_version(title) or _looks_like_bad_version(item_artist):
                 continue
-            score = _catalog_match_score(title, item_artist, track_name, artist)
+            if (
+                min_artist_score
+                and _alias_artist_score(item_artist, expected_artists)
+                < min_artist_score
+            ):
+                continue
+            score = _alias_match_score(
+                title, item_artist, expected_titles, expected_artists
+            )
             if best is None or score > best[0]:
                 best = (score, item)
         if not best or best[0] < min_score:
@@ -138,38 +121,6 @@ class CatalogClient:
             if best:
                 return best
         return None
-
-
-def _select_best_item(
-    items: list[dict[str, Any]], title: str, artist: str
-) -> dict[str, Any] | None:
-    best: tuple[float, dict[str, Any]] | None = None
-    for item in items:
-        score = _match_score(
-            str(item.get("trackName") or ""),
-            str(item.get("artistName") or ""),
-            title,
-            artist,
-        )
-        if best is None or score > best[0]:
-            best = (score, item)
-    if not best or best[0] < 0.42:
-        return None
-    return best[1]
-
-
-def _match_score(
-    title: str, artist: str, expected_title: str, expected_artist: str
-) -> float:
-    return (text_ratio(title, expected_title) * 0.68) + (
-        text_ratio(artist, expected_artist) * 0.32
-    )
-
-
-def _upgrade_itunes_artwork(url: str) -> str:
-    if not url:
-        return ""
-    return re.sub(r"/\d+x\d+bb\.(jpg|png)$", r"/600x600bb.\1", url)
 
 
 _BAD_VERSION_MARKERS = (
@@ -211,9 +162,47 @@ def _clean_title(value: str) -> str:
 def _catalog_match_score(
     title: str, artist: str, expected_title: str, expected_artist: str = ""
 ) -> float:
-    title_score = text_ratio(_clean_title(title), _clean_title(expected_title))
-    artist_score = text_ratio(artist, expected_artist) if expected_artist else 1.0
+    return _alias_match_score(
+        title,
+        artist,
+        (expected_title,),
+        (expected_artist,) if expected_artist else (),
+    )
+
+
+def _alias_match_score(
+    title: str,
+    artist: str,
+    expected_titles: Sequence[str],
+    expected_artists: Sequence[str],
+) -> float:
+    """제목과 아티스트를 각각 모든 표기 중 최고점으로 채점한다.
+
+    카탈로그는 표기 언어를 섞어 등록한다. iTunes의 IU "너랑 나"는 제목이 한국어,
+    아티스트가 영문인 "너랑 나 (YOU&I)" / "IU"다. (제목, 아티스트) 쌍 안에서만
+    비교하면 한국어 쌍은 아티스트에서, 영문 쌍은 제목에서 탈락해 어느 쪽으로도
+    확정되지 않는다.
+    """
+    title_score = max(
+        (
+            text_ratio(_clean_title(title), _clean_title(expected))
+            for expected in expected_titles
+            if expected
+        ),
+        default=0.0,
+    )
+    artist_score = _alias_artist_score(artist, expected_artists)
     return (title_score * 0.68) + (artist_score * 0.32)
+
+
+def _alias_artist_score(artist: str, expected_artists: Sequence[str]) -> float:
+    # 기대 아티스트를 모르면 제목만으로 판단한다.
+    if not any(expected_artists):
+        return 1.0
+    return max(
+        (text_ratio(artist, expected) for expected in expected_artists if expected),
+        default=0.0,
+    )
 
 
 def _select_deezer_item(

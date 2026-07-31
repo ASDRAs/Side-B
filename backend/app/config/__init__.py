@@ -19,9 +19,6 @@ class Settings(BaseSettings):
     gemini_model: str = Field(
         default="gemini-3-flash-preview", validation_alias="GEMINI_MODEL"
     )
-    search_timeout_seconds: float = Field(
-        default=15.0, validation_alias="SEARCH_TIMEOUT_SECONDS"
-    )
     http_timeout_seconds: float = Field(
         default=6.0, validation_alias="HTTP_TIMEOUT_SECONDS"
     )
