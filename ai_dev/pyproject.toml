@@ -1,0 +1,23 @@
+[project]
+name = "ai_dev"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "TaeYun",email = "48724872+KimTaeYun02@users.noreply.github.com"}
+]
+requires-python = ">=3.12"
+dependencies = [
+    "google-genai (>=2.16.0,<3.0.0)",
+    "pandas (>=3.0.5,<4.0.0)",
+    "httpx (>=0.28.1,<0.29.0)",
+    "pylast (>=7.1.0,<8.0.0)",
+    "openai (>=2.52.0,<3.0.0)"
+]
+
+[tool.poetry]
+package-mode = false
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
