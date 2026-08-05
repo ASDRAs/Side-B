@@ -13,7 +13,7 @@ from recommend_algo import (
     tag_based_recommendations,
 )
 from recommend_algo.common import scoring, seeds
-from recommend_algo.common.models import TrackInfo
+from recommend_algo.common.models import ProviderBinding, TrackInfo
 
 
 def test_mood_analysis_allows_missing_opposite_tags():
@@ -653,7 +653,9 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
             if fields == "all" or "album_art" in fields:
                 track.album_art_url = f"https://example.com/{index}.jpg"
             if fields == "all" or "source_id" in fields:
-                track.source_id = f"fake:{index}"
+                track.bind(
+                    ProviderBinding(provider="deezer", provider_track_id=str(index))
+                )
             if fields == "all" or "popularity" in fields:
                 track.popularity = 20 + index
         return tracks

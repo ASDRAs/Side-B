@@ -3,12 +3,20 @@ from recommend_algo.algorithms.opposite import opposite_emotion
 from recommend_algo.algorithms.reverse import reverse_top100
 from recommend_algo.algorithms.similar import similar_listening_pattern
 from recommend_algo.algorithms.tag_fallback import tag_based_recommendations
-from recommend_algo.common.models import TrackInfo
+from recommend_algo.common.models import (
+    ProviderBinding,
+    TrackInfo,
+    binding_from_source_id,
+    track_to_api_dict,
+)
 from recommend_algo.common.seeds import _track_similar_tracks
 from recommend_algo.common.sources import get_tracks_metadata, preprocess_input
 
 __all__ = [
     "TrackInfo",
+    "ProviderBinding",
+    "binding_from_source_id",
+    "track_to_api_dict",
     "preprocess_input",
     "get_tracks_metadata",
     "_track_similar_tracks",
