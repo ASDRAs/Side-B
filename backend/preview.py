@@ -4,7 +4,7 @@ preview.py
 Deezer 30초 미리 듣기 라우터
 
 엔드포인트
-  GET /preview        → { preview_url, deezer_id, track, artist }
+  GET /preview        → { preview_url, deezer_id, track, artist, requested }
   GET /preview/stream → 오디오 바이트 스트리밍 (CORS 우회용)
 """
 
@@ -57,6 +57,14 @@ class PreviewMatch:
     deezer_id: str
     track: str
     artist: str
+
+
+class PreviewProviderUnavailable(Exception):
+    """Deezer가 일시적으로 검색 요청을 처리할 수 없는 상태."""
+
+    def __init__(self, *, retry_after: str | None = None):
+        super().__init__("Deezer preview provider unavailable")
+        self.retry_after = retry_after
 
 
 # ── 내부 유틸 ────────────────────────────────────────────────────
@@ -133,6 +141,26 @@ def _content_disposition(track_name: str) -> str:
     )
 
 
+def _retry_after_seconds(value: str | None, *, default: int) -> str:
+    """공급자 Retry-After를 안전한 delta-seconds 형식으로 정규화한다."""
+    if value:
+        candidate = value.strip()
+        if candidate.isdecimal():
+            return candidate
+    return str(default)
+
+
+def _provider_unavailable_http_error(
+    exc: PreviewProviderUnavailable,
+) -> HTTPException:
+    headers = {"Retry-After": exc.retry_after} if exc.retry_after else None
+    return HTTPException(
+        status_code=503,
+        detail="미리 듣기 공급자가 일시적으로 응답할 수 없습니다.",
+        headers=headers,
+    )
+
+
 async def _fetch_preview(
     http: httpx.AsyncClient,
     track_name: str,
@@ -145,8 +173,9 @@ async def _fetch_preview(
 
     preview가 없는 트랙, 카라오케·커버판, 아티스트가 다른 트랙, 요청한 버전
     조건을 잃은 트랙은 후보에서 뺀다. 남는 후보가 없으면 None을 돌려주고
-    호출부가 404로 처리한다. 예전에는 preview만 있으면 첫 결과를 그대로 썼고,
-    그래서 `밤편지`/`IU` 요청에 Flow Music의 피아노 커버가 나갔다.
+    호출부가 404로 처리한다. 공급자 제한·장애는 PreviewProviderUnavailable로
+    분리한다. 예전에는 preview만 있으면 첫 결과를 그대로 썼고, 그래서
+    `밤편지`/`IU` 요청에 Flow Music의 피아노 커버가 나갔다.
     """
     clean = _strip_version(track_name)
     wanted = _version_markers(track_name)
@@ -156,24 +185,37 @@ async def _fetch_preview(
     for query in queries:
         try:
             resp = await http.get(_DEEZER_SEARCH, params={"q": query}, timeout=8.0)
-        except Exception as exc:
+        except httpx.RequestError as exc:
             logger.warning(
                 "[Preview] Deezer 요청 실패 (%s): %s", type(exc).__name__, exc
             )
-            continue
+            raise PreviewProviderUnavailable(retry_after="30") from exc
 
         if resp.status_code == 429:
             logger.warning("[Preview] Deezer 429 — 미리 듣기 불가")
-            return None
+            raise PreviewProviderUnavailable(
+                retry_after=_retry_after_seconds(
+                    resp.headers.get("Retry-After"),
+                    default=60,
+                )
+            )
+        if resp.status_code >= 500:
+            logger.warning("[Preview] Deezer HTTP %s: %s", resp.status_code, query)
+            raise PreviewProviderUnavailable(
+                retry_after=_retry_after_seconds(
+                    resp.headers.get("Retry-After"),
+                    default=30,
+                )
+            )
         if resp.status_code >= 400:
             logger.warning("[Preview] Deezer HTTP %s: %s", resp.status_code, query)
             continue
 
         try:
             payload = resp.json()
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
             logger.warning("[Preview] Deezer 응답 JSON 파싱 실패: %s", query)
-            continue
+            raise PreviewProviderUnavailable(retry_after="30") from exc
         items = payload.get("data", []) if isinstance(payload, dict) else []
 
         best = _best_candidate(items, clean, artist, wanted)
@@ -249,13 +291,18 @@ async def get_preview_url(
     track: str = Query(..., min_length=1, max_length=200, description="곡명"),
     artist: str = Query(default="", max_length=200, description="아티스트명 (선택)"),
 ):
-    """Deezer 30초 미리 듣기 URL을 반환합니다.
+    """검증된 Deezer 30초 미리 듣기 정보를 반환합니다.
 
     클라이언트가 직접 URL을 재생할 때 사용하세요.
     URL은 Deezer CDN 만료 시각이 포함되어 있으므로 즉시 재생해야 합니다.
+    track·artist는 실제로 선택된 Deezer 트랙 값이고, requested에는 클라이언트가
+    보낸 원래 track·artist가 들어갑니다.
     """
     http: httpx.AsyncClient = request.app.state.http
-    match = await _fetch_preview(http, track, artist)
+    try:
+        match = await _fetch_preview(http, track, artist)
+    except PreviewProviderUnavailable as exc:
+        raise _provider_unavailable_http_error(exc) from exc
 
     if not match:
         raise HTTPException(
@@ -290,7 +337,10 @@ async def stream_preview(
     더 효율적입니다.
     """
     http: httpx.AsyncClient = request.app.state.http
-    match = await _fetch_preview(http, track, artist)
+    try:
+        match = await _fetch_preview(http, track, artist)
+    except PreviewProviderUnavailable as exc:
+        raise _provider_unavailable_http_error(exc) from exc
 
     if not match:
         raise HTTPException(

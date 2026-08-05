@@ -1,9 +1,11 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from preview import (
     PreviewMatch,
+    PreviewProviderUnavailable,
     _best_candidate,
     _content_disposition,
     _fetch_preview,
@@ -159,9 +161,10 @@ def test_search_queries_preserve_requested_version_before_base_title():
 
 
 class FakeResponse:
-    def __init__(self, items, status_code=200):
+    def __init__(self, items, status_code=200, headers=None):
         self._items = items
         self.status_code = status_code
+        self.headers = headers or {}
 
     def json(self):
         return {"data": self._items}
@@ -189,6 +192,7 @@ class StaticResponseHttp:
 
 class InvalidJsonResponse:
     status_code = 200
+    headers = {}
 
     def json(self):
         raise ValueError("invalid json")
@@ -214,18 +218,71 @@ async def test_fetch_preview_searches_requested_version_first():
     assert http.queries == ['track:"Creep (Acoustic)" artist:"Radiohead"']
 
 
-async def test_fetch_preview_handles_deezer_http_error_as_no_match():
+async def test_fetch_preview_stops_after_deezer_server_error():
     http = StaticResponseHttp(FakeResponse([], status_code=500))
 
-    assert await _fetch_preview(http, "Creep", "Radiohead") is None
-    assert http.calls == 3
+    with pytest.raises(PreviewProviderUnavailable) as exc:
+        await _fetch_preview(http, "Creep", "Radiohead")
+
+    assert exc.value.retry_after == "30"
+    assert http.calls == 1
 
 
-async def test_fetch_preview_handles_invalid_json_as_no_match():
+async def test_fetch_preview_stops_after_invalid_json():
     http = StaticResponseHttp(InvalidJsonResponse())
 
-    assert await _fetch_preview(http, "Creep", "Radiohead") is None
-    assert http.calls == 3
+    with pytest.raises(PreviewProviderUnavailable):
+        await _fetch_preview(http, "Creep", "Radiohead")
+
+    assert http.calls == 1
+
+
+async def test_fetch_preview_stops_after_network_error():
+    class NetworkErrorHttp:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            raise httpx.ConnectError("connection failed")
+
+    http = NetworkErrorHttp()
+
+    with pytest.raises(PreviewProviderUnavailable) as exc:
+        await _fetch_preview(http, "Creep (Acoustic)", "Radiohead")
+
+    assert exc.value.retry_after == "30"
+    assert http.calls == 1
+
+
+@pytest.mark.parametrize("route", [get_preview_url, stream_preview])
+async def test_preview_routes_report_deezer_rate_limit_as_503(route):
+    from fastapi import HTTPException
+
+    http = StaticResponseHttp(
+        FakeResponse([], status_code=429, headers={"Retry-After": "17"})
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await route(_request(http), track="Creep", artist="Radiohead")
+
+    assert exc.value.status_code == 503
+    assert exc.value.headers == {"Retry-After": "17"}
+    assert http.calls == 1
+
+
+async def test_preview_rate_limit_replaces_invalid_retry_after():
+    from fastapi import HTTPException
+
+    http = StaticResponseHttp(
+        FakeResponse([], status_code=429, headers={"Retry-After": "bad\r\nheader"})
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await get_preview_url(_request(http), track="Creep", artist="Radiohead")
+
+    assert exc.value.status_code == 503
+    assert exc.value.headers == {"Retry-After": "60"}
 
 
 async def test_get_preview_url_returns_resolved_track_not_echo():
