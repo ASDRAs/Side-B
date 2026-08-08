@@ -86,7 +86,10 @@ class TrackInfo:
     name: str
     artist: str
     album_art_url: str | None = None
-    popularity: int | None = None
+    # 후보 풀 안에서의 상대 노출도(0=최저, 1=최고). 신호가 없으면 None이다.
+    # 전역 척도가 아니므로 요청 사이에 비교하지 않는다.
+    exposure_score: float | None = None
+    exposure_source: str = "none"
     match_score: float | None = None
     reverse_score: float | None = None
     algo: str = ""
@@ -127,7 +130,15 @@ def track_to_api_dict(track: TrackInfo) -> dict[str, Any]:
         "artist": track.artist,
         "source_id": track.source_id,
         "album_art_url": track.album_art_url,
-        "popularity": track.popularity,
+        # `popularity`는 호환용 별칭이다. 예전에는 Deezer rank를 log로 눌러 만든
+        # 절대값이었지만 지금은 후보 풀 안의 백분위다. 요청 사이에 비교하면 안
+        # 되므로 무엇에서 나온 값인지 `exposure_source`로 함께 알린다.
+        "popularity": (
+            None
+            if track.exposure_score is None
+            else round(track.exposure_score * 100)
+        ),
+        "exposure_source": track.exposure_source,
         "match_score": track.match_score,
         "reverse_score": track.reverse_score,
         "algo": track.algo,

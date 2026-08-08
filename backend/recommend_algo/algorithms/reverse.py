@@ -130,12 +130,10 @@ async def reverse_top100(
         balanced_candidates = scoring._balanced_candidate_slice(
             merged_candidates, top_n * 3
         )
-        # popularity를 채운 뒤 다시 중복 제거
-        enriched_candidates = scoring._dedupe_tracks(
-            await sources.get_tracks_metadata(
-                http, balanced_candidates, fields=["popularity"]
-            )
-        )
+        # 노출도는 Last.fm 응답이 이미 준 값으로 계산한다. 예전에는 여기서
+        # 후보 전부를 Deezer에 물어 popularity를 채웠다.
+        enriched_candidates = scoring._dedupe_tracks(balanced_candidates)
+        scoring.assign_exposure(enriched_candidates)
 
         # ── 비주류 점수 계산 ───────────────────────────────────────
         # 1단계: 너무 뻔한 상위 추천곡 제외하기 (Obvious Filter)
@@ -152,26 +150,10 @@ async def reverse_top100(
             key = scoring._track_key(track)
             if key not in obvious_keys:
                 discovery_pool.append(track)
-        # 인기도가 낮은 곡들만 추가
-        low_exposure = []
-        for track in discovery_pool:
-            if track.popularity is None:
-                track.popularity = scoring.DEFAULT_POPULARITY
-
-            if scoring._is_low_exposure(track.popularity):
-                low_exposure.append(track)
-
-        # 만약, 비주류 곡들이 추천 갯수보다 많다면 유명한 곡들은 완전히 제거하고 비주류 곡만 pool에 담음
-        if len(low_exposure) >= top_n:
-            discovery_pool = low_exposure
-
         pool_size = max(len(discovery_pool) - 1, 1)
         # 비주류 점수 계산
         for rank, track in enumerate(discovery_pool):
-            obscurity = scoring._popularity_obscurity(
-                track.popularity,
-                ceiling=scoring.OBSCURITY_CEILING,
-            )
+            obscurity = scoring.obscurity_of(track)
             match = scoring._clamp_score(track.match_score or 0.0)
             middle_similarity = max(0.0, 1 - (abs(match - 0.35) / 0.45))
             rank_novelty = rank / pool_size

@@ -135,18 +135,17 @@ async def hidden_discovery_by_artist(
         pre_scored.sort(key=lambda x: x[0], reverse=True)
         prescored_candidates = [row for _, row in pre_scored[: top_n * 3]]
 
-        tracks_metadata = await sources.get_tracks_metadata(
-            http, [row[3] for row in prescored_candidates], fields=["popularity"]
-        )
+        # 이 경로는 후보 전원이 artist.getTopTracks에서 오므로 listeners가 다
+        # 채워져 있다. 아티스트 간 비교가 되는 유일한 신호라 Deezer 없이도
+        # 노출도 판정이 성립한다.
+        tracks_metadata = [row[3] for row in prescored_candidates]
+        scoring.assign_exposure(tracks_metadata)
 
         # 최종 비주류 점수 계산
         for candidate_score, track in zip(prescored_candidates, tracks_metadata):
             artist_rank, track_rank, artist_match, _ = candidate_score
-            # 노래 재생횟수도 반영하여 비주류 점수 재계산
-            obscurity = scoring._popularity_obscurity(
-                track.popularity,
-                ceiling=scoring.OBSCURITY_CEILING,
-            )
+            # 청취자 수 기준 상대 노출도를 반영하여 비주류 점수 재계산
+            obscurity = scoring.obscurity_of(track)
             artist_affinity = (
                 artist_match
                 if artist_match > 0
@@ -162,14 +161,6 @@ async def hidden_discovery_by_artist(
         ranked_pool = sorted(
             tracks_metadata, key=lambda item: item.reverse_score or 0, reverse=True
         )
-        low_exposure_pool = [
-            track
-            for track in ranked_pool
-            if scoring._is_low_exposure(track.popularity)
-        ]
-        if len(low_exposure_pool) >= top_n:
-            ranked_pool = low_exposure_pool
-
         ranked = scoring._cap_per_artist(scoring._dedupe_tracks(ranked_pool), max_per=1)[
             :top_n
         ]
