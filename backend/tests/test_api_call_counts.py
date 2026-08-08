@@ -10,6 +10,7 @@ from recommend_algo import (
     reverse_top100,
     similar_listening_pattern,
 )
+from tests.lastfm_fakes import ArtistTopTracksSource, SimilarTrackSource
 
 TOP_N = 10
 ENRICH_LIMIT_SIMILAR = TOP_N
@@ -63,28 +64,9 @@ class FakeSimilarResult:
         self.match = match
 
 
-class FakeLfTrack:
-    def __init__(self, similar_items):
-        self._similar = similar_items
-
-    def get_similar(self, limit=50):
-        return self._similar[:limit]
-
-
-class FakeSimilarArtistItem:
+class FakeSimilarArtistItem(ArtistTopTracksSource):
     def __init__(self, name, n_tracks=4):
-        self._name = name
-        self._n = n_tracks
-
-    def get_name(self):
-        return self._name
-
-    def get_top_tracks(self, limit=10):
-        class TR:
-            def __init__(self_, artist, title):
-                self_.item = FakeTrack(artist, title)
-
-        return [TR(self._name, f"Track{i}") for i in range(min(limit, self._n))]
+        super().__init__(name, [f"Track{i}" for i in range(n_tracks)])
 
 
 class FakeSimilarArtistResult:
@@ -109,7 +91,7 @@ class CombinedFakeLastFm:
         self._artists = similar_artists or []
 
     def get_track(self, artist, name):
-        return FakeLfTrack(self._tracks)
+        return SimilarTrackSource(self._tracks, artist, name)
 
     def get_artist(self, artist):
         return FakeLfArtist(self._artists)

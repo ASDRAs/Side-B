@@ -14,6 +14,7 @@ from recommend_algo import (
 )
 from recommend_algo.common import scoring, seeds
 from recommend_algo.common.models import ProviderBinding, TrackInfo
+from tests.lastfm_fakes import ArtistTopTracksSource, SimilarTrackSource
 
 
 def test_mood_analysis_allows_missing_opposite_tags():
@@ -107,20 +108,12 @@ class FakeSimilarResult:
         self.match = match
 
 
-class FakeSimilarTrack:
-    def __init__(self, similar_items):
-        self.similar_items = similar_items
-
-    def get_similar(self, limit=50):
-        return self.similar_items[:limit]
-
-
 class SimilarFakeLastFm:
     def __init__(self, similar_items):
         self.similar_items = similar_items
 
     def get_track(self, artist, track_name):
-        return FakeSimilarTrack(self.similar_items)
+        return SimilarTrackSource(self.similar_items, artist, track_name)
 
 
 class AliasSimilarFakeLastFm:
@@ -130,7 +123,9 @@ class AliasSimilarFakeLastFm:
 
     def get_track(self, artist, track_name):
         self.track_calls.append((artist, track_name))
-        return FakeSimilarTrack(self.similar_by_pair.get((artist, track_name), []))
+        return SimilarTrackSource(
+            self.similar_by_pair.get((artist, track_name), []), artist, track_name
+        )
 
 
 class CombinedFakeLastFm(SimilarFakeLastFm):
@@ -147,16 +142,11 @@ class FakeTopTrackResult:
         self.item = FakeTrack(artist, title)
 
 
-class FakeSimilarArtist:
+class FakeSimilarArtist(ArtistTopTracksSource):
+    """artist.getTopTracks XML을 내는 유사 아티스트."""
+
     def __init__(self, name, tracks):
-        self.name = name
-        self.tracks = tracks
-
-    def get_name(self):
-        return self.name
-
-    def get_top_tracks(self, limit=10):
-        return [FakeTopTrackResult(self.name, title) for title in self.tracks[:limit]]
+        super().__init__(name, tracks)
 
 
 class FakeSimilarArtistResult:
