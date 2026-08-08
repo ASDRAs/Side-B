@@ -341,6 +341,12 @@ async def _resolve_media(
 
     Deezer는 마지막 공급자라 여기서 나는 429·장애는 그대로 503으로 올린다.
     alru_cache는 예외를 캐시하지 않으므로 일시 장애가 고착되지 않는다.
+
+    반대로 "확정적으로 없음"은 예외가 아니라 None으로 돌려준다. 두 가지가
+    달려 있다. 호출부는 None을 404로 옮기고 `PreviewProviderUnavailable`만
+    잡으므로, 여기서 예외를 던지면 404가 500이 된다. 그리고 alru_cache가 None은
+    캐시하고 예외는 캐시하지 않으므로, 없는 곡을 다시 눌러도 공급자를 또 부르지
+    않는 negative cache가 여기에 걸려 있다.
     """
     binding = await _fetch_itunes_preview(http, track_name, artist)
     if binding is None:
@@ -348,7 +354,7 @@ async def _resolve_media(
 
     if binding is None:
         logger.info("[Preview] 일치하는 미리 듣기 없음: %s - %s", track_name, artist)
-        raise LookupError("preview media not found")
+        return None
 
     logger.info(
         "[Preview] 발견: %s - %s (%s:%s)",

@@ -453,6 +453,29 @@ async def test_itunes_circuit_breaker_skips_the_search_entirely():
     assert http.itunes_terms == []
 
 
+async def test_no_match_is_returned_as_none_not_raised():
+    """확정적 미매치는 예외가 아니다.
+
+    라우트는 None을 404로 옮기고 `PreviewProviderUnavailable`만 잡는다. 여기서
+    예외를 던지면 없는 곡이 404가 아니라 500이 된다.
+    """
+    http = RoutingHttp(itunes=[], deezer=[])
+
+    assert await _resolve_media(http, "Nonexistent", "Nobody") is None
+
+
+async def test_no_match_is_cached_so_a_retry_costs_no_provider_call():
+    """미매치도 캐시된다. 예외로 바꾸면 alru_cache가 저장하지 않아 사라진다."""
+    http = RoutingHttp(itunes=[], deezer=[])
+
+    await _resolve_media(http, "Nonexistent", "Nobody")
+    after_first = len(http.calls)
+    await _resolve_media(http, "Nonexistent", "Nobody")
+
+    assert after_first > 0
+    assert len(http.calls) == after_first
+
+
 async def test_resolve_media_caches_the_confirmed_binding():
     """같은 곡을 다시 눌러도 공급자를 다시 조회하지 않는다."""
     http = RoutingHttp(itunes=[_itunes(11, "Creep", "Radiohead")])
