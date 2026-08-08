@@ -14,8 +14,6 @@ from tests.lastfm_fakes import ArtistTopTracksSource, SimilarTrackSource
 
 TOP_N = 10
 ENRICH_LIMIT_SIMILAR = TOP_N
-ENRICH_LIMIT_REVERSE = TOP_N * 3
-ENRICH_LIMIT_HIDDEN = TOP_N * 3
 FINAL_METADATA_LIMIT = TOP_N
 
 
@@ -168,9 +166,9 @@ async def test_reverse_enrich_count_is_at_most_top_n_times_3(monkeypatch):
         for fields, count in metadata_calls
         if fields == ("album_art", "source_id")
     )
-    assert popularity_total <= ENRICH_LIMIT_REVERSE, (
+    assert popularity_total == 0, (
         f"reverse_top100이 {popularity_total}개를 popularity enrich함. "
-        f"기대: <= {ENRICH_LIMIT_REVERSE}"
+        "노출도는 Last.fm 응답에서 계산하므로 이 fan-out은 0이어야 한다."
     )
     assert final_total <= FINAL_METADATA_LIMIT, (
         f"reverse_top100이 {final_total}개를 최종 metadata enrich함. "
@@ -207,9 +205,9 @@ async def test_hidden_enrich_count_is_at_most_top_n_times_3(monkeypatch):
         for fields, count in metadata_calls
         if fields == ("album_art", "source_id")
     )
-    assert popularity_total <= ENRICH_LIMIT_HIDDEN, (
+    assert popularity_total == 0, (
         f"hidden_discovery가 {popularity_total}개를 popularity enrich함. "
-        f"기대: <= {ENRICH_LIMIT_HIDDEN}"
+        "노출도는 Last.fm 응답에서 계산하므로 이 fan-out은 0이어야 한다."
     )
     assert final_total <= FINAL_METADATA_LIMIT, (
         f"hidden_discovery가 {final_total}개를 최종 metadata enrich함. "

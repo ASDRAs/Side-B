@@ -646,8 +646,6 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
                 track.bind(
                     ProviderBinding(provider="deezer", provider_track_id=str(index))
                 )
-            if fields == "all" or "popularity" in fields:
-                track.popularity = 20 + index
         return tracks
 
     monkeypatch.setattr(
@@ -676,10 +674,12 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
         "chill",
     }
     assert all(track.album_art_url for tracks in result.values() for track in tracks)
-    assert metadata_calls == [
-        (15, ("popularity",)),
-        (6, ("album_art", "source_id")),
-    ]
+    # 후보 15개에 대한 popularity fan-out이 사라졌다. 노출도는 태그 순위에서 나온다.
+    assert metadata_calls == [(6, ("album_art", "source_id"))]
+    assert all(
+        track.exposure_source == "tag_rank"
+        for track in result["hidden"] + result["similar"]
+    )
 
 
 async def test_reverse_top100_skips_visible_similar_and_prefers_low_exposure(
