@@ -5,7 +5,7 @@ import httpx
 import pylast
 
 from app.utils.text import compact_text
-from recommend_algo.common import scoring, sources
+from recommend_algo.common import lastfm_raw, scoring, sources
 from recommend_algo.common.models import TrackInfo
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,8 @@ async def hidden_discovery_by_artist(
                 response_tracks = await sources._lf_call(
                     f"lf:artist_top:{compact_text(artist_name)}:{max_track_num}",
                     600,
-                    pylast_artist.get_top_tracks,
+                    lastfm_raw.artist_top_tracks,
+                    pylast_artist,
                     max_track_num,
                 )
             except Exception as exc:
@@ -98,6 +99,7 @@ async def hidden_discovery_by_artist(
                     artist=artist_name,
                     match_score=artist_match,
                     reason_tags=[artist_name],
+                    signals=lastfm_raw.signals_of(track_metadata),
                 )
                 if scoring._track_key(candidate) in excluded:
                     continue

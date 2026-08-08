@@ -4,7 +4,7 @@ import logging
 import pylast
 
 from app.utils.text import compact_text
-from recommend_algo.common import scoring, sources
+from recommend_algo.common import lastfm_raw, scoring, sources
 from recommend_algo.common.models import TrackInfo
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,8 @@ async def _track_similar_tracks(
             raw = await sources._lf_call(
                 f"lf:track_similar:{cache_artist}:{cache_name}:{limit}",
                 600,
-                lf_track.get_similar,
+                lastfm_raw.track_similar,
+                lf_track,
                 limit,
             )
 
@@ -140,6 +141,7 @@ async def _collect_tag_tracks(
                     artist=artist,
                     match_score=tag_priority * 0.65 + rank_score * 0.35,
                     reason_tags=[tag],
+                    signals=lastfm_raw.tag_signals(tag, rank + 1),
                 )
             )
         return tracks

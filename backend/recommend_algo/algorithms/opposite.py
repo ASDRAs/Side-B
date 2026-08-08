@@ -8,7 +8,7 @@ from app.llm.llm_response import OppositeTagAnalysis
 from app.llm.llm_wrapper import GeminiWrapper
 from app.llm.prompt import OPPOSITE_TAG_PROMPT
 from app.utils.text import compact_text, text_ratio
-from recommend_algo.common import scoring, seeds, sources
+from recommend_algo.common import lastfm_raw, scoring, seeds, sources
 from recommend_algo.common.models import TrackInfo
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ async def opposite_emotion(
             tag_obj.get_top_tracks,
             top_n * 4,
         )
-        for track_metadata in response or []:
+        for rank, track_metadata in enumerate(response or [], start=1):
             opp_track_name = track_metadata.item.get_name()
             opp_artist = track_metadata.item.get_artist().get_name()
             if _is_same_track(opp_track_name, opp_artist, track_name, artist):
@@ -65,6 +65,7 @@ async def opposite_emotion(
                 artist=opp_artist,
                 algo="opposite_emotion",
                 label=f"#{tag} 반전 무드",
+                signals=lastfm_raw.tag_signals(tag, rank),
             )
             if scoring._track_key(candidate) not in excluded:
                 collected.append(candidate)
@@ -81,7 +82,8 @@ async def opposite_emotion(
         response = await sources._lf_call(
             f"lf:track_similar:{compact_text(artist)}:{compact_text(track_name)}:{top_n * 4}",
             600,
-            lf_track.get_similar,
+            lastfm_raw.track_similar,
+            lf_track,
             top_n * 4,
         )
 
@@ -93,6 +95,7 @@ async def opposite_emotion(
                 match_score=float(item.match),
                 algo="opposite_emotion",
                 label="유사곡 기반 반전 추천",
+                signals=lastfm_raw.signals_of(item),
             )
             if scoring._track_key(candidate) not in excluded:
                 collected.append(candidate)
