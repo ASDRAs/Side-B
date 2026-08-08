@@ -48,6 +48,33 @@ def binding_from_source_id(
     )
 
 
+@dataclass(frozen=True)
+class DiscoverySignals:
+    """Last.fm 응답이 실제로 준 값.
+
+    엔드포인트마다 주는 필드가 다르다. 없는 값은 `None`이지 0이 아니다 —
+    `tag.getTopTracks`에는 playcount가 아예 없는데 pylast는 그걸 0으로 만든다.
+    0과 미제공을 구분하지 못하면 노출도 점수가 조용히 틀어진다.
+
+    | 엔드포인트            | 주는 것                           |
+    |----------------------|-----------------------------------|
+    | `track.getSimilar`   | match, playcount                  |
+    | `artist.getTopTracks`| listeners, playcount, rank        |
+    | `tag.getTopTracks`   | rank만                            |
+
+    `source_rank`는 그 응답 안에서의 순위다. 아티스트 간 절대 노출도로 비교하면
+    안 된다. hidden 경로는 아티스트당 상위 4곡만 받아서 모든 후보의 rank가
+    1~4에 몰린다.
+    """
+
+    similarity_match: float | None = None
+    global_playcount: int | None = None
+    global_listeners: int | None = None
+    source_rank: int | None = None
+    source_group: str | None = None
+    evidence_source: str = ""
+
+
 @dataclass
 class TrackInfo:
     """곡의 정체성과 추천 점수를 함께 들고 다니는 내부 표현.
@@ -68,6 +95,8 @@ class TrackInfo:
     # remix/live/acoustic 등 다른 recording은 별도 곡으로 유지하기 위한 자리.
     recording_variant: str | None = None
     bindings: dict[ProviderName, ProviderBinding] = field(default_factory=dict)
+    # 이 후보를 발견한 Last.fm 응답의 원시 증거. 아직 점수에 쓰지 않는다.
+    signals: DiscoverySignals | None = None
 
     def bind(self, binding: ProviderBinding | None) -> None:
         """공급자 슬롯에 기록한다. 같은 공급자의 재확정만 덮어쓴다."""
