@@ -22,7 +22,7 @@ from app.services.catalog import (
     _looks_like_bad_version,
 )
 from app.utils.text import compact_text
-from recommend_algo.common.models import TrackInfo
+from recommend_algo.common.models import ProviderBinding, TrackInfo
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +284,8 @@ def _itunes_track(item: dict[str, Any] | None) -> ResolvedTrack | None:
     artist = str(item.get("artistName") or "").strip()
     if not name or not artist:
         return None
-    return name, artist, _itunes_source_id(item)
+    binding = _itunes_binding(item)
+    return name, artist, binding.source_id if binding else None
 
 
 @alru_cache(maxsize=500, ttl=3600)
@@ -444,7 +445,12 @@ async def get_tracks_metadata(
                         _itunes_artwork(itunes_item) or track.album_art_url
                     )
                 if req_id:
-                    track.source_id = _itunes_source_id(itunes_item) or track.source_id
+                    track.bind(_itunes_binding(itunes_item))
+
+            # popularity 때문에 이미 받아 둔 Deezer 응답이 있으면 그 binding도 남긴다.
+            # 대표 source_id는 우선순위(itunes -> deezer)가 정하므로 값은 그대로다.
+            if req_id and deezer_item:
+                track.bind(_deezer_binding(deezer_item))
 
             # 2. itune와 req field 확인 후 API return 값 확인
             is_missing_art = req_art and not track.album_art_url
@@ -471,7 +477,7 @@ async def get_tracks_metadata(
 
                     # 4-2. deezer에서 source id
                     if is_missing_id:
-                        track.source_id = _deezer_source_id(deezer_item)
+                        track.bind(_deezer_binding(deezer_item))
 
             # 5. deezer에도 album art가 없는 경우 lastfm에서 가져옴
             is_missing_art = req_art and not track.album_art_url
@@ -500,14 +506,31 @@ def _itunes_artwork(item: dict[str, Any]) -> str | None:
     return re.sub(r"/\d+x\d+bb\.(jpg|png)$", r"/600x600bb.\1", url)
 
 
-def _itunes_source_id(item: dict[str, Any]) -> str | None:
+def _itunes_binding(item: dict[str, Any]) -> ProviderBinding | None:
     track_id = item.get("trackId")
-    return f"itunes:{track_id}" if track_id else None
+    if not track_id:
+        return None
+    return ProviderBinding(
+        provider="itunes",
+        provider_track_id=str(track_id),
+        resolved_title=str(item.get("trackName") or "").strip(),
+        resolved_artist=str(item.get("artistName") or "").strip(),
+    )
 
 
-def _deezer_source_id(item: dict[str, Any]) -> str | None:
+def _deezer_binding(item: dict[str, Any]) -> ProviderBinding | None:
     track_id = item.get("id")
-    return f"deezer:{track_id}" if track_id else None
+    if not track_id:
+        return None
+    # Deezer의 artist는 dict가 정상이지만 문자열이 오는 응답도 있다.
+    artist = item.get("artist")
+    resolved_artist = artist.get("name") if isinstance(artist, dict) else artist
+    return ProviderBinding(
+        provider="deezer",
+        provider_track_id=str(track_id),
+        resolved_title=str(item.get("title") or "").strip(),
+        resolved_artist=str(resolved_artist or "").strip(),
+    )
 
 
 def analyze_music_query(

@@ -12,7 +12,7 @@ from app.services.recommend_service import (
     run_recommend,
 )
 from main import app
-from recommend_algo import TrackInfo
+from recommend_algo import TrackInfo, binding_from_source_id
 from recommend_algo.common import scoring
 
 
@@ -54,9 +54,9 @@ def test_tag_fallback_seed_label_uses_representative_track():
     representative = TrackInfo(
         name="Under Caffeine",
         artist="Stella Jang",
-        source_id="lastfm:under-caffeine",
         album_art_url="https://example.com/under-caffeine.jpg",
     )
+    representative.bind(binding_from_source_id("lastfm:under-caffeine"))
     tag_results = {
         "similar": [representative],
         "opposite": [],

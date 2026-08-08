@@ -1,6 +1,5 @@
 import logging
 from collections.abc import Awaitable
-from dataclasses import asdict
 
 import httpx
 import pylast
@@ -18,6 +17,7 @@ from recommend_algo import (
     tag_based_recommendations,
 )
 from recommend_algo.common import scoring
+from recommend_algo.common.models import binding_from_source_id, track_to_api_dict
 from recommend_algo.common.sources import analyze_music_query
 
 logger = logging.getLogger(__name__)
@@ -158,7 +158,9 @@ async def run_recommend(
             top_n=top_n,
         )
         if tag_results and any(tag_results.values()):
-            processed = {k: [asdict(t) for t in v] for k, v in tag_results.items()}
+            processed = {
+                k: [track_to_api_dict(t) for t in v] for k, v in tag_results.items()
+            }
             representative = _pick_representative_track(tag_results)
             logger.info("Tag fallback used for query: %s", query)
             return dict(
@@ -190,7 +192,9 @@ async def run_recommend(
             logger.warning("Direct query could not be resolved: %s", query)
             return _empty_recommendation(query, top_n, ("similar", "reverse", "hidden"))
 
-        user_track_info = TrackInfo(name=name, artist=artist, source_id=source_id)
+        user_track_info = TrackInfo(name=name, artist=artist)
+        # direct resolver가 확정한 seed는 그 공급자의 binding으로 기록한다.
+        user_track_info.bind(binding_from_source_id(source_id, name, artist))
 
         user_track_info = await get_tracks_metadata(
             http, [user_track_info], lastfm, fields=["album_art", "source_id"]
@@ -221,7 +225,7 @@ async def run_recommend(
         )
 
         processed_rcmd_results = {
-            rcmd_type: [asdict(track) for track in rcmd_result]
+            rcmd_type: [track_to_api_dict(track) for track in rcmd_result]
             for rcmd_type, rcmd_result in rcmd_results.items()
         }
 
