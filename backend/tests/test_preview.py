@@ -480,6 +480,7 @@ async def test_preview_routes_report_deezer_rate_limit_as_503(route):
 
     assert exc.value.status_code == 503
     assert exc.value.headers == {"Retry-After": "17"}
+    assert http.calls == 2  # iTunes 429 뒤 Deezer 429, 공급자별 한 번씩
 
 
 # 공급자가 준 Retry-After를 그대로 응답 헤더에 넣으므로, delta-seconds가 아닌
