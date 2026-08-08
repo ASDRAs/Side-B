@@ -64,6 +64,20 @@ def signals_of(item: Any) -> DiscoverySignals | None:
     return getattr(item, "signals", None)
 
 
+def tag_signals(tag: str, rank: int) -> DiscoverySignals:
+    """`tag.getTopTracks` 후보의 신호.
+
+    이 엔드포인트는 rank 말고 아무것도 주지 않아 어댑터가 필요 없다. 대신
+    호출부가 응답 순서로 센 rank를 받는다. 경로마다 따로 만들면 한쪽이 필드를
+    빠뜨려 coverage 집계가 어긋나므로 여기서만 만든다.
+    """
+    return DiscoverySignals(
+        source_rank=rank,
+        source_group=tag,
+        evidence_source="tag.getTopTracks",
+    )
+
+
 def _number(value: str | None) -> int | None:
     """pylast의 `_number`와 달리 미제공을 0으로 만들지 않는다."""
     try:

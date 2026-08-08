@@ -9,7 +9,7 @@ from app.llm.llm_wrapper import GeminiWrapper
 from app.llm.prompt import OPPOSITE_TAG_PROMPT
 from app.utils.text import compact_text, text_ratio
 from recommend_algo.common import lastfm_raw, scoring, seeds, sources
-from recommend_algo.common.models import DiscoverySignals, TrackInfo
+from recommend_algo.common.models import TrackInfo
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ async def opposite_emotion(
             tag_obj.get_top_tracks,
             top_n * 4,
         )
-        for track_metadata in response or []:
+        for rank, track_metadata in enumerate(response or [], start=1):
             opp_track_name = track_metadata.item.get_name()
             opp_artist = track_metadata.item.get_artist().get_name()
             if _is_same_track(opp_track_name, opp_artist, track_name, artist):
@@ -65,10 +65,7 @@ async def opposite_emotion(
                 artist=opp_artist,
                 algo="opposite_emotion",
                 label=f"#{tag} 반전 무드",
-                # tag.getTopTracks는 rank 말고 주는 것이 없다.
-                signals=DiscoverySignals(
-                    source_group=tag, evidence_source="tag.getTopTracks"
-                ),
+                signals=lastfm_raw.tag_signals(tag, rank),
             )
             if scoring._track_key(candidate) not in excluded:
                 collected.append(candidate)

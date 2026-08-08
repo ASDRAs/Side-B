@@ -5,7 +5,7 @@ import pylast
 
 from app.utils.text import compact_text
 from recommend_algo.common import lastfm_raw, scoring, sources
-from recommend_algo.common.models import DiscoverySignals, TrackInfo
+from recommend_algo.common.models import TrackInfo
 
 logger = logging.getLogger(__name__)
 
@@ -141,13 +141,7 @@ async def _collect_tag_tracks(
                     artist=artist,
                     match_score=tag_priority * 0.65 + rank_score * 0.35,
                     reason_tags=[tag],
-                    # tag.getTopTracks는 rank 말고 아무것도 주지 않는다. pylast는
-                    # 없는 playcount를 0으로 만드는데, 0과 미제공은 다르다.
-                    signals=DiscoverySignals(
-                        source_rank=rank + 1,
-                        source_group=tag,
-                        evidence_source="tag.getTopTracks",
-                    ),
+                    signals=lastfm_raw.tag_signals(tag, rank + 1),
                 )
             )
         return tracks

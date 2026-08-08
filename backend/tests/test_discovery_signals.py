@@ -3,6 +3,8 @@
 PR 3은 필드만 보존한다. 점수와 추천 순서는 바꾸지 않는다.
 """
 
+from pathlib import Path
+
 import pytest
 
 from recommend_algo.common import lastfm_raw
@@ -143,6 +145,69 @@ def test_rows_without_artist_are_skipped():
 
 def test_signals_of_tolerates_objects_without_signals():
     assert lastfm_raw.signals_of(object()) is None
+
+
+# ── tag 경로는 두 곳에서 쓰지만 신호 구조는 하나여야 한다 ────────────
+
+
+def test_tag_signals_carry_rank_and_nothing_else():
+    """tag.getTopTracks는 rank 말고 주는 것이 없다.
+
+    playcount는 응답에 아예 없다. pylast는 그걸 0으로 만드는데, 0으로 남기면
+    아무도 안 들은 곡과 구분되지 않는다.
+    """
+    signals = lastfm_raw.tag_signals("k-pop", 3)
+
+    assert signals.source_rank == 3
+    assert signals.source_group == "k-pop"
+    assert signals.evidence_source == "tag.getTopTracks"
+    assert signals.global_playcount is None
+    assert signals.global_listeners is None
+    assert signals.similarity_match is None
+
+
+def test_tag_signals_are_built_in_exactly_one_place():
+    """seed와 opposite가 각자 만들면 한쪽이 필드를 빠뜨린다.
+
+    실제로 그렇게 됐다. opposite 경로만 `source_rank`가 비어서 같은
+    `tag.getTopTracks` 후보인데 경로에 따라 coverage 집계가 달라졌다. 두 곳이
+    같은 값을 쓰는지 확인하는 것으로는 부족하고, 애초에 두 번 만들지 않는 것을
+    고정해야 같은 실수가 다시 나지 않는다.
+    """
+    root = Path(lastfm_raw.__file__).resolve().parents[1]
+    offenders = [
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*.py")
+        if path.name != "lastfm_raw.py"
+        and 'evidence_source="tag.getTopTracks"' in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == [], (
+        f"tag 신호를 직접 만드는 곳: {offenders}. lastfm_raw.tag_signals를 쓸 것"
+    )
+
+
+async def test_seed_tag_path_ranks_from_one(monkeypatch):
+    """rank는 1부터 센다. 0부터 세면 첫 곡이 '순위 없음'과 헷갈린다."""
+    from recommend_algo.common import seeds, sources
+
+    class _TagItem:
+        def __init__(self, artist, title):
+            self.item = _Track(artist, title)
+
+    class _Tag:
+        def get_top_tracks(self, limit=10):
+            return [_TagItem("IU", "Lilac"), _TagItem("BOL4", "Galaxy")]
+
+    class _LastFm:
+        def get_tag(self, tag):
+            return _Tag()
+
+    monkeypatch.setattr(sources, "_cache_get", lambda key, ttl: (False, None))
+    groups = await seeds._collect_tag_tracks(["k-pop"], _LastFm(), 10)
+
+    assert [t.signals.source_rank for t in groups[0]] == [1, 2]
+    assert all(t.signals.evidence_source == "tag.getTopTracks" for t in groups[0])
 
 
 # ── 응답에는 새지 않는다 ──────────────────────────────────────────

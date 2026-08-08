@@ -43,6 +43,8 @@ def _log_signal_coverage(scope: str, results: dict[str, list[TrackInfo]]) -> Non
     PR 4가 `exposure_score`를 설계할 근거다. 어느 버킷이 `listeners`를 실제로
     받는지, 어디가 비는지를 실제 질의 분포에서 봐야 임계값을 정할 수 있다.
     """
+    if not logger.isEnabledFor(logging.INFO):
+        return
     for bucket, tracks in results.items():
         if not tracks:
             continue
