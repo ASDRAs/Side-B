@@ -348,7 +348,7 @@ async def _resolve_media(
 
     if binding is None:
         logger.info("[Preview] 일치하는 미리 듣기 없음: %s - %s", track_name, artist)
-        return None
+        raise LookupError("preview media not found")
 
     logger.info(
         "[Preview] 발견: %s - %s (%s:%s)",
