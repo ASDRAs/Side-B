@@ -9,6 +9,7 @@ from preview import (
     _content_disposition,
     _fetch_deezer_preview,
     _resolve_media,
+    _retry_after_seconds,
     _search_queries,
     _strip_version,
     _version_markers,
@@ -242,21 +243,36 @@ class FakeResponse:
 
 
 class RoutingHttp:
-    """iTunes와 Deezer를 구분해 응답하는 fake."""
+    """iTunes와 Deezer를 구분해 응답하는 fake.
+
+    `calls`는 두 공급자를 시간 순서대로 한 리스트에 담는다. 순서를 주장하려면
+    공급자별 리스트만으로는 부족하다.
+    """
 
     def __init__(self, itunes=(), deezer=(), itunes_response=None):
         self.itunes = list(itunes)
         self.deezer = list(deezer)
         self.itunes_response = itunes_response
-        self.itunes_terms: list[str] = []
-        self.deezer_queries: list[str] = []
+        self.calls: list[tuple[str, str]] = []
+
+    @property
+    def itunes_terms(self) -> list[str]:
+        return [query for provider, query in self.calls if provider == "itunes"]
+
+    @property
+    def deezer_queries(self) -> list[str]:
+        return [query for provider, query in self.calls if provider == "deezer"]
+
+    @property
+    def providers(self) -> list[str]:
+        return [provider for provider, _ in self.calls]
 
     async def get(self, url, params=None, timeout=None):
         params = params or {}
         if "itunes.apple.com" in url:
-            self.itunes_terms.append(params.get("term"))
+            self.calls.append(("itunes", params.get("term")))
             return self.itunes_response or FakeResponse({"results": self.itunes})
-        self.deezer_queries.append(params.get("q"))
+        self.calls.append(("deezer", params.get("q")))
         return FakeResponse({"data": self.deezer})
 
 
@@ -382,8 +398,21 @@ async def test_falls_back_to_deezer_when_itunes_has_nothing():
     match = await _resolve_media(http, "기다리다", "Younha")
 
     assert (match.provider, match.provider_track_id) == ("deezer", "22")
-    assert http.itunes_terms  # iTunes를 먼저 시도했다
-    assert http.deezer_queries
+    # iTunes를 모두 소진한 뒤에야 Deezer로 넘어간다.
+    assert http.providers == ["itunes", "deezer"]
+    assert http.itunes_terms == ["기다리다 Younha"]
+    assert http.deezer_queries == ['track:"기다리다" artist:"Younha"']
+
+
+async def test_itunes_exhausts_its_query_forms_before_deezer():
+    """버전 표기가 있으면 iTunes도 요청 표기와 기본 제목을 차례로 시도한다."""
+    http = RoutingHttp(itunes=[], deezer=[_item(22, "Creep (Acoustic)", "Radiohead")])
+
+    await _resolve_media(http, "Creep (Acoustic)", "Radiohead")
+
+    assert http.itunes_terms == ["Creep (Acoustic) Radiohead", "Creep Radiohead"]
+    assert http.providers[: len(http.itunes_terms)] == ["itunes", "itunes"]
+    assert http.providers[len(http.itunes_terms)] == "deezer"
 
 
 async def test_falls_back_to_deezer_when_itunes_has_only_wrong_artist():
@@ -453,11 +482,26 @@ async def test_preview_routes_report_deezer_rate_limit_as_503(route):
     assert exc.value.headers == {"Retry-After": "17"}
 
 
-async def test_preview_rate_limit_replaces_invalid_retry_after():
+# 공급자가 준 Retry-After를 그대로 응답 헤더에 넣으므로, delta-seconds가 아닌
+# 값은 전부 기본값으로 갈아치워야 한다. 특히 CRLF가 중간에 박힌 값이 통과하면
+# 헤더 인젝션이 된다.
+HOSTILE_RETRY_AFTER = [
+    pytest.param("bad", id="not-a-number"),
+    pytest.param("bad\r\nX-Injected: evil", id="crlf-in-the-middle"),
+    pytest.param("17\r\nX-Injected: evil", id="numeric-prefix-then-crlf"),
+    pytest.param("17\nX-Injected: evil", id="bare-lf"),
+    pytest.param("Wed, 21 Oct 2015 07:28:00 GMT", id="http-date"),
+    pytest.param("-5", id="negative"),
+    pytest.param("", id="empty"),
+]
+
+
+@pytest.mark.parametrize("value", HOSTILE_RETRY_AFTER)
+async def test_preview_rate_limit_replaces_invalid_retry_after(value):
     from fastapi import HTTPException
 
     http = StaticResponseHttp(
-        FakeResponse({"data": []}, status_code=429, headers={"Retry-After": "bad\r\n"})
+        FakeResponse({"data": []}, status_code=429, headers={"Retry-After": value})
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -465,6 +509,12 @@ async def test_preview_rate_limit_replaces_invalid_retry_after():
 
     assert exc.value.status_code == 503
     assert exc.value.headers == {"Retry-After": "60"}
+
+
+def test_retry_after_never_emits_header_control_characters():
+    for value in ("17\r\nX: y", "17\n\n", "\r\n17"):
+        assert "\r" not in _retry_after_seconds(value, default=60)
+        assert "\n" not in _retry_after_seconds(value, default=60)
 
 
 async def test_get_preview_url_returns_resolved_track_not_echo():
