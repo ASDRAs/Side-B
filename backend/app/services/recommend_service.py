@@ -1,5 +1,7 @@
 import logging
+from collections import Counter
 from collections.abc import Awaitable
+from statistics import median
 
 import httpx
 import pylast
@@ -33,6 +35,45 @@ def _pick_representative_track(tag_results: dict):
         ),
         None,
     ) or next((track for tracks in tag_results.values() for track in tracks), None)
+
+
+def _log_signal_coverage(scope: str, results: dict[str, list[TrackInfo]]) -> None:
+    """경로별 노출도 신호의 확보율을 남긴다.
+
+    PR 4가 `exposure_score`를 설계할 근거다. 어느 버킷이 `listeners`를 실제로
+    받는지, 어디가 비는지를 실제 질의 분포에서 봐야 임계값을 정할 수 있다.
+    """
+    for bucket, tracks in results.items():
+        if not tracks:
+            continue
+        evidence = Counter(
+            track.signals.evidence_source if track.signals else "none"
+            for track in tracks
+        )
+        listeners = [
+            track.signals.global_listeners
+            for track in tracks
+            if track.signals and track.signals.global_listeners is not None
+        ]
+        playcounts = [
+            track.signals.global_playcount
+            for track in tracks
+            if track.signals and track.signals.global_playcount is not None
+        ]
+        logger.info(
+            "[Signals] %s/%s n=%d evidence=%s listeners=%d/%d median=%s "
+            "playcount=%d/%d median=%s",
+            scope,
+            bucket,
+            len(tracks),
+            dict(evidence),
+            len(listeners),
+            len(tracks),
+            int(median(listeners)) if listeners else None,
+            len(playcounts),
+            len(tracks),
+            int(median(playcounts)) if playcounts else None,
+        )
 
 
 def _accept_unseen_tracks(
@@ -124,6 +165,7 @@ async def _run_direct_recommendations(
     )
     results["hidden"] = _accept_unseen_tracks(hidden, seen_keys)
 
+    _log_signal_coverage("direct", results)
     return results
 
 
@@ -158,6 +200,7 @@ async def run_recommend(
             top_n=top_n,
         )
         if tag_results and any(tag_results.values()):
+            _log_signal_coverage("mood", tag_results)
             processed = {
                 k: [track_to_api_dict(t) for t in v] for k, v in tag_results.items()
             }
