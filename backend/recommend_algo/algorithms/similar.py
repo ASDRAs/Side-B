@@ -5,7 +5,7 @@ import httpx
 import pylast
 
 from app.utils.text import compact_text
-from recommend_algo.common import scoring, seeds, sources
+from recommend_algo.common import lastfm_raw, scoring, seeds, sources
 from recommend_algo.common.models import TrackInfo
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,8 @@ async def _similar_artist_fallback(
         top_tracks = await sources._lf_call(
             f"lf:artist_top:{compact_text(similar_artist_name)}:{track_limit}",
             600,
-            similar_artist.get_top_tracks,
+            lastfm_raw.artist_top_tracks,
+            similar_artist,
             track_limit,
         )
         return [
@@ -48,6 +49,7 @@ async def _similar_artist_fallback(
                     artist_match - (rank / max(track_limit, 1)) * 0.1,
                 ),
                 reason_tags=[similar_artist_name],
+                signals=lastfm_raw.signals_of(item),
             )
             for rank, item in enumerate(top_tracks or [])
             if str(item.item.get_name() or "").strip()
@@ -101,6 +103,7 @@ async def similar_listening_pattern(
                     name=item.item.get_name(),
                     artist=item.item.get_artist().get_name(),
                     match_score=float(item.match),
+                    signals=lastfm_raw.signals_of(item),
                 )
                 for item in raw_similar
             ]

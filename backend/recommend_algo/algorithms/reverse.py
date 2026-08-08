@@ -5,7 +5,7 @@ import httpx
 import pylast
 
 from app.utils.text import compact_text
-from recommend_algo.common import scoring, seeds, sources
+from recommend_algo.common import lastfm_raw, scoring, seeds, sources
 from recommend_algo.common.models import TrackInfo
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,8 @@ async def _fetch_artist_tracks(src, artist_rank: int) -> list[TrackInfo]:
     response = await sources._lf_call(
         f"lf:artist_top:{src_name}:20",
         600,
-        src.get_top_tracks,
+        lastfm_raw.artist_top_tracks,
+        src,
         20,
     )
 
@@ -28,6 +29,7 @@ async def _fetch_artist_tracks(src, artist_rank: int) -> list[TrackInfo]:
                 name=raw.item.get_name(),
                 artist=raw.item.get_artist().get_name(),
                 match_score=synthetic_match,
+                signals=lastfm_raw.signals_of(raw),
             )
         )
     return similar_tracks
@@ -67,6 +69,7 @@ async def reverse_top100(
                     name=item.item.get_name(),
                     artist=item.item.get_artist().get_name(),
                     match_score=float(item.match),
+                    signals=lastfm_raw.signals_of(item),
                 )
                 for item in similar_tracks
             ]
