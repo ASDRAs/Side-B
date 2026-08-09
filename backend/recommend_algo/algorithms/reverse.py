@@ -109,15 +109,24 @@ async def reverse_top100(
         # 소스 A,B 병합 및 중복 제거
         input_key = (track_name.lower(), artist.lower())
         excluded = excluded_keys or set()
-        seen: set[str] = set()
+        kept: dict[str, TrackInfo] = {}
         merged_candidates: list[TrackInfo] = []
         for track in pool_a + pool_b:
             if (track.name.lower(), track.artist.lower()) == input_key:
                 continue
             key = scoring._track_key(track)
-            if key not in excluded and key not in seen:
-                seen.add(key)
+            if key in excluded:
+                continue
+            first = kept.get(key)
+            if first is None:
+                kept[key] = track
                 merged_candidates.append(track)
+                continue
+            # 같은 곡이 두 소스에 다 있으면 순서가 아니라 신호의 질로 고른다.
+            # pool_a(track.getSimilar)가 앞이라 그냥 두면 listeners가 있는
+            # pool_b(artist.getTopTracks) 쪽이 매번 버려진다.
+            if scoring.prefers_signals_of(track, first):
+                first.signals = track.signals
 
         logger.info(
             "[Reverse] 후보 A=%d B=%d 합계=%d",

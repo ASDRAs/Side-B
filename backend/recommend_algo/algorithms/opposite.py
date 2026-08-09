@@ -103,6 +103,7 @@ async def opposite_emotion(
             scoring._dedupe_tracks(collected), max_per=1
         )
     collected = collected[:top_n]
+    scoring.assign_exposure(collected)
     opp_emotion_tracks = await sources.get_tracks_metadata(http, collected, lastfm)
     for track in opp_emotion_tracks:
         track.algo = track.algo or "opposite_emotion"

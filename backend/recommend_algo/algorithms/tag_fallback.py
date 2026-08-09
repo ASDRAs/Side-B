@@ -100,6 +100,9 @@ async def tag_based_recommendations(
         max_per_artist=1,
         excluded_keys=recommended_tracks,
     )
+    # 반대 태그 후보는 별도 풀이라 위 assign_exposure에 포함되지 않았다. 순위
+    # 신호가 있는데 계산만 빠지면 응답에서 "미수록"과 구분되지 않는다.
+    scoring.assign_exposure(opposite_tracks)
     for track in opposite_tracks:
         tag = track.reason_tags[0] if track.reason_tags else "contrast"
         track.algo, track.label = "tag_opposite", f"#{tag} 반대 결 추천"

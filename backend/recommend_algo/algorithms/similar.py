@@ -128,6 +128,9 @@ async def similar_listening_pattern(
             if scoring._track_key(track) not in excluded
         ][:top_n]
         top_tracks = await sources.get_tracks_metadata(http, top_tracks, lastfm)
+        # 이 버킷은 노출도로 정렬하지 않지만, 응답에는 실어야 한다. 신호가 있는데
+        # 계산만 안 해서 null이 나가면 클라이언트가 "미수록"과 구분할 수 없다.
+        scoring.assign_exposure(top_tracks)
         for track in top_tracks:
             track.reverse_score = track.match_score or 0
             track.algo, track.label = (

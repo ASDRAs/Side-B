@@ -36,6 +36,22 @@ def _exposure_value(track: TrackInfo) -> tuple[float | None, str]:
     return None, "none"
 
 
+# 노출도 신호의 우열. listeners만 아티스트 간 비교가 되므로 가장 강하다.
+_SIGNAL_RANK = {"listeners": 3, "playcount": 2, "tag_rank": 1, "none": 0}
+
+
+def prefers_signals_of(candidate: TrackInfo, current: TrackInfo) -> bool:
+    """같은 곡이 두 경로에서 왔을 때 어느 쪽 신호를 쓸지 고른다.
+
+    발견 순서로 고르면 먼저 도는 경로의 약한 신호가 이긴다. reverse는 pool_a
+    (track.getSimilar, playcount)를 pool_b(artist.getTopTracks, listeners)보다
+    먼저 훑기 때문에 그냥 두면 listeners가 매번 버려진다.
+    """
+    return _SIGNAL_RANK[_exposure_value(candidate)[1]] > _SIGNAL_RANK[
+        _exposure_value(current)[1]
+    ]
+
+
 def _exposure_group(track: TrackInfo, source: str) -> str:
     """같은 척도끼리만 비교하도록 묶는 키.
 
@@ -70,13 +86,16 @@ def assign_exposure(tracks: list[TrackInfo]) -> None:
     for group in grouped.values():
         ordered = sorted(value for value, _ in group)
         span = len(ordered) - 1
-        for value, track in group:
-            if span <= 0:
-                # 비교 대상이 없으면 순위를 매길 수 없다. 중립으로 둔다.
+        # 후보가 하나뿐이거나 전부 같은 값이면 서로를 구분할 수 없다. 둘 다
+        # "순위를 매길 수 없음"이라 중립으로 둔다. 전부 동률일 때 0을 주면
+        # 아무 근거 없이 전원이 최대 비주류가 된다.
+        if span <= 0 or ordered[0] == ordered[-1]:
+            for _, track in group:
                 track.exposure_score = 0.5
-            else:
-                # 같은 값은 같은 점수를 받도록 "더 작은 값의 개수"로 센다.
-                track.exposure_score = bisect_left(ordered, value) / span
+            continue
+        for value, track in group:
+            # 같은 값은 같은 점수를 받도록 "더 작은 값의 개수"로 센다.
+            track.exposure_score = bisect_left(ordered, value) / span
 
 
 def obscurity_of(track: TrackInfo, *, unknown: float = UNKNOWN_OBSCURITY) -> float:
