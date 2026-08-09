@@ -62,8 +62,61 @@ def test_equal_values_get_equal_scores():
 
     scoring.assign_exposure(tracks)
 
-    assert tracks[0].exposure_score == tracks[1].exposure_score == 0.0
+    assert tracks[0].exposure_score == tracks[1].exposure_score
     assert tracks[2].exposure_score == 1.0
+
+
+# 동률은 자기들이 차지한 구간의 한가운데를 나눠 갖는다. 한쪽 끝을 주면 그쪽
+# 끝의 동률이 제 몫을 잃는다.
+TIE_CASES = [
+    pytest.param([10, 50, 100], [0.0, 0.5, 1.0], id="동률-없음"),
+    pytest.param([10, 100, 100], [0.0, 0.75, 0.75], id="상위-동률"),
+    pytest.param([10, 10, 100], [0.25, 0.25, 1.0], id="하위-동률"),
+    pytest.param([50, 50, 50], [0.5, 0.5, 0.5], id="전체-동률"),
+]
+
+
+@pytest.mark.parametrize("listeners,expected", TIE_CASES)
+def test_ties_share_the_middle_of_their_span(listeners, expected):
+    tracks = [_track(f"t{i}", global_listeners=v) for i, v in enumerate(listeners)]
+
+    scoring.assign_exposure(tracks)
+
+    assert [t.exposure_score for t in tracks] == pytest.approx(expected)
+
+
+def test_top_ties_are_not_treated_as_neutral():
+    """최고값이 동률이면 가장 노출된 곡들이다. 중립으로 내려가면 안 된다.
+
+    중립(0.5)은 obscurity 0.5를 뜻해서, 가장 유명한 곡이 정체불명 곡과 같은
+    비주류 점수를 받게 된다.
+    """
+    tracks = [
+        _track("obscure", global_listeners=10),
+        _track("famous-a", global_listeners=100),
+        _track("famous-b", global_listeners=100),
+    ]
+
+    scoring.assign_exposure(tracks)
+
+    famous = [t for t in tracks if t.name.startswith("famous")]
+    assert all(t.exposure_score > 0.5 for t in famous)
+    assert all(scoring.obscurity_of(t) < scoring.UNKNOWN_OBSCURITY for t in famous)
+
+
+def test_bottom_ties_keep_their_obscurity():
+    """반대쪽도 같다. 최하위 동률이 중립으로 올라가면 안 된다."""
+    tracks = [
+        _track("obscure-a", global_listeners=10),
+        _track("obscure-b", global_listeners=10),
+        _track("famous", global_listeners=100),
+    ]
+
+    scoring.assign_exposure(tracks)
+
+    obscure = [t for t in tracks if t.name.startswith("obscure")]
+    assert all(t.exposure_score < 0.5 for t in obscure)
+    assert all(scoring.obscurity_of(t) > scoring.UNKNOWN_OBSCURITY for t in obscure)
 
 
 def test_single_candidate_is_neutral():

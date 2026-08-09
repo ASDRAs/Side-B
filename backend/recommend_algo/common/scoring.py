@@ -1,6 +1,6 @@
 import math
 import random
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 
 from app.utils.text import compact_text
@@ -86,16 +86,19 @@ def assign_exposure(tracks: list[TrackInfo]) -> None:
     for group in grouped.values():
         ordered = sorted(value for value, _ in group)
         span = len(ordered) - 1
-        # 후보가 하나뿐이거나 전부 같은 값이면 서로를 구분할 수 없다. 둘 다
-        # "순위를 매길 수 없음"이라 중립으로 둔다. 전부 동률일 때 0을 주면
-        # 아무 근거 없이 전원이 최대 비주류가 된다.
-        if span <= 0 or ordered[0] == ordered[-1]:
+        # 후보가 하나면 비교할 대상이 없다. 순위를 매길 수 없으므로 중립이다.
+        if span <= 0:
             for _, track in group:
                 track.exposure_score = 0.5
             continue
         for value, track in group:
-            # 같은 값은 같은 점수를 받도록 "더 작은 값의 개수"로 센다.
-            track.exposure_score = bisect_left(ordered, value) / span
+            # 동률은 자기들이 차지한 구간의 한가운데를 나눠 갖는다(midrank).
+            # 앞쪽 끝을 주면 최상위 동률이 중립으로 내려가 비주류 보너스를 받고,
+            # 뒤쪽 끝을 주면 최하위 동률이 마땅한 보너스를 잃는다. 전부 동률인
+            # 경우도 이 식이 그대로 0.5를 낸다.
+            low = bisect_left(ordered, value)
+            high = bisect_right(ordered, value)
+            track.exposure_score = ((low + high - 1) / 2) / span
 
 
 def obscurity_of(track: TrackInfo, *, unknown: float = UNKNOWN_OBSCURITY) -> float:

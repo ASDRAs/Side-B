@@ -1020,18 +1020,10 @@ async def test_hidden_discovery_excludes_seed_artist_and_expands_to_similar_arti
         ),
     ]
     lastfm = HiddenFakeLastFm(similar_artists)
-    popularity = {
-        "A Known": 78,
-        "A Hidden": 18,
-        "B Known": 66,
-        "B Hidden": 20,
-        "C Known": 64,
-        "C Hidden": 22,
-    }
 
+    # 이 테스트는 seed 아티스트 제외와 excluded_keys만 본다. 노출도 순위는
+    # ArtistTopTracksSource가 주는 listeners로 알아서 계산된다.
     async def fake_enrich_metadata(http, tracks, *args, **kwargs):
-        for track in tracks:
-            track.popularity = popularity.get(track.name)
         return tracks
 
     monkeypatch.setattr(
