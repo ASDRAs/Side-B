@@ -75,6 +75,51 @@ def test_single_candidate_is_neutral():
     assert tracks[0].exposure_score == 0.5
 
 
+def test_all_tied_group_is_neutral_not_maximally_obscure():
+    """전부 같은 값이면 서로를 구분할 수 없다. 후보 하나일 때와 같아야 한다.
+
+    "더 작은 값의 개수"로 세면 전원이 0이 되어, 아무 근거 없이 전원이 최대
+    비주류로 판정된다.
+    """
+    tracks = [_track(f"x{i}", global_listeners=500) for i in range(5)]
+
+    scoring.assign_exposure(tracks)
+
+    assert [t.exposure_score for t in tracks] == [0.5] * 5
+    assert all(scoring.obscurity_of(t) == 0.5 for t in tracks)
+
+
+# ── 같은 곡이 두 경로에서 왔을 때 ─────────────────────────────────
+
+
+def test_stronger_signal_wins_regardless_of_discovery_order():
+    """발견 순서로 고르면 먼저 도는 경로의 약한 신호가 이긴다.
+
+    reverse가 정확히 그 구조다. pool_a(track.getSimilar, playcount)를
+    pool_b(artist.getTopTracks, listeners)보다 먼저 훑는다.
+    """
+    playcount_only = _track("dup", global_playcount=999)
+    with_listeners = _track("dup", global_listeners=42)
+
+    assert scoring.prefers_signals_of(with_listeners, playcount_only)
+    assert not scoring.prefers_signals_of(playcount_only, with_listeners)
+
+
+def test_equal_strength_signals_do_not_swap():
+    """같은 등급이면 먼저 잡힌 것을 유지한다. 무의미한 교체를 만들지 않는다."""
+    first = _track("dup", global_playcount=1)
+    second = _track("dup", global_playcount=2)
+
+    assert not scoring.prefers_signals_of(second, first)
+
+
+def test_any_signal_beats_no_signal():
+    tracks = _track("dup", source_rank=5, source_group="k-pop")
+    nothing = TrackInfo(name="dup", artist="Artist")
+
+    assert scoring.prefers_signals_of(tracks, nothing)
+
+
 def test_listeners_and_playcount_are_ranked_separately():
     """자릿수가 다르다. 섞으면 playcount 후보가 전부 상위를 차지한다.
 
