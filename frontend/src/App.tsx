@@ -179,7 +179,7 @@ export default function App() {
     }
 
     stopPreview();
-    const audio = new Audio(previewStreamUrl(track.name, track.artist));
+    const audio = new Audio(previewStreamUrl(track));
     audioRef.current = audio;
     setPlayer({ key, track, status: 'loading' });
     audio.addEventListener('playing', () => setPlayer({ key, track, status: 'playing' }));
