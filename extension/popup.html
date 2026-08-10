@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Side-B</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div>
+          <p class="eyebrow">MUSIC DISCOVERY</p>
+          <h1>Side-B</h1>
+        </div>
+        <span id="connectionBadge" class="badge badge-idle">대기</span>
+      </header>
+
+      <form id="recommendForm" class="request-form">
+        <label for="apiBaseUrl">백엔드 주소</label>
+        <input
+          id="apiBaseUrl"
+          name="apiBaseUrl"
+          type="url"
+          value="http://127.0.0.1:8000"
+          autocomplete="url"
+          required
+        />
+
+        <label for="query">검색어</label>
+        <div class="query-row">
+          <input
+            id="query"
+            name="query"
+            type="search"
+            maxlength="200"
+            placeholder="윤하 - 혜성"
+            autocomplete="off"
+            required
+          />
+          <button id="submitButton" type="submit">추천 요청</button>
+        </div>
+      </form>
+
+      <p id="statusMessage" class="status" role="status" aria-live="polite">
+        검색어를 입력하세요.
+      </p>
+
+      <section id="seedSection" class="seed-section" hidden>
+        <p class="section-label">기준 음악</p>
+        <div class="seed-line">
+          <strong id="seedTitle"></strong>
+          <span id="seedArtist"></span>
+        </div>
+      </section>
+
+      <section id="results" class="results" aria-label="추천 결과"></section>
+
+      <details id="rawPanel" class="raw-panel" hidden>
+        <summary>원본 JSON</summary>
+        <pre id="rawResponse"></pre>
+      </details>
+    </main>
+
+    <template id="bucketTemplate">
+      <section class="bucket">
+        <div class="bucket-heading">
+          <h2></h2>
+          <span class="count"></span>
+        </div>
+        <ol class="track-list"></ol>
+      </section>
+    </template>
+
+    <template id="trackTemplate">
+      <li class="track-item">
+        <span class="rank"></span>
+        <div class="track-copy">
+          <strong class="track-title"></strong>
+          <span class="track-artist"></span>
+          <span class="track-label"></span>
+        </div>
+      </li>
+    </template>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
