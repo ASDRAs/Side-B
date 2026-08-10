@@ -18,6 +18,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from typing import Annotated
 from urllib.parse import quote
 
 import httpx
@@ -42,6 +43,16 @@ router = APIRouter(tags=["preview"])
 
 _DEEZER_SEARCH = "https://api.deezer.com/search"
 _ITUNES_SEARCH = "https://itunes.apple.com/search"
+# ID 조회. 검색과 달리 후보 판정이 필요 없다.
+_DEEZER_TRACK = "https://api.deezer.com/track"
+_ITUNES_LOOKUP = "https://itunes.apple.com/lookup"
+
+# 두 공급자 모두 없는 ID에 HTTP 200을 돌려준다. 상태 코드로는 판별할 수 없다.
+#   iTunes  {"resultCount": 0, "results": []}
+#   Deezer  {"error": {"type": "DataException", "code": 800, ...}}
+# Deezer는 쿼터 초과도 200 + error 본문으로 알린다. 그건 미수록이 아니라
+# 일시 장애라서 negative cache에 넣으면 안 된다(§10).
+_DEEZER_QUOTA_ERROR_CODE = 4
 
 # 공급자별 미리 듣기 미디어 형식. 실측 기준 iTunes는 audio/x-m4p(m4a),
 # Deezer는 audio/mpeg(mp3)다.
@@ -93,6 +104,9 @@ class MediaBinding:
     resolved_title: str
     resolved_artist: str
     artwork_url: str | None = None
+    # 공급자 간 동일곡 판정에 쓸 수 있는 유일한 축. Deezer는 응답에 실어 주고
+    # iTunes는 아예 주지 않으므로 iTunes로 확정된 곡은 None으로 남는다.
+    isrc: str | None = None
 
 
 class PreviewProviderUnavailable(Exception):
@@ -366,6 +380,144 @@ async def _resolve_media(
     return binding
 
 
+async def _lookup_itunes(
+    http: httpx.AsyncClient, provider_track_id: str
+) -> MediaBinding | None:
+    """iTunes ID로 곡을 조회한다. 검색이 아니므로 fallback 대상이 아니다."""
+    if _is_itunes_rate_limited():
+        raise PreviewProviderUnavailable(retry_after="30")
+    try:
+        resp = await http.get(
+            _ITUNES_LOOKUP,
+            params={"id": provider_track_id, "entity": "song"},
+            timeout=5.0,
+        )
+    except httpx.RequestError as exc:
+        logger.warning("[Preview] iTunes lookup 요청 실패: %s", exc)
+        raise PreviewProviderUnavailable(retry_after="30") from exc
+
+    if resp.status_code == 429:
+        retry_after = _retry_after_seconds(
+            resp.headers.get("Retry-After"), default=60
+        )
+        _mark_itunes_rate_limited(int(retry_after))
+        raise PreviewProviderUnavailable(retry_after=retry_after)
+    if resp.status_code >= 500:
+        raise PreviewProviderUnavailable(
+            retry_after=_retry_after_seconds(
+                resp.headers.get("Retry-After"), default=30
+            )
+        )
+    if resp.status_code >= 400:
+        # 잘못된 ID 형식. 없는 곡과 같게 다룬다.
+        return None
+
+    try:
+        payload = resp.json()
+    except (TypeError, ValueError) as exc:
+        raise PreviewProviderUnavailable(retry_after="30") from exc
+    results = payload.get("results", []) if isinstance(payload, dict) else []
+    return next(_itunes_candidates(results), None)
+
+
+async def _lookup_deezer(
+    http: httpx.AsyncClient, provider_track_id: str
+) -> MediaBinding | None:
+    """Deezer ID로 곡을 조회한다."""
+    try:
+        resp = await http.get(
+            f"{_DEEZER_TRACK}/{provider_track_id}", timeout=8.0
+        )
+    except httpx.RequestError as exc:
+        logger.warning("[Preview] Deezer lookup 요청 실패: %s", exc)
+        raise PreviewProviderUnavailable(retry_after="30") from exc
+
+    if resp.status_code == 429:
+        raise PreviewProviderUnavailable(
+            retry_after=_retry_after_seconds(
+                resp.headers.get("Retry-After"), default=60
+            )
+        )
+    if resp.status_code >= 500:
+        raise PreviewProviderUnavailable(
+            retry_after=_retry_after_seconds(
+                resp.headers.get("Retry-After"), default=30
+            )
+        )
+    if resp.status_code >= 400:
+        return None
+
+    try:
+        payload = resp.json()
+    except (TypeError, ValueError) as exc:
+        raise PreviewProviderUnavailable(retry_after="30") from exc
+    if not isinstance(payload, dict):
+        raise PreviewProviderUnavailable(retry_after="30")
+
+    error = payload.get("error")
+    if isinstance(error, dict):
+        # 쿼터 초과도 200 + error로 온다. 미수록으로 캐시하면 회복이 안 된다.
+        if error.get("code") == _DEEZER_QUOTA_ERROR_CODE:
+            logger.warning("[Preview] Deezer 쿼터 초과: %s", error.get("message"))
+            raise PreviewProviderUnavailable(retry_after="60")
+        return None
+
+    return next(_deezer_candidates([payload]), None)
+
+
+# ponytail: 조회 결과도 검색 결과와 같은 TTL로 캐시한다. CDN preview URL이 함께
+# 들어 있어 만료 전에 버려야 하기 때문이다.
+@alru_cache(maxsize=256, ttl=600)
+async def _lookup_media(
+    http: httpx.AsyncClient,
+    provider: str,
+    provider_track_id: str,
+) -> MediaBinding | None:
+    """공급자 ID로 곡을 바로 조회한다.
+
+    검색이 아니라 조회이므로 제목·아티스트·버전 게이트를 적용하지 않는다. 그
+    게이트들은 "검색 결과 중 어느 것이 요청한 곡인가"를 판정하려고 있는 것인데,
+    ID 조회에는 판정할 것이 없다. 조회된 곡이 곧 요청한 곡이다.
+
+    그래서 클라이언트 표기가 카탈로그와 달라도 재생된다. 문자열 경로에서
+    `밤편지/IU`가 404였던 것은 Deezer가 그 곡을 `Through the Night`으로 싣기
+    때문인데, ID로는 그 차이가 문제되지 않는다.
+    """
+    if provider == "itunes":
+        binding = await _lookup_itunes(http, provider_track_id)
+    elif provider == "deezer":
+        binding = await _lookup_deezer(http, provider_track_id)
+    else:
+        logger.info("[Preview] 알 수 없는 공급자: %s", provider)
+        return None
+
+    if binding is None:
+        logger.info("[Preview] ID 조회 실패: %s:%s", provider, provider_track_id)
+        return None
+
+    logger.info(
+        "[Preview] ID 조회: %s - %s (%s:%s)",
+        binding.resolved_title,
+        binding.resolved_artist,
+        binding.provider,
+        binding.provider_track_id,
+    )
+    return binding
+
+
+async def _resolve_requested_media(
+    http: httpx.AsyncClient,
+    track: str,
+    artist: str,
+    provider: str,
+    provider_track_id: str,
+) -> MediaBinding | None:
+    """ID가 오면 조회하고, 없으면 기존 문자열 경로로 되돌아간다."""
+    if provider and provider_track_id:
+        return await _lookup_media(http, provider, provider_track_id)
+    return await _resolve_media(http, track, artist)
+
+
 def _deezer_candidates(items: object) -> Iterator[MediaBinding]:
     """Deezer 검색 응답을 공급자 중립 형태로 바꾼다."""
     if not isinstance(items, list):
@@ -397,6 +549,8 @@ def _deezer_candidates(items: object) -> Iterator[MediaBinding]:
             artwork_url=album.get("cover_big")
             or album.get("cover_medium")
             or album.get("cover"),
+            # 검색 응답에도 들어 있어 추가 호출 없이 얻는다.
+            isrc=str(item.get("isrc") or "") or None,
         )
 
 
@@ -478,30 +632,59 @@ def _best_itunes_candidate(
 # ── GET /preview ─────────────────────────────────────────────────
 
 
+# Annotated로 쓴다. 기본값이 진짜 ""라서 라우트 함수를 파이썬에서 직접 부를 때도
+# Query 센티널이 아니라 빈 문자열이 들어온다.
+TrackQuery = Annotated[str, Query(max_length=200, description="곡명")]
+ArtistQuery = Annotated[str, Query(max_length=200, description="아티스트명 (선택)")]
+ProviderQuery = Annotated[
+    str, Query(max_length=16, description="itunes 또는 deezer (선택)")
+]
+ProviderTrackIdQuery = Annotated[
+    str, Query(max_length=64, description="해당 공급자의 track id (선택)")
+]
+
+
+def _require_target(track: str, provider: str, provider_track_id: str) -> None:
+    """ID 쌍이나 곡명 중 하나는 있어야 조회할 대상이 정해진다."""
+    if not (provider and provider_track_id) and not track:
+        raise HTTPException(
+            status_code=422,
+            detail="track 또는 provider와 provider_track_id가 필요합니다.",
+        )
+
+
 @router.get("/preview")
 async def get_preview_url(
     request: Request,
-    track: str = Query(..., min_length=1, max_length=200, description="곡명"),
-    artist: str = Query(default="", max_length=200, description="아티스트명 (선택)"),
+    track: TrackQuery = "",
+    artist: ArtistQuery = "",
+    provider: ProviderQuery = "",
+    provider_track_id: ProviderTrackIdQuery = "",
 ):
     """검증된 30초 미리 듣기 정보를 반환합니다.
 
-    클라이언트가 직접 URL을 재생할 때 사용하세요.
+    추천 응답의 `source_id`를 `provider`와 `provider_track_id`로 쪼개 넘기면
+    공급자 검색 없이 그 곡을 바로 조회합니다. 표기가 카탈로그와 달라도 정확히
+    같은 곡이 재생되므로 이 경로를 권장합니다. ID가 없으면 곡명·아티스트로
+    검색하는 기존 경로를 씁니다.
+
     URL에는 공급자 CDN 만료 시각이 포함되어 있으므로 즉시 재생해야 합니다.
     track·artist는 실제로 선택된 트랙 값이고, requested에는 클라이언트가 보낸
-    원래 track·artist가 들어갑니다. provider와 provider_track_id로 어느
-    카탈로그의 어느 곡인지 확정됩니다.
+    원래 값이 들어갑니다.
     """
+    _require_target(track, provider, provider_track_id)
     http: httpx.AsyncClient = request.app.state.http
     try:
-        match = await _resolve_media(http, track, artist)
+        match = await _resolve_requested_media(
+            http, track, artist, provider, provider_track_id
+        )
     except PreviewProviderUnavailable as exc:
         raise _provider_unavailable_http_error(exc) from exc
 
     if not match:
         raise HTTPException(
             status_code=404,
-            detail=f"'{track}'의 미리 듣기를 찾을 수 없습니다.",
+            detail=f"'{track or provider_track_id}'의 미리 듣기를 찾을 수 없습니다.",
         )
 
     # track·artist는 요청값 echo가 아니라 실제로 고른 트랙이다.
@@ -512,9 +695,15 @@ async def get_preview_url(
         "provider_track_id": match.provider_track_id,
         "content_type": match.content_type,
         "artwork_url": match.artwork_url,
+        "isrc": match.isrc,
         "track": match.resolved_title,
         "artist": match.resolved_artist,
-        "requested": {"track": track, "artist": artist},
+        "requested": {
+            "track": track,
+            "artist": artist,
+            "provider": provider,
+            "provider_track_id": provider_track_id,
+        },
     }
 
 
@@ -524,25 +713,33 @@ async def get_preview_url(
 @router.get("/preview/stream")
 async def stream_preview(
     request: Request,
-    track: str = Query(..., min_length=1, max_length=200, description="곡명"),
-    artist: str = Query(default="", max_length=200, description="아티스트명 (선택)"),
+    track: TrackQuery = "",
+    artist: ArtistQuery = "",
+    provider: ProviderQuery = "",
+    provider_track_id: ProviderTrackIdQuery = "",
 ):
     """30초 오디오를 서버 경유로 스트리밍합니다.
+
+    `/preview`와 같은 조회 규칙을 씁니다. `provider`와 `provider_track_id`를
+    넘기면 공급자 검색 없이 그 곡을 재생합니다.
 
     웹 브라우저 환경에서 공급자 CDN CORS 차단이 발생할 경우 사용하세요.
     CORS 제약이 없는 클라이언트라면 /preview 에서 받은 URL을 직접 재생하는 것이
     더 효율적입니다.
     """
+    _require_target(track, provider, provider_track_id)
     http: httpx.AsyncClient = request.app.state.http
     try:
-        match = await _resolve_media(http, track, artist)
+        match = await _resolve_requested_media(
+            http, track, artist, provider, provider_track_id
+        )
     except PreviewProviderUnavailable as exc:
         raise _provider_unavailable_http_error(exc) from exc
 
     if not match:
         raise HTTPException(
             status_code=404,
-            detail=f"'{track}'의 미리 듣기를 찾을 수 없습니다.",
+            detail=f"'{track or provider_track_id}'의 미리 듣기를 찾을 수 없습니다.",
         )
 
     async def _generate():
