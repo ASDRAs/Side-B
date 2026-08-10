@@ -32,8 +32,10 @@ from app.utils.text import compact_text
 # iTunes 회로차단기와 아트워크 정규화는 추천 경로와 상태를 공유해야 한다.
 # 각자 따로 두면 한쪽이 받은 429를 다른 쪽이 모른다.
 from recommend_algo.common.sources import (
+    _is_dz_rate_limited,
     _is_itunes_rate_limited,
     _itunes_artwork,
+    _mark_dz_rate_limited,
     _mark_itunes_rate_limited,
 )
 
@@ -213,6 +215,16 @@ def _retry_after_seconds(value: str | None, *, default: int) -> str:
     return str(default)
 
 
+def _deezer_rate_limited(retry_after: str) -> PreviewProviderUnavailable:
+    """Deezer 제한을 회로차단기에 기록하고 올릴 예외를 만든다.
+
+    차단기는 추천 경로와 공유한다. 기록하지 않으면 제한 중에도 클릭마다 Deezer를
+    다시 부른다.
+    """
+    _mark_dz_rate_limited({"Retry-After": retry_after})
+    return PreviewProviderUnavailable(retry_after=retry_after)
+
+
 def _provider_unavailable_http_error(
     exc: PreviewProviderUnavailable,
 ) -> HTTPException:
@@ -299,6 +311,9 @@ async def _fetch_deezer_preview(
 
     queries = _search_queries(track_name, artist)
 
+    if _is_dz_rate_limited():
+        raise PreviewProviderUnavailable(retry_after="30")
+
     for query in queries:
         try:
             resp = await http.get(_DEEZER_SEARCH, params={"q": query}, timeout=8.0)
@@ -310,11 +325,8 @@ async def _fetch_deezer_preview(
 
         if resp.status_code == 429:
             logger.warning("[Preview] Deezer 429 — 미리 듣기 불가")
-            raise PreviewProviderUnavailable(
-                retry_after=_retry_after_seconds(
-                    resp.headers.get("Retry-After"),
-                    default=60,
-                )
+            raise _deezer_rate_limited(
+                _retry_after_seconds(resp.headers.get("Retry-After"), default=60)
             )
         if resp.status_code >= 500:
             logger.warning("[Preview] Deezer HTTP %s: %s", resp.status_code, query)
@@ -417,13 +429,34 @@ async def _lookup_itunes(
     except (TypeError, ValueError) as exc:
         raise PreviewProviderUnavailable(retry_after="30") from exc
     results = payload.get("results", []) if isinstance(payload, dict) else []
-    return next(_itunes_candidates(results), None)
+
+    # 앨범 ID를 넣으면 collection 한 줄과 수록곡 전부가 함께 온다. 첫 재생 가능한
+    # 항목을 집으면 요청하지 않은 곡이 나간다 — 앨범 1097861387로 실측하면
+    # Airbag(1097861769)이 잡힌다. 정확 조회라는 이 경로의 유일한 보장이 깨지므로
+    # 요청한 ID와 같은 트랙만 받는다.
+    exact = [
+        item
+        for item in results
+        if isinstance(item, dict)
+        and item.get("kind") == "song"
+        and str(item.get("trackId") or "") == provider_track_id
+    ]
+    if not exact:
+        logger.info(
+            "[Preview] iTunes ID가 곡을 가리키지 않음: %s (결과 %d건)",
+            provider_track_id,
+            len(results) if isinstance(results, list) else 0,
+        )
+        return None
+    return next(_itunes_candidates(exact), None)
 
 
 async def _lookup_deezer(
     http: httpx.AsyncClient, provider_track_id: str
 ) -> MediaBinding | None:
     """Deezer ID로 곡을 조회한다."""
+    if _is_dz_rate_limited():
+        raise PreviewProviderUnavailable(retry_after="30")
     try:
         resp = await http.get(
             f"{_DEEZER_TRACK}/{provider_track_id}", timeout=8.0
@@ -433,10 +466,8 @@ async def _lookup_deezer(
         raise PreviewProviderUnavailable(retry_after="30") from exc
 
     if resp.status_code == 429:
-        raise PreviewProviderUnavailable(
-            retry_after=_retry_after_seconds(
-                resp.headers.get("Retry-After"), default=60
-            )
+        raise _deezer_rate_limited(
+            _retry_after_seconds(resp.headers.get("Retry-After"), default=60)
         )
     if resp.status_code >= 500:
         raise PreviewProviderUnavailable(
@@ -459,7 +490,7 @@ async def _lookup_deezer(
         # 쿼터 초과도 200 + error로 온다. 미수록으로 캐시하면 회복이 안 된다.
         if error.get("code") == _DEEZER_QUOTA_ERROR_CODE:
             logger.warning("[Preview] Deezer 쿼터 초과: %s", error.get("message"))
-            raise PreviewProviderUnavailable(retry_after="60")
+            raise _deezer_rate_limited("60")
         return None
 
     return next(_deezer_candidates([payload]), None)
@@ -645,8 +676,19 @@ ProviderTrackIdQuery = Annotated[
 
 
 def _require_target(track: str, provider: str, provider_track_id: str) -> None:
-    """ID 쌍이나 곡명 중 하나는 있어야 조회할 대상이 정해진다."""
-    if not (provider and provider_track_id) and not track:
+    """ID 쌍이나 곡명 중 하나는 있어야 조회할 대상이 정해진다.
+
+    반쪽만 온 ID를 곡명 검색으로 흘려보내지 않는다. 클라이언트는 특정 곡을
+    지목했다고 믿는데 서버는 이름으로 찾은 다른 곡을 재생할 수 있다. 어느 쪽이
+    빠졌는지 알려주고 거절하는 편이 안전하다.
+    """
+    if bool(provider) != bool(provider_track_id):
+        missing = "provider_track_id" if provider else "provider"
+        raise HTTPException(
+            status_code=422,
+            detail=f"ID로 조회하려면 {missing}도 함께 보내야 합니다.",
+        )
+    if not provider and not track:
         raise HTTPException(
             status_code=422,
             detail="track 또는 provider와 provider_track_id가 필요합니다.",

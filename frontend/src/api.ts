@@ -47,15 +47,22 @@ export async function recommend(request: RecommendRequest): Promise<RecommendRes
 }
 
 /**
+ * 서버가 ID로 조회할 수 있는 공급자. `source_id`에는 `lastfm:*`처럼 조회
+ * 대상이 아닌 값도 올 수 있는데, 그걸 ID 경로로 보내면 곡명으로는 찾을 수
+ * 있었을 곡이 404가 된다.
+ */
+const LOOKUP_PROVIDERS = new Set(['itunes', 'deezer']);
+
+/**
  * 추천 응답의 `source_id`(`itunes:123` 형태)를 공급자와 ID로 쪼갠다.
- * 형식이 다르면 null을 돌려주고 호출부가 곡명 경로로 되돌아간다.
+ * 조회할 수 없는 값이면 null을 돌려주고 호출부가 곡명 경로로 되돌아간다.
  */
 function splitSourceId(sourceId?: string | null): [string, string] | null {
   const separator = sourceId?.indexOf(':') ?? -1;
   if (!sourceId || separator <= 0) return null;
   const provider = sourceId.slice(0, separator);
   const providerTrackId = sourceId.slice(separator + 1);
-  if (!providerTrackId) return null;
+  if (!providerTrackId || !LOOKUP_PROVIDERS.has(provider)) return null;
   return [provider, providerTrackId];
 }
 
