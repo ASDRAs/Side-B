@@ -8,6 +8,7 @@ from preview import (
     _best_itunes_candidate,
     _content_disposition,
     _fetch_deezer_preview,
+    _lookup_media,
     _resolve_media,
     _retry_after_seconds,
     _search_queries,
@@ -29,7 +30,10 @@ def _item(track_id, title, artist, preview="https://cdn/p.mp3"):
 
 
 def _itunes(track_id, title, artist, preview="https://itunes/p.m4a"):
+    # 실제 lookup·search 응답에는 kind가 들어 있다. ID 조회가 그 값을 본다.
     return {
+        "kind": "song",
+        "wrapperType": "track",
         "trackId": track_id,
         "trackName": title,
         "artistName": artist,
@@ -42,10 +46,14 @@ def _itunes(track_id, title, artist, preview="https://itunes/p.m4a"):
 def _isolate_provider_state():
     """공급자 캐시와 회로차단기는 모듈 전역이라 테스트 사이에 새어 나간다."""
     _resolve_media.cache_clear()
+    _lookup_media.cache_clear()
     sources._ITUNES_RATE_LIMIT_UNTIL = 0.0
+    sources._DZ_RATE_LIMIT_UNTIL = 0.0
     yield
     _resolve_media.cache_clear()
+    _lookup_media.cache_clear()
     sources._ITUNES_RATE_LIMIT_UNTIL = 0.0
+    sources._DZ_RATE_LIMIT_UNTIL = 0.0
 
 
 # ── Content-Disposition ──────────────────────────────────────────
@@ -276,6 +284,47 @@ class RoutingHttp:
         return FakeResponse({"data": self.deezer})
 
 
+class LookupHttp:
+    """ID 조회를 서빙하는 fake.
+
+    두 공급자 모두 없는 ID에 HTTP 200을 돌려주므로 본문 모양까지 재현한다.
+    """
+
+    def __init__(self, itunes=None, deezer=None, response=None):
+        self.itunes = itunes
+        self.deezer = deezer
+        self.response = response
+        self.calls: list[tuple[str, str]] = []
+
+    @property
+    def searches(self) -> list[tuple[str, str]]:
+        return [row for row in self.calls if row[0].endswith("search")]
+
+    async def get(self, url, params=None, timeout=None):
+        params = params or {}
+        if "itunes.apple.com/lookup" in url:
+            self.calls.append(("itunes-lookup", str(params.get("id"))))
+            if self.response is not None:
+                return self.response
+            results = [self.itunes] if self.itunes else []
+            return FakeResponse({"resultCount": len(results), "results": results})
+        if "api.deezer.com/track/" in url:
+            self.calls.append(("deezer-lookup", url.rsplit("/", 1)[-1]))
+            if self.response is not None:
+                return self.response
+            if self.deezer is None:
+                return FakeResponse(
+                    {"error": {"type": "DataException", "message": "no data", "code": 800}}
+                )
+            return FakeResponse(self.deezer)
+        # 검색으로 새면 안 된다. 어느 쪽이든 기록해 두고 빈 결과를 준다.
+        if "itunes.apple.com" in url:
+            self.calls.append(("itunes-search", str(params.get("term"))))
+            return FakeResponse({"results": []})
+        self.calls.append(("deezer-search", str(params.get("q"))))
+        return FakeResponse({"data": []})
+
+
 class FakeHttp:
     """Deezer만 아는 fake. _fetch_deezer_preview 전용."""
 
@@ -487,6 +536,261 @@ async def test_resolve_media_caches_the_confirmed_binding():
     assert len(http.itunes_terms) == 1
 
 
+# ── ID 조회 (5-a) ────────────────────────────────────────────────
+
+DEEZER_TRACK = {
+    "id": 2215315187,
+    "title": "Creep (Acoustic)",
+    "artist": {"name": "Radiohead"},
+    "album": {"cover_big": "https://dz/cover.jpg"},
+    "preview": "https://cdn/p.mp3",
+    "isrc": "GBAYE9300465",
+}
+
+
+async def test_itunes_lookup_makes_no_search():
+    """ID 조회는 검색이 아니다. 후보 판정 자체가 필요 없다."""
+    http = LookupHttp(itunes=_itunes(1229073406, "Through the Night", "IU"))
+
+    binding = await _lookup_media(http, "itunes", "1229073406")
+
+    assert (binding.provider, binding.provider_track_id) == ("itunes", "1229073406")
+    assert binding.content_type == "audio/x-m4p"
+    assert http.calls == [("itunes-lookup", "1229073406")]
+    assert http.searches == []
+
+
+async def test_deezer_lookup_makes_no_search_and_captures_isrc():
+    """Deezer는 응답에 ISRC를 실어 준다. 공급자 간 동일곡 판정의 유일한 축이다."""
+    http = LookupHttp(deezer=DEEZER_TRACK)
+
+    binding = await _lookup_media(http, "deezer", "2215315187")
+
+    assert (binding.provider, binding.provider_track_id) == ("deezer", "2215315187")
+    assert binding.isrc == "GBAYE9300465"
+    assert http.calls == [("deezer-lookup", "2215315187")]
+    assert http.searches == []
+
+
+async def test_itunes_binding_has_no_isrc():
+    """iTunes는 ISRC를 아예 주지 않는다. 없는 것을 지어내지 않는다."""
+    http = LookupHttp(itunes=_itunes(1, "Creep", "Radiohead"))
+
+    binding = await _lookup_media(http, "itunes", "1")
+
+    assert binding.isrc is None
+
+
+async def test_lookup_ignores_catalog_spelling():
+    """문자열 경로에서 404였던 사례. ID로는 표기 차이가 문제되지 않는다.
+
+    Deezer는 `밤편지`를 `Through the Night`으로 싣는다. 검색이면 제목이 달라
+    탈락하지만, 조회는 판정할 것이 없다.
+    """
+    http = LookupHttp(itunes=_itunes(1229073406, "Through the Night", "IU"))
+
+    binding = await _lookup_media(http, "itunes", "1229073406")
+
+    assert binding.resolved_title == "Through the Night"
+
+
+MISSING_ID_CASES = [
+    pytest.param("itunes", "999999999999", {}, id="itunes-없는-id"),
+    pytest.param("deezer", "999999999999", {}, id="deezer-없는-id"),
+]
+
+
+@pytest.mark.parametrize("provider,track_id,_unused", MISSING_ID_CASES)
+async def test_missing_id_is_none_not_an_error(provider, track_id, _unused):
+    """두 공급자 모두 없는 ID에 HTTP 200을 준다. 본문으로 판별해야 한다."""
+    http = LookupHttp()
+
+    assert await _lookup_media(http, provider, track_id) is None
+
+
+async def test_itunes_lookup_rejects_a_result_with_a_different_id():
+    """앨범 ID를 넣으면 collection 한 줄과 수록곡 전부가 함께 온다.
+
+    실측: 앨범 1097861387을 entity=song으로 조회하면 13건이 오고 첫 재생 가능한
+    항목이 Airbag(1097861769)이다. 그걸 집으면 요청하지 않은 곡이 나가고, 이
+    경로의 유일한 보장인 "정확히 그 곡"이 깨진다.
+    """
+    album_rows = [
+        {"wrapperType": "collection", "collectionId": 1097861387},
+        _itunes(1097861769, "Airbag", "Radiohead"),
+        _itunes(1097861770, "Paranoid Android", "Radiohead"),
+    ]
+    http = LookupHttp(response=FakeResponse({"resultCount": 3, "results": album_rows}))
+
+    assert await _lookup_media(http, "itunes", "1097861387") is None
+
+
+async def test_itunes_lookup_accepts_the_matching_song_row():
+    rows = [
+        {"wrapperType": "collection", "collectionId": 1097861387},
+        _itunes(1097861769, "Airbag", "Radiohead"),
+    ]
+    http = LookupHttp(response=FakeResponse({"resultCount": 2, "results": rows}))
+
+    binding = await _lookup_media(http, "itunes", "1097861769")
+
+    assert binding.resolved_title == "Airbag"
+
+
+async def test_itunes_lookup_rejects_a_non_song_kind():
+    """같은 ID라도 곡이 아니면 재생 대상이 아니다."""
+    rows = [_itunes(1, "Some Video", "Radiohead") | {"kind": "music-video"}]
+    http = LookupHttp(response=FakeResponse({"resultCount": 1, "results": rows}))
+
+    assert await _lookup_media(http, "itunes", "1") is None
+
+
+async def test_unknown_provider_is_none():
+    http = LookupHttp()
+
+    assert await _lookup_media(http, "spotify", "4") is None
+    assert http.calls == []
+
+
+async def test_deezer_quota_error_is_not_cached_as_missing():
+    """쿼터 초과도 200 + error로 온다. 미수록으로 캐시하면 회복이 안 된다."""
+    http = LookupHttp(
+        response=FakeResponse(
+            {"error": {"type": "Exception", "message": "Quota limit exceeded", "code": 4}}
+        )
+    )
+
+    with pytest.raises(PreviewProviderUnavailable):
+        await _lookup_media(http, "deezer", "1")
+
+
+async def test_itunes_lookup_rate_limit_opens_the_breaker():
+    """조회 경로에는 fallback이 없다. 검색 경로와 달리 503으로 올린다."""
+    http = LookupHttp(
+        response=FakeResponse({}, status_code=429, headers={"Retry-After": "12"})
+    )
+
+    with pytest.raises(PreviewProviderUnavailable) as exc:
+        await _lookup_media(http, "itunes", "1")
+
+    assert exc.value.retry_after == "12"
+    assert sources._is_itunes_rate_limited()
+
+
+async def test_open_breaker_skips_the_itunes_lookup():
+    sources._mark_itunes_rate_limited(30)
+    http = LookupHttp(itunes=_itunes(1, "Creep", "Radiohead"))
+
+    with pytest.raises(PreviewProviderUnavailable):
+        await _lookup_media(http, "itunes", "1")
+
+    assert http.calls == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            FakeResponse({}, status_code=429, headers={"Retry-After": "9"}),
+            id="http-429",
+        ),
+        pytest.param(
+            FakeResponse(
+                {"error": {"type": "Exception", "message": "Quota", "code": 4}}
+            ),
+            id="quota-200",
+        ),
+    ],
+)
+async def test_deezer_lookup_records_the_shared_breaker(payload):
+    """기록하지 않으면 제한 중에도 클릭마다 Deezer를 다시 부른다."""
+    sources._DZ_RATE_LIMIT_UNTIL = 0.0
+    http = LookupHttp(response=payload)
+
+    with pytest.raises(PreviewProviderUnavailable):
+        await _lookup_media(http, "deezer", "1")
+
+    assert sources._is_dz_rate_limited()
+
+
+async def test_open_deezer_breaker_skips_the_lookup():
+    sources._mark_dz_rate_limited({"Retry-After": "30"})
+    http = LookupHttp(deezer=DEEZER_TRACK)
+
+    with pytest.raises(PreviewProviderUnavailable):
+        await _lookup_media(http, "deezer", "2215315187")
+
+    assert http.calls == []
+
+
+async def test_deezer_search_treats_a_quota_error_as_unavailable():
+    """검색 응답의 쿼터 초과는 `data`가 없어 빈 결과처럼 보인다.
+
+    그대로 두면 남은 검색어를 계속 시도하고 끝내 404가 된다. 제한을 미수록으로
+    오해하는 것이고, 차단기도 닫힌 채라 다음 클릭이 또 두드린다. 재현 시
+    provider_calls=3, breaker_open=False였다.
+    """
+
+    class QuotaHttp:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            return FakeResponse(
+                {"error": {"type": "Exception", "message": "Quota", "code": 4}}
+            )
+
+    http = QuotaHttp()
+
+    with pytest.raises(PreviewProviderUnavailable) as exc:
+        await _fetch_deezer_preview(http, "Creep", "Radiohead")
+
+    assert exc.value.retry_after == "60"
+    # 첫 응답에서 끊는다. 남은 검색어를 더 시도하지 않는다.
+    assert http.calls == 1
+    assert sources._is_dz_rate_limited()
+
+
+async def test_deezer_search_still_treats_other_errors_as_no_match():
+    """쿼터가 아닌 error는 미수록이다. 503으로 올리면 안 된다."""
+
+    class DataErrorHttp:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            return FakeResponse(
+                {"error": {"type": "DataException", "message": "no data", "code": 800}}
+            )
+
+    http = DataErrorHttp()
+
+    assert await _fetch_deezer_preview(http, "Creep", "Radiohead") is None
+    assert not sources._is_dz_rate_limited()
+
+
+async def test_open_deezer_breaker_skips_the_search_too():
+    """조회 경로만 막으면 검색 경로가 그대로 제한을 두드린다."""
+    sources._mark_dz_rate_limited({"Retry-After": "30"})
+    http = FakeHttp([_item(1, "Creep", "Radiohead")])
+
+    with pytest.raises(PreviewProviderUnavailable):
+        await _fetch_deezer_preview(http, "Creep", "Radiohead")
+
+    assert http.queries == []
+
+
+async def test_lookup_result_is_cached():
+    http = LookupHttp(itunes=_itunes(1, "Creep", "Radiohead"))
+
+    await _lookup_media(http, "itunes", "1")
+    await _lookup_media(http, "itunes", "1")
+
+    assert len(http.calls) == 1
+
+
 # ── 라우트 ───────────────────────────────────────────────────────
 
 
@@ -548,7 +852,12 @@ async def test_get_preview_url_returns_resolved_track_not_echo():
     payload = await get_preview_url(_request(http), track="eight", artist="IU")
 
     assert payload["artist"] == "IU & SUGA"
-    assert payload["requested"] == {"track": "eight", "artist": "IU"}
+    assert payload["requested"] == {
+        "track": "eight",
+        "artist": "IU",
+        "provider": "",
+        "provider_track_id": "",
+    }
 
 
 async def test_get_preview_url_exposes_provider_binding():
@@ -577,6 +886,88 @@ async def test_get_preview_url_404_when_catalog_title_differs():
         await get_preview_url(_request(http), track="밤편지", artist="IU")
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.parametrize("route", [get_preview_url, stream_preview])
+async def test_routes_take_the_id_path_when_given_one(route):
+    """ID가 오면 곡명은 쳐다보지 않는다. 검색이 0회여야 한다."""
+    http = LookupHttp(itunes=_itunes(1229073406, "Through the Night", "IU"))
+
+    result = await route(
+        _request(http),
+        track="완전히 다른 제목",
+        provider="itunes",
+        provider_track_id="1229073406",
+    )
+
+    assert result is not None
+    assert http.searches == []
+    assert http.calls == [("itunes-lookup", "1229073406")]
+
+
+async def test_id_path_response_carries_the_binding():
+    http = LookupHttp(deezer=DEEZER_TRACK)
+
+    payload = await get_preview_url(
+        _request(http), provider="deezer", provider_track_id="2215315187"
+    )
+
+    assert payload["provider"] == "deezer"
+    assert payload["provider_track_id"] == "2215315187"
+    assert payload["isrc"] == "GBAYE9300465"
+    assert payload["track"] == "Creep (Acoustic)"
+    assert payload["requested"]["provider_track_id"] == "2215315187"
+
+
+async def test_missing_id_returns_404_not_a_search_fallback():
+    """ID를 줬는데 없으면 404다. 조용히 문자열 검색으로 내려가면 클라이언트가
+    다른 곡을 받게 된다."""
+    from fastapi import HTTPException
+
+    http = LookupHttp()
+
+    with pytest.raises(HTTPException) as exc:
+        await get_preview_url(
+            _request(http), track="Creep", provider="itunes", provider_track_id="99"
+        )
+
+    assert exc.value.status_code == 404
+    assert http.searches == []
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({}, id="아무것도-없음"),
+        pytest.param({"provider": "itunes"}, id="id-없는-provider"),
+        pytest.param({"provider_track_id": "1"}, id="provider-없는-id"),
+        # 곡명이 함께 와도 반쪽 ID는 거절한다. 조용히 이름 검색으로 흘려보내면
+        # 클라이언트가 지목한 곡 대신 다른 곡이 재생될 수 있다.
+        pytest.param(
+            {"track": "Creep", "provider": "itunes"}, id="곡명+provider-반쪽"
+        ),
+        pytest.param(
+            {"track": "Creep", "provider_track_id": "1"}, id="곡명+id-반쪽"
+        ),
+    ],
+)
+async def test_routes_reject_a_request_with_no_target(kwargs):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        await get_preview_url(_request(LookupHttp()), **kwargs)
+
+    assert exc.value.status_code == 422
+
+
+async def test_string_path_still_works_without_an_id():
+    """기존 경로는 fallback으로 남는다."""
+    http = RoutingHttp(itunes=[_itunes(11, "Creep", "Radiohead")])
+
+    payload = await get_preview_url(_request(http), track="Creep", artist="Radiohead")
+
+    assert payload["provider_track_id"] == "11"
+    assert http.itunes_terms == ["Creep Radiohead"]
 
 
 async def test_get_preview_url_404_when_nothing_matches():
