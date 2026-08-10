@@ -109,15 +109,24 @@ async def reverse_top100(
         # 소스 A,B 병합 및 중복 제거
         input_key = (track_name.lower(), artist.lower())
         excluded = excluded_keys or set()
-        seen: set[str] = set()
+        kept: dict[str, TrackInfo] = {}
         merged_candidates: list[TrackInfo] = []
         for track in pool_a + pool_b:
             if (track.name.lower(), track.artist.lower()) == input_key:
                 continue
             key = scoring._track_key(track)
-            if key not in excluded and key not in seen:
-                seen.add(key)
+            if key in excluded:
+                continue
+            first = kept.get(key)
+            if first is None:
+                kept[key] = track
                 merged_candidates.append(track)
+                continue
+            # 같은 곡이 두 소스에 다 있으면 순서가 아니라 신호의 질로 고른다.
+            # pool_a(track.getSimilar)가 앞이라 그냥 두면 listeners가 있는
+            # pool_b(artist.getTopTracks) 쪽이 매번 버려진다.
+            if scoring.prefers_signals_of(track, first):
+                first.signals = track.signals
 
         logger.info(
             "[Reverse] 후보 A=%d B=%d 합계=%d",
@@ -130,12 +139,10 @@ async def reverse_top100(
         balanced_candidates = scoring._balanced_candidate_slice(
             merged_candidates, top_n * 3
         )
-        # popularity를 채운 뒤 다시 중복 제거
-        enriched_candidates = scoring._dedupe_tracks(
-            await sources.get_tracks_metadata(
-                http, balanced_candidates, fields=["popularity"]
-            )
-        )
+        # 노출도는 Last.fm 응답이 이미 준 값으로 계산한다. 예전에는 여기서
+        # 후보 전부를 Deezer에 물어 popularity를 채웠다.
+        enriched_candidates = scoring._dedupe_tracks(balanced_candidates)
+        scoring.assign_exposure(enriched_candidates)
 
         # ── 비주류 점수 계산 ───────────────────────────────────────
         # 1단계: 너무 뻔한 상위 추천곡 제외하기 (Obvious Filter)
@@ -152,26 +159,10 @@ async def reverse_top100(
             key = scoring._track_key(track)
             if key not in obvious_keys:
                 discovery_pool.append(track)
-        # 인기도가 낮은 곡들만 추가
-        low_exposure = []
-        for track in discovery_pool:
-            if track.popularity is None:
-                track.popularity = scoring.DEFAULT_POPULARITY
-
-            if scoring._is_low_exposure(track.popularity):
-                low_exposure.append(track)
-
-        # 만약, 비주류 곡들이 추천 갯수보다 많다면 유명한 곡들은 완전히 제거하고 비주류 곡만 pool에 담음
-        if len(low_exposure) >= top_n:
-            discovery_pool = low_exposure
-
         pool_size = max(len(discovery_pool) - 1, 1)
         # 비주류 점수 계산
         for rank, track in enumerate(discovery_pool):
-            obscurity = scoring._popularity_obscurity(
-                track.popularity,
-                ceiling=scoring.OBSCURITY_CEILING,
-            )
+            obscurity = scoring.obscurity_of(track)
             match = scoring._clamp_score(track.match_score or 0.0)
             middle_similarity = max(0.0, 1 - (abs(match - 0.35) / 0.45))
             rank_novelty = rank / pool_size

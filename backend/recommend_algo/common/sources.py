@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import math
 import re
 import time
 from collections import OrderedDict
@@ -379,16 +378,19 @@ async def get_tracks_metadata(
     http: httpx.AsyncClient,
     tracks: list[TrackInfo],
     lastfm: pylast.LastFMNetwork | None = None,
-    fields: list[Literal["popularity", "album_art", "source_id"]]
-    | Literal["all"] = "all",
+    fields: list[Literal["album_art", "source_id"]] | Literal["all"] = "all",
 ) -> list[TrackInfo]:
     """
-    deezer/itunes에서 track의 metadata를 검색해 TrackInfo에 추가합니다.
-    - popularity : track의 인기도. 곡 재생횟수를 log-scale로 normalize한 value
+    itunes/deezer에서 track의 metadata를 검색해 TrackInfo에 추가합니다.
     - album_art : 앨범 커버(표지) url
     - source_id : itunes/deezer에 등록된 track의 id
+
+    `popularity`는 더 이상 여기서 받지 않는다. 후보마다 Deezer를 부르던 fan-out
+    이었고, 노출도는 이제 Last.fm 응답이 이미 준 값으로 계산한다
+    (`scoring.assign_exposure`). Deezer는 iTunes가 앨범아트나 ID를 주지 못한
+    경우의 fallback으로만 남는다.
     """
-    VALID_FIELDS = {"popularity", "album_art", "source_id"}
+    VALID_FIELDS = {"album_art", "source_id"}
     if fields == "all":
         active_fields = VALID_FIELDS
     else:
@@ -401,13 +403,10 @@ async def get_tracks_metadata(
         req_art = "album_art" in active_fields
         req_id = "source_id" in active_fields
 
-        needs_deezer = "popularity" in active_fields
         needs_itunes = req_art or req_id
 
         # field에 따라 필요한 API만 call
         tasks = []
-        if needs_deezer:
-            tasks.append(_deezer_or_none(http, track.name, track.artist))
         if needs_itunes:
             tasks.append(
                 _itunes_or_none(
@@ -423,18 +422,8 @@ async def get_tracks_metadata(
             results = await asyncio.gather(*tasks)
 
         result_iter = iter(results)
-        deezer_item = next(result_iter) if needs_deezer else None
+        deezer_item = None
         itunes_item = next(result_iter) if needs_itunes else None
-
-        # popularity
-        if "popularity" in active_fields:
-            if deezer_item:
-                popularity = int(deezer_item.get("rank") or 0)
-            else:
-                popularity = 0
-            if popularity > 0:
-                # rank 정규화
-                track.popularity = min(100, int(math.log10(popularity + 1) * 10))
 
         # album_art_url & album srouce id
         if req_art or req_id:
@@ -446,11 +435,6 @@ async def get_tracks_metadata(
                     )
                 if req_id:
                     track.bind(_itunes_binding(itunes_item))
-
-            # popularity 때문에 이미 받아 둔 Deezer 응답이 있으면 그 binding도 남긴다.
-            # 대표 source_id는 우선순위(itunes -> deezer)가 정하므로 값은 그대로다.
-            if req_id and deezer_item:
-                track.bind(_deezer_binding(deezer_item))
 
             # 2. itune와 req field 확인 후 API return 값 확인
             is_missing_art = req_art and not track.album_art_url

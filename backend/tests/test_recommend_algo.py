@@ -103,9 +103,17 @@ class FakeTrack:
 
 
 class FakeSimilarResult:
-    def __init__(self, artist, title, match):
+    """`playcount`는 SimilarTrackSource가 XML에 실어 어댑터까지 흘려보낸다.
+
+    노출도를 조작하려면 이 값을 써야 한다. `track.popularity`에 값을 넣는
+    것으로는 아무것도 검증되지 않는다 — 알고리즘이 더 이상 읽지 않는 속성이라
+    dataclass에 조용히 붙기만 한다.
+    """
+
+    def __init__(self, artist, title, match, playcount=1000):
         self.item = FakeTrack(artist, title)
         self.match = match
+        self.playcount = playcount
 
 
 class SimilarFakeLastFm:
@@ -646,8 +654,6 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
                 track.bind(
                     ProviderBinding(provider="deezer", provider_track_id=str(index))
                 )
-            if fields == "all" or "popularity" in fields:
-                track.popularity = 20 + index
         return tracks
 
     monkeypatch.setattr(
@@ -676,26 +682,31 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
         "chill",
     }
     assert all(track.album_art_url for tracks in result.values() for track in tracks)
-    assert metadata_calls == [
-        (15, ("popularity",)),
-        (6, ("album_art", "source_id")),
-    ]
+    # 후보 15개에 대한 popularity fan-out이 사라졌다. 노출도는 태그 순위에서 나온다.
+    assert metadata_calls == [(6, ("album_art", "source_id"))]
+    assert all(
+        track.exposure_source == "tag_rank"
+        for track in result["hidden"] + result["similar"]
+    )
 
 
 async def test_reverse_top100_skips_visible_similar_and_prefers_low_exposure(
     monkeypatch,
 ):
+    # Track 10~15를 확실한 저노출로 둔다. 재생 수는 Last.fm 응답을 거쳐
+    # DiscoverySignals로 들어가고 거기서 노출도 백분위가 나온다.
     similar_items = [
-        FakeSimilarResult(f"Artist {index}", f"Track {index}", 1.0 - (index * 0.04))
+        FakeSimilarResult(
+            f"Artist {index}",
+            f"Track {index}",
+            1.0 - (index * 0.04),
+            playcount=1_000_000 if index < 10 else 500,
+        )
         for index in range(16)
     ]
     lastfm = SimilarFakeLastFm(similar_items)
-    popularity = {f"Track {index}": 65 for index in range(5, 10)}
-    popularity.update({f"Track {index}": 15 for index in range(10, 16)})
 
     async def fake_enrich_metadata(http, tracks, *args, **kwargs):
-        for track in tracks:
-            track.popularity = popularity.get(track.name)
         return tracks
 
     monkeypatch.setattr(
@@ -716,6 +727,40 @@ async def test_reverse_top100_skips_visible_similar_and_prefers_low_exposure(
     assert reverse_names <= {f"Track {index}" for index in range(10, 16)}
 
 
+async def test_reverse_keeps_the_stronger_signal_when_pools_overlap(monkeypatch):
+    """같은 곡이 두 소스에 다 있으면 listeners 쪽을 남겨야 한다.
+
+    pool_a(track.getSimilar)를 먼저 훑기 때문에, 발견 순서로 고르면
+    pool_b(artist.getTopTracks)가 가진 listeners가 매번 버려진다. listeners만
+    아티스트 간 비교가 되는 신호라 이 손실은 그대로 점수 오류가 된다.
+    """
+    # 후보를 top_n보다 적게 둬서 "뻔한 곡 제외" 필터가 겹치는 곡을 걷어내지
+    # 않도록 한다. 여기서 보려는 것은 순위가 아니라 어느 신호가 남는지다.
+    similar_items = [
+        FakeSimilarResult("Shared Artist", "Shared Track", 0.6, playcount=777),
+        FakeSimilarResult("Other Artist", "Other Track", 0.5, playcount=888),
+    ]
+    similar_artists = [
+        FakeSimilarArtistResult(
+            FakeSimilarArtist("Shared Artist", ["Shared Track"]), 0.8
+        )
+    ]
+    lastfm = CombinedFakeLastFm(similar_items, similar_artists)
+
+    async def passthrough(http, tracks, *args, **kwargs):
+        return tracks
+
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", passthrough
+    )
+
+    result = await reverse_top100("Seed", "Seed Artist", EmptyHttp(), lastfm, top_n=5)
+
+    shared = next(t for t in result if t.name == "Shared Track")
+    assert shared.exposure_source == "listeners"
+    assert shared.signals.global_listeners is not None
+
+
 async def test_reverse_top100_keeps_top_n_when_candidate_pool_is_thin(monkeypatch):
     """후보가 top_n보다 조금 많을 때 상위 제외 필터가 결과를 깎지 않아야 한다."""
     similar_items = [
@@ -725,8 +770,6 @@ async def test_reverse_top100_keeps_top_n_when_candidate_pool_is_thin(monkeypatc
     lastfm = SimilarFakeLastFm(similar_items)
 
     async def fake_enrich_metadata(http, tracks, *args, **kwargs):
-        for track in tracks:
-            track.popularity = 30
         return tracks
 
     monkeypatch.setattr(
@@ -760,8 +803,6 @@ async def test_hidden_discovery_survives_broken_similar_artist_entry(monkeypatch
     lastfm = HiddenFakeLastFm(similar_artists)
 
     async def fake_enrich_metadata(http, tracks, *args, **kwargs):
-        for track in tracks:
-            track.popularity = 20
         return tracks
 
     monkeypatch.setattr(
@@ -913,7 +954,6 @@ async def test_reverse_top100_fills_top_n_after_artist_diversity_cap(monkeypatch
     async def fake_enrich_metadata(http, tracks, *args, **kwargs):
         for track in tracks:
             track.album_art_url = "https://example.com/art.jpg"
-            track.popularity = 40
         return tracks
 
     monkeypatch.setattr(
@@ -980,18 +1020,10 @@ async def test_hidden_discovery_excludes_seed_artist_and_expands_to_similar_arti
         ),
     ]
     lastfm = HiddenFakeLastFm(similar_artists)
-    popularity = {
-        "A Known": 78,
-        "A Hidden": 18,
-        "B Known": 66,
-        "B Hidden": 20,
-        "C Known": 64,
-        "C Hidden": 22,
-    }
 
+    # 이 테스트는 seed 아티스트 제외와 excluded_keys만 본다. 노출도 순위는
+    # ArtistTopTracksSource가 주는 listeners로 알아서 계산된다.
     async def fake_enrich_metadata(http, tracks, *args, **kwargs):
-        for track in tracks:
-            track.popularity = popularity.get(track.name)
         return tracks
 
     monkeypatch.setattr(

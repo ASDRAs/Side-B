@@ -27,12 +27,15 @@ async def tag_based_recommendations(
     if not candidates:
         return None
 
-    enriched_candidates = await sources.get_tracks_metadata(
-        http,
-        candidates,
-        lastfm,
-        fields=["popularity"],
-    )
+    # 태그 안에서의 상대 노출도를 매긴다. `tag.getTopTracks`는 태그별 인기순
+    # 정렬이라 순위가 곧 그 무드 안에서의 노출도다. 태그가 여러 개 섞이므로
+    # assign_exposure가 태그별로 따로 백분위를 낸다.
+    #
+    # 예전에는 여기서 후보 50개를 Deezer에 물어 절대 popularity를 채웠다. 그
+    # 값의 상당수가 K-pop 미수록으로 결측이었고, 결측이 기본값 55로 채워져
+    # 오히려 저노출 보너스를 받았다.
+    enriched_candidates = candidates
+    scoring.assign_exposure(enriched_candidates)
 
     # 1. 비슷한 느낌의 노래 추천
     # 1-1. 아티스트 당 2곡 씩 추천되도록 하되, 만약 top_n보다 적어지면 drop하지 않고 사용한다.
@@ -58,22 +61,17 @@ async def tag_based_recommendations(
         if scoring._track_key(track) not in recommended_tracks
     ]
 
-    for index, track in enumerate(hidden_pool):
-        obscurity = scoring._popularity_obscurity(
-            track.popularity,
-            ceiling=scoring.OBSCURITY_CEILING,
-        )
-        rank_depth = min(1.0, index / max(len(hidden_pool) - 1, 1))
+    # 이 버킷의 "숨은 곡"은 절대 무명곡이 아니라 그 무드 안에서 덜 상위인 곡이다.
+    # 절대 노출도를 줄 공급자가 없어서가 아니라, 태그를 듣는 사람 기준의 저노출이
+    # 이 버킷이 원하는 것이기 때문이다.
+    #
+    # 이전에는 병합 풀에서의 위치(rank_depth)와 태그 순위(tag_match)가 같은
+    # 신호를 반대 방향으로 두 번 세고 있었다. 태그별 정확한 순위 하나로 합친다.
+    for track in hidden_pool:
+        depth = scoring.obscurity_of(track)
         tag_match = scoring._clamp_score(track.match_score or 0.0)
-        track.reverse_score = (
-            (obscurity * 0.55) + (rank_depth * 0.25) + (tag_match * 0.20)
-        )
+        track.reverse_score = (depth * 0.80) + (tag_match * 0.20)
 
-    low_exposure_pool = [
-        track for track in hidden_pool if scoring._is_low_exposure(track.popularity)
-    ]
-    if len(low_exposure_pool) >= top_n:
-        hidden_pool = low_exposure_pool
     ranked_hidden_pool = sorted(
         hidden_pool, key=lambda item: item.reverse_score or 0, reverse=True
     )
@@ -102,6 +100,9 @@ async def tag_based_recommendations(
         max_per_artist=1,
         excluded_keys=recommended_tracks,
     )
+    # 반대 태그 후보는 별도 풀이라 위 assign_exposure에 포함되지 않았다. 순위
+    # 신호가 있는데 계산만 빠지면 응답에서 "미수록"과 구분되지 않는다.
+    scoring.assign_exposure(opposite_tracks)
     for track in opposite_tracks:
         tag = track.reason_tags[0] if track.reason_tags else "contrast"
         track.algo, track.label = "tag_opposite", f"#{tag} 반대 결 추천"

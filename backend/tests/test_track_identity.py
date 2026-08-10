@@ -12,13 +12,15 @@ from recommend_algo.common.sources import (
     get_tracks_metadata,
 )
 
-# PR 1은 외부 응답을 바꾸지 않는다. 이 키 집합이 기존 asdict(TrackInfo) 결과다.
+# 외부 응답 키. `popularity`는 호환용 별칭으로 남기고 `exposure_source`를 더했다.
+# 나머지는 예전 asdict(TrackInfo) 결과와 같다.
 LEGACY_API_KEYS = {
     "name",
     "artist",
     "source_id",
     "album_art_url",
     "popularity",
+    "exposure_source",
     "match_score",
     "reverse_score",
     "algo",
@@ -217,13 +219,13 @@ class _CallCounter:
         monkeypatch.setattr(sources, "_deezer_or_none", fake_deezer)
 
 
-# (fields, iTunes 호출, Deezer 호출) — PR 1 이전과 같은 값이어야 한다.
+# (fields, iTunes 호출, Deezer 호출).
+# `popularity`가 빠지면서 Deezer는 iTunes가 실패했을 때만 불린다.
 CALL_BUDGET = [
     pytest.param(["source_id"], 1, 0, id="source_id"),
     pytest.param(["album_art"], 1, 0, id="album_art"),
-    pytest.param(["popularity"], 0, 1, id="popularity"),
     pytest.param(["album_art", "source_id"], 1, 0, id="art+id"),
-    pytest.param("all", 1, 1, id="all"),
+    pytest.param("all", 1, 0, id="all"),
 ]
 
 
@@ -239,19 +241,24 @@ async def test_metadata_call_budget_per_field(
     assert (counter.itunes_calls, counter.deezer_calls) == (want_itunes, want_deezer)
 
 
-async def test_metadata_records_both_bindings_without_extra_calls(monkeypatch):
-    """`all`은 두 공급자를 이미 호출하므로 두 binding을 모두 남길 수 있다.
+async def test_popularity_is_no_longer_a_metadata_field():
+    """노출도는 Last.fm 응답에서 계산한다. 여기서 Deezer에 묻지 않는다."""
+    with pytest.raises(ValueError, match="popularity"):
+        await get_tracks_metadata(None, [], None, fields=["popularity"])
 
-    추가 호출 없이 얻는 정보이고, 대표 source_id는 우선순위가 정하므로 외부
-    응답은 그대로다.
+
+async def test_itunes_success_does_not_touch_deezer(monkeypatch):
+    """iTunes가 앨범아트와 ID를 다 주면 Deezer를 부를 이유가 없다.
+
+    예전에는 `all`이 popularity를 포함해 후보마다 Deezer를 함께 불렀다.
     """
     counter = _CallCounter(monkeypatch)
     track = TrackInfo(name="Through the Night", artist="IU")
 
     await get_tracks_metadata(None, [track], None, fields="all")
 
-    assert (counter.itunes_calls, counter.deezer_calls) == (1, 1)
-    assert set(track.bindings) == {"itunes", "deezer"}
+    assert (counter.itunes_calls, counter.deezer_calls) == (1, 0)
+    assert set(track.bindings) == {"itunes"}
     assert track.source_id == "itunes:1229073406"
 
 
