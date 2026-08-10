@@ -723,6 +723,54 @@ async def test_open_deezer_breaker_skips_the_lookup():
     assert http.calls == []
 
 
+async def test_deezer_search_treats_a_quota_error_as_unavailable():
+    """검색 응답의 쿼터 초과는 `data`가 없어 빈 결과처럼 보인다.
+
+    그대로 두면 남은 검색어를 계속 시도하고 끝내 404가 된다. 제한을 미수록으로
+    오해하는 것이고, 차단기도 닫힌 채라 다음 클릭이 또 두드린다. 재현 시
+    provider_calls=3, breaker_open=False였다.
+    """
+
+    class QuotaHttp:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            return FakeResponse(
+                {"error": {"type": "Exception", "message": "Quota", "code": 4}}
+            )
+
+    http = QuotaHttp()
+
+    with pytest.raises(PreviewProviderUnavailable) as exc:
+        await _fetch_deezer_preview(http, "Creep", "Radiohead")
+
+    assert exc.value.retry_after == "60"
+    # 첫 응답에서 끊는다. 남은 검색어를 더 시도하지 않는다.
+    assert http.calls == 1
+    assert sources._is_dz_rate_limited()
+
+
+async def test_deezer_search_still_treats_other_errors_as_no_match():
+    """쿼터가 아닌 error는 미수록이다. 503으로 올리면 안 된다."""
+
+    class DataErrorHttp:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            return FakeResponse(
+                {"error": {"type": "DataException", "message": "no data", "code": 800}}
+            )
+
+    http = DataErrorHttp()
+
+    assert await _fetch_deezer_preview(http, "Creep", "Radiohead") is None
+    assert not sources._is_dz_rate_limited()
+
+
 async def test_open_deezer_breaker_skips_the_search_too():
     """조회 경로만 막으면 검색 경로가 그대로 제한을 두드린다."""
     sources._mark_dz_rate_limited({"Retry-After": "30"})

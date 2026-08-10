@@ -215,6 +215,21 @@ def _retry_after_seconds(value: str | None, *, default: int) -> str:
     return str(default)
 
 
+def _raise_if_deezer_quota_error(payload: object) -> None:
+    """Deezer가 200 본문으로 알리는 쿼터 초과를 골라낸다.
+
+    검색 응답에는 `data`가 없고 `error`만 온다. 그대로 두면 빈 결과로 보여
+    남은 검색어를 계속 시도하고 끝내 404가 된다 — 제한을 미수록으로 오해하는
+    것이고, 회로차단기도 닫힌 채로 남아 다음 클릭이 또 두드린다.
+    """
+    if not isinstance(payload, dict):
+        return
+    error = payload.get("error")
+    if isinstance(error, dict) and error.get("code") == _DEEZER_QUOTA_ERROR_CODE:
+        logger.warning("[Preview] Deezer 쿼터 초과: %s", error.get("message"))
+        raise _deezer_rate_limited("60")
+
+
 def _deezer_rate_limited(retry_after: str) -> PreviewProviderUnavailable:
     """Deezer 제한을 회로차단기에 기록하고 올릴 예외를 만든다.
 
@@ -345,6 +360,7 @@ async def _fetch_deezer_preview(
         except (TypeError, ValueError) as exc:
             logger.warning("[Preview] Deezer 응답 JSON 파싱 실패: %s", query)
             raise PreviewProviderUnavailable(retry_after="30") from exc
+        _raise_if_deezer_quota_error(payload)
         items = payload.get("data", []) if isinstance(payload, dict) else []
 
         best = _best_candidate(items, clean, artist, wanted)
@@ -485,12 +501,9 @@ async def _lookup_deezer(
     if not isinstance(payload, dict):
         raise PreviewProviderUnavailable(retry_after="30")
 
-    error = payload.get("error")
-    if isinstance(error, dict):
-        # 쿼터 초과도 200 + error로 온다. 미수록으로 캐시하면 회복이 안 된다.
-        if error.get("code") == _DEEZER_QUOTA_ERROR_CODE:
-            logger.warning("[Preview] Deezer 쿼터 초과: %s", error.get("message"))
-            raise _deezer_rate_limited("60")
+    _raise_if_deezer_quota_error(payload)
+    if isinstance(payload.get("error"), dict):
+        # 쿼터가 아닌 error는 없는 곡이다(DataException 800 등).
         return None
 
     return next(_deezer_candidates([payload]), None)
