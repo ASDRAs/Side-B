@@ -180,10 +180,7 @@ async def reverse_top100(
         for track in ranked:
             track.algo, track.label = "reverse_top100", "당신만 모르는 숨겨진 명곡"
         logger.info("[Reverse] 최종 선정 %d개", len(ranked))
-        ranked = await sources.get_tracks_metadata(
-            http, ranked, lastfm, fields=["album_art", "source_id"]
-        )
-
+        # 후보 metadata fan-out 없음. 앨범아트는 preview 클릭 시점에 채운다.
         return ranked
     except Exception as exc:
         logger.warning("[reverse_top100] failed: %s", exc)

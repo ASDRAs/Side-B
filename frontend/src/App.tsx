@@ -11,7 +11,7 @@ import {
   X,
 } from 'lucide-react';
 
-import { previewStreamUrl, recommend } from './api';
+import { previewStreamUrl, recommend, resolvePreview } from './api';
 import type { RecommendationBucket, RecommendResponse, TrackRecommendation } from './types';
 
 type View = 'search' | 'map' | 'group';
@@ -88,6 +88,8 @@ export default function App() {
   const [history, setHistory] = useState<string[]>([]);
   const [player, setPlayer] = useState<PlayerState | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // 곡 확정을 기다리는 동안 다른 곡을 누르면 앞선 재생을 버리기 위한 표식.
+  const playRequestRef = useRef(0);
 
   const allTracks = useMemo(() => {
     if (!response) return [];
@@ -157,6 +159,8 @@ export default function App() {
   }
 
   function stopPreview() {
+    // 아직 곡을 확정하는 중이었다면 그 재생도 시작하지 않는다.
+    playRequestRef.current += 1;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.src = '';
@@ -165,7 +169,7 @@ export default function App() {
     setPlayer(null);
   }
 
-  function togglePreview(track: TrackRecommendation) {
+  async function togglePreview(track: TrackRecommendation) {
     const key = trackKey(track);
     if (player?.key === key && audioRef.current) {
       if (audioRef.current.paused) {
@@ -179,16 +183,55 @@ export default function App() {
     }
 
     stopPreview();
-    const audio = new Audio(previewStreamUrl(track));
-    audioRef.current = audio;
     setPlayer({ key, track, status: 'loading' });
+
+    // 재생할 곡을 확정한다. 이 한 번의 결과에서 음원과 앨범아트가 함께 나오므로
+    // 둘이 어긋날 수 없다.
+    const request = ++playRequestRef.current;
+    const resolved = await resolvePreview(track).catch(() => null);
+    // 확정을 기다리는 사이에 다른 곡을 눌렀으면 이 재생은 버린다.
+    if (request !== playRequestRef.current) return;
+    if (!resolved) {
+      // 스트림 경로도 같은 조회를 하므로 다시 시도할 이유가 없다.
+      stopPreview();
+      return;
+    }
+
+    // CDN을 직접 재생한다. 서버 프록시는 브라우저가 CDN을 막을 때만 쓴다 —
+    // 프록시를 기본 경로로 쓰면 공급자 조회가 인스턴스마다 한 번씩 더 나간다.
+    const audio = new Audio(resolved.previewUrl);
+    audioRef.current = audio;
+    let proxied = false;
     audio.addEventListener('playing', () => setPlayer({ key, track, status: 'playing' }));
     audio.addEventListener('pause', () =>
       setPlayer((current) => (current?.key === key ? { key, track, status: 'paused' } : current)),
     );
     audio.addEventListener('ended', stopPreview);
-    audio.addEventListener('error', stopPreview);
+    audio.addEventListener('error', () => {
+      // 중단할 때 src를 비우는 것도 error로 올라온다. 그걸 CDN 실패로 읽으면
+      // 정지 버튼이 프록시 재생을 시작시킨다.
+      if (audioRef.current !== audio) return;
+      if (proxied) {
+        stopPreview();
+        return;
+      }
+      proxied = true;
+      audio.src = previewStreamUrl(resolved);
+      void audio.play();
+    });
     void audio.play();
+
+    // 추천 카드는 앨범아트 없이 도착한다(백엔드가 후보마다 공급자를 부르지 않는다).
+    // 방금 확정한 곡의 것으로 이 카드만 채운다.
+    if (resolved?.artworkUrl && !track.album_art_url) {
+      const artworkUrl = resolved.artworkUrl;
+      setResponse((current) => withArtwork(current, key, artworkUrl));
+      setPlayer((current) =>
+        current?.key === key
+          ? { ...current, track: { ...current.track, album_art_url: artworkUrl } }
+          : current,
+      );
+    }
   }
 
   if (view === 'group' && response && activeGroup) {
@@ -624,4 +667,26 @@ function buildMainTrack(response: RecommendResponse, allTracks: TrackRecommendat
 
 function trackKey(track: TrackRecommendation) {
   return `${track.artist}::${track.name}`;
+}
+
+/** 같은 곡이 여러 버킷에 있을 수 있으므로 전부 채운다. 변화가 없으면 그대로 둔다. */
+function withArtwork(
+  current: RecommendResponse | null,
+  key: string,
+  artworkUrl: string,
+): RecommendResponse | null {
+  if (!current) return current;
+  let changed = false;
+  const result = { ...current.result };
+  for (const group of groups) {
+    const tracks = result[group.key] ?? [];
+    if (!tracks.some((track) => trackKey(track) === key && !track.album_art_url)) continue;
+    result[group.key] = tracks.map((track) =>
+      trackKey(track) === key && !track.album_art_url
+        ? { ...track, album_art_url: artworkUrl }
+        : track,
+    );
+    changed = true;
+  }
+  return changed ? { ...current, result } : current;
 }

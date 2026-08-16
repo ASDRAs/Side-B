@@ -1,8 +1,12 @@
 """
 API 호출 계측 테스트.
 
-Phase 1 (Lazy Enrichment) 적용 전에는 실패하는 것이 정상.
-Phase 1 적용 후 전부 통과해야 한다.
+추천 생성은 후보에 대해 공급자 metadata를 조회하지 않는다. 곡마다 iTunes를
+부르면 추천 한 번에 30회가 나가는데 상한이 분당 20회라, 사용자 한 명이 한 번
+검색하는 것만으로 제한을 넘긴다. 앨범아트와 ID는 preview 클릭 시점에 채운다.
+
+이 파일은 그 계약을 고정한다. 여기 숫자가 0이 아니게 되면 fan-out이 되살아난
+것이다.
 """
 
 from recommend_algo import (
@@ -13,8 +17,6 @@ from recommend_algo import (
 from tests.lastfm_fakes import ArtistTopTracksSource, SimilarTrackSource
 
 TOP_N = 10
-ENRICH_LIMIT_SIMILAR = TOP_N
-FINAL_METADATA_LIMIT = TOP_N
 
 
 # ── 공통 Fake 인프라 ──────────────────────────────────────────────
@@ -32,7 +34,13 @@ class FakeResponse:
 
 
 class EmptyHttp:
+    """빈 응답만 주는 http 대역. 어떤 URL이 호출됐는지 기록한다."""
+
+    def __init__(self):
+        self.calls = []
+
     async def get(self, url, params=None, timeout=None):
+        self.calls.append(url)
         return FakeResponse({"resultCount": 0, "results": []})
 
 
@@ -106,8 +114,8 @@ class HiddenFakeLastFm:
 # ── 계측 테스트 ───────────────────────────────────────────────────
 
 
-async def test_similar_enrich_count_is_at_most_top_n(monkeypatch):
-    """similar_listening_pattern은 top_n개 이하만 enrich해야 한다."""
+async def test_similar_makes_no_candidate_metadata_fanout(monkeypatch):
+    """similar_listening_pattern은 후보 metadata를 조회하지 않는다."""
     similar_tracks = [
         FakeSimilarResult(f"Artist{i}", f"Track{i}", 1.0 - i * 0.01) for i in range(50)
     ]
@@ -115,25 +123,25 @@ async def test_similar_enrich_count_is_at_most_top_n(monkeypatch):
     metadata_calls = []
 
     async def counting_enrich(http, tracks, *args, **kwargs):
-        metadata_calls.append((tuple(kwargs.get("fields") or ()), len(tracks)))
-        for t in tracks:
-            t.album_art_url = "https://example.com/art.jpg"
+        metadata_calls.append(len(tracks))
         return tracks
 
     monkeypatch.setattr(
         "recommend_algo.common.sources.get_tracks_metadata", counting_enrich
     )
 
-    await similar_listening_pattern("Seed", "Artist", EmptyHttp(), lastfm, top_n=TOP_N)
+    http = EmptyHttp()
+    await similar_listening_pattern("Seed", "Artist", http, lastfm, top_n=TOP_N)
 
-    total = sum(count for _, count in metadata_calls)
-    assert total <= ENRICH_LIMIT_SIMILAR, (
-        f"similar_listening_pattern이 {total}개를 enrich함. 기대: <= {ENRICH_LIMIT_SIMILAR}"
+    assert metadata_calls == [], (
+        f"similar_listening_pattern이 후보 {sum(metadata_calls)}개를 enrich함. "
+        "후보 fan-out은 0이어야 한다."
     )
+    assert http.calls == [], f"공급자 직접 호출이 남아 있다: {http.calls}"
 
 
-async def test_reverse_enrich_count_is_at_most_top_n_times_3(monkeypatch):
-    """reverse_top100은 top_n * 3개 이하만 enrich해야 한다."""
+async def test_reverse_makes_no_candidate_metadata_fanout(monkeypatch):
+    """reverse_top100은 후보 metadata를 조회하지 않는다."""
     similar_tracks = [
         FakeSimilarResult(f"Artist{i}", f"Track{i}", 1.0 - i * 0.01) for i in range(80)
     ]
@@ -156,28 +164,18 @@ async def test_reverse_enrich_count_is_at_most_top_n_times_3(monkeypatch):
         "recommend_algo.common.sources.get_tracks_metadata", counting_enrich
     )
 
-    await reverse_top100("Seed", "Artist", EmptyHttp(), lastfm, top_n=TOP_N)
+    http = EmptyHttp()
+    await reverse_top100("Seed", "Artist", http, lastfm, top_n=TOP_N)
 
-    popularity_total = sum(
-        count for fields, count in metadata_calls if fields == ("popularity",)
+    assert metadata_calls == [], (
+        f"reverse_top100이 후보 {sum(count for _, count in metadata_calls)}개를 "
+        "enrich함. popularity fan-out도 최종 metadata fan-out도 0이어야 한다."
     )
-    final_total = sum(
-        count
-        for fields, count in metadata_calls
-        if fields == ("album_art", "source_id")
-    )
-    assert popularity_total == 0, (
-        f"reverse_top100이 {popularity_total}개를 popularity enrich함. "
-        "노출도는 Last.fm 응답에서 계산하므로 이 fan-out은 0이어야 한다."
-    )
-    assert final_total <= FINAL_METADATA_LIMIT, (
-        f"reverse_top100이 {final_total}개를 최종 metadata enrich함. "
-        f"기대: <= {FINAL_METADATA_LIMIT}"
-    )
+    assert http.calls == [], f"공급자 직접 호출이 남아 있다: {http.calls}"
 
 
-async def test_hidden_enrich_count_is_at_most_top_n_times_3(monkeypatch):
-    """hidden_discovery는 top_n * 3개 이하만 enrich해야 한다."""
+async def test_hidden_makes_no_candidate_metadata_fanout(monkeypatch):
+    """hidden_discovery는 후보 metadata를 조회하지 않는다."""
     similar_artists = [
         FakeSimilarArtistResult(FakeSimilarArtistItem(f"Artist{i}", 4), 0.9 - i * 0.03)
         for i in range(30)
@@ -195,21 +193,11 @@ async def test_hidden_enrich_count_is_at_most_top_n_times_3(monkeypatch):
         "recommend_algo.common.sources.get_tracks_metadata", counting_enrich
     )
 
-    await hidden_discovery_by_artist("Artist", EmptyHttp(), lastfm, top_n=TOP_N)
+    http = EmptyHttp()
+    await hidden_discovery_by_artist("Artist", http, lastfm, top_n=TOP_N)
 
-    popularity_total = sum(
-        count for fields, count in metadata_calls if fields == ("popularity",)
+    assert metadata_calls == [], (
+        f"hidden_discovery가 후보 {sum(count for _, count in metadata_calls)}개를 "
+        "enrich함. popularity fan-out도 최종 metadata fan-out도 0이어야 한다."
     )
-    final_total = sum(
-        count
-        for fields, count in metadata_calls
-        if fields == ("album_art", "source_id")
-    )
-    assert popularity_total == 0, (
-        f"hidden_discovery가 {popularity_total}개를 popularity enrich함. "
-        "노출도는 Last.fm 응답에서 계산하므로 이 fan-out은 0이어야 한다."
-    )
-    assert final_total <= FINAL_METADATA_LIMIT, (
-        f"hidden_discovery가 {final_total}개를 최종 metadata enrich함. "
-        f"기대: <= {FINAL_METADATA_LIMIT}"
-    )
+    assert http.calls == [], f"공급자 직접 호출이 남아 있다: {http.calls}"

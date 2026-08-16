@@ -67,14 +67,67 @@ function splitSourceId(sourceId?: string | null): [string, string] | null {
 }
 
 /**
- * ID가 있으면 그것으로 재생한다. 서버가 공급자 검색을 건너뛰므로 카탈로그
- * 표기가 화면의 곡명과 달라도 정확히 같은 곡이 나온다. ID가 없으면 곡명으로
- * 검색하는 기존 경로를 쓴다.
+ * ID가 있으면 그것으로 조회하고, 없으면 곡명으로 검색한다. 추천 후보는 이제
+ * `source_id`가 비어 있어 대부분 곡명 경로를 타지만, 기준곡처럼 ID가 실려 오는
+ * 곡은 계속 정확 조회를 쓴다.
  */
-export function previewStreamUrl(track: TrackRecommendation): string {
+function previewParams(track: TrackRecommendation): string {
   const identity = splitSourceId(track.source_id);
   const params = identity
     ? new URLSearchParams({ provider: identity[0], provider_track_id: identity[1] })
     : new URLSearchParams({ track: track.name, artist: track.artist });
+  return params.toString();
+}
+
+export interface ResolvedPreview {
+  provider: string;
+  providerTrackId: string;
+  /** 공급자 CDN 주소. 만료 시각이 들어 있으므로 즉시 재생해야 한다. */
+  previewUrl: string;
+  artworkUrl: string | null;
+}
+
+/**
+ * 재생할 곡을 확정한다. 응답 하나에 CDN 주소, 공급자 ID, 앨범아트가 함께 온다.
+ *
+ * 추천 응답은 더 이상 후보의 앨범아트를 채우지 않는다. 곡마다 공급자를 부르면
+ * 추천 한 번에 30회가 나가는데 iTunes 상한이 분당 20회이기 때문이다. 그래서
+ * 재생하는 곡만 이 시점에 확정한다.
+ *
+ * 확정은 이 한 번뿐이다. 스트림 프록시를 함께 부르면 서버 캐시가 프로세스
+ * 로컬이라 다른 인스턴스에서 같은 곡을 또 조회하게 되고, 장애 중에는 들리는
+ * 음원과 보이는 앨범아트가 다른 binding에서 나올 수도 있다.
+ */
+export async function resolvePreview(
+  track: TrackRecommendation,
+): Promise<ResolvedPreview | null> {
+  const response = await fetch(`${resolveApiBaseUrl()}/preview?${previewParams(track)}`);
+  if (!response.ok) return null;
+  const payload = (await response.json()) as {
+    preview_url?: string;
+    provider?: string;
+    provider_track_id?: string;
+    artwork_url?: string | null;
+  };
+  if (!payload.preview_url || !payload.provider || !payload.provider_track_id) {
+    return null;
+  }
+  return {
+    provider: payload.provider,
+    providerTrackId: payload.provider_track_id,
+    previewUrl: payload.preview_url,
+    artworkUrl: payload.artwork_url ?? null,
+  };
+}
+
+/**
+ * CDN 재생이 막혔을 때만 쓰는 우회로. 확정된 ID로 요청하므로 서버는 검색이
+ * 아니라 조회를 하고, 방금 확정한 것과 같은 음원이 나온다.
+ */
+export function previewStreamUrl(resolved: ResolvedPreview): string {
+  const params = new URLSearchParams({
+    provider: resolved.provider,
+    provider_track_id: resolved.providerTrackId,
+  });
   return `${resolveApiBaseUrl()}/preview/stream?${params.toString()}`;
 }

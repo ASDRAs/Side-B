@@ -195,7 +195,6 @@ async def run_recommend(
         seed_tags = query_analysis.mood.tags
         opposite_tags = query_analysis.mood.opposite_tags
         tag_results = await tag_based_recommendations(
-            http,
             lastfm,
             seed_tags,
             opposite_tags,
@@ -241,6 +240,8 @@ async def run_recommend(
         # direct resolver가 확정한 seed는 그 공급자의 binding으로 기록한다.
         user_track_info.bind(binding_from_source_id(source_id, name, artist))
 
+        # 기준곡 1곡만 조회한다. 후보 30곡 fan-out은 없앴지만(iTunes 분당 20회
+        # 상한) 기준곡은 화면 상단에 항상 보이고 호출이 1회라 남긴다.
         user_track_info = await get_tracks_metadata(
             http, [user_track_info], lastfm, fields=["album_art", "source_id"]
         )
