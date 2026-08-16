@@ -262,14 +262,15 @@ async def _fetch_itunes_preview(
     503으로 끊지 않는다. Deezer가 같은 곡을 가지고 있을 수 있기 때문이다.
     429는 추천 경로와 공유하는 회로차단기에 기록해 반복 호출을 막는다.
     """
-    if _is_itunes_rate_limited():
-        logger.info("[Preview] iTunes 회로차단 중 — Deezer로 넘어간다")
-        return None
-
     clean = _strip_version(track_name)
     wanted = _version_markers(track_name)
 
     for term in _itunes_terms(track_name, artist):
+        # 검색어마다 확인한다. 앞에서 한 번만 보면, 첫 검색어를 시도하는 사이에
+        # 다른 요청이 429를 받아 차단기를 열어도 남은 검색어가 그대로 나간다.
+        if _is_itunes_rate_limited():
+            logger.info("[Preview] iTunes 회로차단 중 — Deezer로 넘어간다")
+            return None
         try:
             resp = await http.get(
                 _ITUNES_SEARCH,
@@ -326,10 +327,12 @@ async def _fetch_deezer_preview(
 
     queries = _search_queries(track_name, artist)
 
-    if _is_dz_rate_limited():
-        raise PreviewProviderUnavailable(retry_after="30")
-
     for query in queries:
+        # 검색어마다 확인한다. iTunes 쪽과 같은 이유다 — 검색어 사이에 다른
+        # 요청이 차단기를 열 수 있고, 그때 남은 검색어를 계속 보내면 제한이
+        # 길어진다.
+        if _is_dz_rate_limited():
+            raise PreviewProviderUnavailable(retry_after="30")
         try:
             resp = await http.get(_DEEZER_SEARCH, params={"q": query}, timeout=8.0)
         except httpx.RequestError as exc:
