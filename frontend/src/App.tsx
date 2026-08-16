@@ -185,21 +185,40 @@ export default function App() {
     stopPreview();
     setPlayer({ key, track, status: 'loading' });
 
-    // 재생할 곡을 먼저 확정한다. 그 한 번의 결과에서 음원과 앨범아트가 함께
-    // 나오므로 둘이 어긋날 수 없다. 확정 실패는 곡명 경로로 흘려보낸다.
+    // 재생할 곡을 확정한다. 이 한 번의 결과에서 음원과 앨범아트가 함께 나오므로
+    // 둘이 어긋날 수 없다.
     const request = ++playRequestRef.current;
     const resolved = await resolvePreview(track).catch(() => null);
     // 확정을 기다리는 사이에 다른 곡을 눌렀으면 이 재생은 버린다.
     if (request !== playRequestRef.current) return;
+    if (!resolved) {
+      // 스트림 경로도 같은 조회를 하므로 다시 시도할 이유가 없다.
+      stopPreview();
+      return;
+    }
 
-    const audio = new Audio(previewStreamUrl(track, resolved));
+    // CDN을 직접 재생한다. 서버 프록시는 브라우저가 CDN을 막을 때만 쓴다 —
+    // 프록시를 기본 경로로 쓰면 공급자 조회가 인스턴스마다 한 번씩 더 나간다.
+    const audio = new Audio(resolved.previewUrl);
     audioRef.current = audio;
+    let proxied = false;
     audio.addEventListener('playing', () => setPlayer({ key, track, status: 'playing' }));
     audio.addEventListener('pause', () =>
       setPlayer((current) => (current?.key === key ? { key, track, status: 'paused' } : current)),
     );
     audio.addEventListener('ended', stopPreview);
-    audio.addEventListener('error', stopPreview);
+    audio.addEventListener('error', () => {
+      // 중단할 때 src를 비우는 것도 error로 올라온다. 그걸 CDN 실패로 읽으면
+      // 정지 버튼이 프록시 재생을 시작시킨다.
+      if (audioRef.current !== audio) return;
+      if (proxied) {
+        stopPreview();
+        return;
+      }
+      proxied = true;
+      audio.src = previewStreamUrl(resolved);
+      void audio.play();
+    });
     void audio.play();
 
     // 추천 카드는 앨범아트 없이 도착한다(백엔드가 후보마다 공급자를 부르지 않는다).
