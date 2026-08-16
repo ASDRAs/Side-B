@@ -67,14 +67,37 @@ function splitSourceId(sourceId?: string | null): [string, string] | null {
 }
 
 /**
- * ID가 있으면 그것으로 재생한다. 서버가 공급자 검색을 건너뛰므로 카탈로그
- * 표기가 화면의 곡명과 달라도 정확히 같은 곡이 나온다. ID가 없으면 곡명으로
- * 검색하는 기존 경로를 쓴다.
+ * ID가 있으면 그것으로 조회하고, 없으면 곡명으로 검색한다. 추천 후보는 이제
+ * `source_id`가 비어 있어 대부분 곡명 경로를 타지만, 기준곡처럼 ID가 실려 오는
+ * 곡은 계속 정확 조회를 쓴다.
  */
-export function previewStreamUrl(track: TrackRecommendation): string {
+function previewParams(track: TrackRecommendation): string {
   const identity = splitSourceId(track.source_id);
   const params = identity
     ? new URLSearchParams({ provider: identity[0], provider_track_id: identity[1] })
     : new URLSearchParams({ track: track.name, artist: track.artist });
-  return `${resolveApiBaseUrl()}/preview/stream?${params.toString()}`;
+  return params.toString();
+}
+
+export function previewStreamUrl(track: TrackRecommendation): string {
+  return `${resolveApiBaseUrl()}/preview/stream?${previewParams(track)}`;
+}
+
+/**
+ * 재생하는 곡의 앨범아트를 그 시점에 가져온다.
+ *
+ * 추천 응답은 더 이상 후보의 앨범아트를 채우지 않는다. 곡마다 공급자를 부르면
+ * 추천 한 번에 30회가 나가는데 iTunes 상한이 분당 20회라, 한 명이 한 번
+ * 검색하는 것만으로 제한을 넘겼다.
+ *
+ * 서버가 같은 조회를 캐시하므로 stream 요청과 동시에 보내도 공급자 호출은
+ * 한 번이다. 실패는 삼킨다 — 앨범아트가 없다고 재생을 막을 이유는 없다.
+ */
+export async function fetchPreviewArtwork(
+  track: TrackRecommendation,
+): Promise<string | null> {
+  const response = await fetch(`${resolveApiBaseUrl()}/preview?${previewParams(track)}`);
+  if (!response.ok) return null;
+  const payload = (await response.json()) as { artwork_url?: string | null };
+  return payload.artwork_url ?? null;
 }

@@ -11,7 +11,7 @@ import {
   X,
 } from 'lucide-react';
 
-import { previewStreamUrl, recommend } from './api';
+import { fetchPreviewArtwork, previewStreamUrl, recommend } from './api';
 import type { RecommendationBucket, RecommendResponse, TrackRecommendation } from './types';
 
 type View = 'search' | 'map' | 'group';
@@ -189,6 +189,26 @@ export default function App() {
     audio.addEventListener('ended', stopPreview);
     audio.addEventListener('error', stopPreview);
     void audio.play();
+    hydrateArtwork(track, key);
+  }
+
+  /**
+   * 추천 카드는 앨범아트 없이 도착한다(백엔드가 후보마다 공급자를 부르지 않는다).
+   * 재생을 누른 곡만 이 시점에 채운다. 재생을 막지 않도록 뒤에서 돌린다.
+   */
+  function hydrateArtwork(track: TrackRecommendation, key: string) {
+    if (track.album_art_url) return;
+    void fetchPreviewArtwork(track)
+      .then((url) => {
+        if (!url) return;
+        setResponse((current) => withArtwork(current, key, url));
+        setPlayer((current) =>
+          current?.key === key
+            ? { ...current, track: { ...current.track, album_art_url: url } }
+            : current,
+        );
+      })
+      .catch(() => undefined);
   }
 
   if (view === 'group' && response && activeGroup) {
@@ -624,4 +644,26 @@ function buildMainTrack(response: RecommendResponse, allTracks: TrackRecommendat
 
 function trackKey(track: TrackRecommendation) {
   return `${track.artist}::${track.name}`;
+}
+
+/** 같은 곡이 여러 버킷에 있을 수 있으므로 전부 채운다. 변화가 없으면 그대로 둔다. */
+function withArtwork(
+  current: RecommendResponse | null,
+  key: string,
+  artworkUrl: string,
+): RecommendResponse | null {
+  if (!current) return current;
+  let changed = false;
+  const result = { ...current.result };
+  for (const group of groups) {
+    const tracks = result[group.key] ?? [];
+    if (!tracks.some((track) => trackKey(track) === key && !track.album_art_url)) continue;
+    result[group.key] = tracks.map((track) =>
+      trackKey(track) === key && !track.album_art_url
+        ? { ...track, album_art_url: artworkUrl }
+        : track,
+    );
+    changed = true;
+  }
+  return changed ? { ...current, result } : current;
 }
