@@ -661,7 +661,6 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
     )
 
     result = await tag_based_recommendations(
-        EmptyHttp(),
         lastfm,
         ["korean city pop", "citypop", "japanese city pop"],
         ["emotional", "chill"],
@@ -681,9 +680,12 @@ async def test_tag_based_recommendations_returns_results_for_city_pop_query(
         "emotional",
         "chill",
     }
-    assert all(track.album_art_url for tracks in result.values() for track in tracks)
-    # 후보 15개에 대한 popularity fan-out이 사라졌다. 노출도는 태그 순위에서 나온다.
-    assert metadata_calls == [(6, ("album_art", "source_id"))]
+    # mood 경로는 이제 공급자 metadata를 아예 부르지 않는다. 앨범아트도 ID도
+    # 여기서 채우지 않고 preview 클릭 시점으로 미룬다.
+    assert metadata_calls == []
+    assert all(
+        track.album_art_url is None for tracks in result.values() for track in tracks
+    )
     assert all(
         track.exposure_source == "tag_rank"
         for track in result["hidden"] + result["similar"]

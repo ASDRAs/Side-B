@@ -127,7 +127,8 @@ async def similar_listening_pattern(
             for track in sorted_tracks
             if scoring._track_key(track) not in excluded
         ][:top_n]
-        top_tracks = await sources.get_tracks_metadata(http, top_tracks, lastfm)
+        # 후보 metadata fan-out은 없다. 곡마다 iTunes를 부르면 추천 한 번에 30회가
+        # 나가는데 상한이 분당 20회다. 앨범아트는 preview 클릭 시점에 채운다.
         # 이 버킷은 노출도로 정렬하지 않지만, 응답에는 실어야 한다. 신호가 있는데
         # 계산만 안 해서 null이 나가면 클라이언트가 "미수록"과 구분할 수 없다.
         scoring.assign_exposure(top_tracks)

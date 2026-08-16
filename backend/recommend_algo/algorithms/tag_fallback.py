@@ -1,12 +1,10 @@
-import httpx
 import pylast
 
-from recommend_algo.common import scoring, seeds, sources
+from recommend_algo.common import scoring, seeds
 from recommend_algo.common.models import TrackInfo
 
 
 async def tag_based_recommendations(
-    http: httpx.AsyncClient,
     lastfm: pylast.LastFMNetwork,
     tags: list[str],
     opposite_tags: list[str],
@@ -109,16 +107,7 @@ async def tag_based_recommendations(
 
     recommended_tracks.update(scoring._track_key(track) for track in opposite_tracks)
 
-    selected_tracks = scoring._dedupe_tracks(
-        similar_tracks + opposite_tracks + hidden_tracks
-    )
-    await sources.get_tracks_metadata(
-        http,
-        selected_tracks,
-        lastfm,
-        fields=["album_art", "source_id"],
-    )
-
+    # 후보 metadata fan-out 없음. 앨범아트는 preview 클릭 시점에 채운다.
     return {
         "similar": similar_tracks,
         "opposite": opposite_tracks,

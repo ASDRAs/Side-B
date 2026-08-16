@@ -164,9 +164,7 @@ async def hidden_discovery_by_artist(
         ranked = scoring._cap_per_artist(scoring._dedupe_tracks(ranked_pool), max_per=1)[
             :top_n
         ]
-        ranked = await sources.get_tracks_metadata(
-            http, ranked, lastfm, fields=["album_art", "source_id"]
-        )
+        # 후보 metadata fan-out 없음. 앨범아트는 preview 클릭 시점에 채운다.
         for track in ranked:
             track.algo, track.label = "hidden_discovery", "닮은 아티스트의 발견곡"
         return ranked
