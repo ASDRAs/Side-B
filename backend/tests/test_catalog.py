@@ -136,6 +136,9 @@ GROUP_NAME_IMPOSTORS = [
     pytest.param("Simon", "Simon & Garfunkel", "The Sound of Silence", id="duo"),
     pytest.param("AC", "AC/DC", "Back In Black", id="slash"),
     pytest.param("Tyler", "Tyler, The Creator", "Yonkers", id="comma-in-name"),
+    # 제목이 나머지 조각을 우연히 품은 경우. 크레딧 표기가 아니므로 근거가 아니다.
+    pytest.param("Earth", "Earth, Wind & Fire", "Wind and Fire", id="title-echo"),
+    pytest.param("Tyler", "Tyler, The Creator", "The Creator", id="title-is-the-piece"),
 ]
 
 
@@ -167,15 +170,44 @@ def test_splitting_the_request_does_not_open_the_gate():
 
 
 def test_missing_credit_needs_a_word_boundary_not_a_substring():
-    """짧은 이름은 아무 제목에나 들어 있다. `IU`는 `Genius` 안에 있다.
+    """짧은 이름은 아무 단어에나 들어 있다. `IU`는 `Genius` 안에 있다.
 
     점수까지 보면 `SUGA` 대 `SUGA, IU`는 퍼지 비교만으로도 0.8이라(이 변경과
     무관한 기존 동작) 근거 규칙만 따로 확인한다.
     """
-    assert not _credits_are_accounted_for(["IU"], "Genius")
+    assert not _credits_are_accounted_for(["IU"], "Genius (feat. Halsey)")
     assert _credits_are_accounted_for(["IU"], "Love Story (feat. IU)")
-    assert not _credits_are_accounted_for(["Fire"], "Firestarter")
+    assert not _credits_are_accounted_for(["Fire"], "Firestarter (feat. Halsey)")
     assert not _credits_are_accounted_for(["Halsey"], "")
+
+
+# 크레딧 표기가 아닌 곳에 이름이 있는 제목. 우연이지 협업의 증거가 아니다.
+COINCIDENTAL_TITLES = [
+    pytest.param(["Wind", "Fire"], "Wind and Fire", id="plain-title"),
+    pytest.param(["The Creator"], "The Creator", id="whole-title"),
+    pytest.param(["Halsey"], "Halsey Street", id="title-mentions-name"),
+    pytest.param(["Luv"], "Boy With Luv", id="bare-with-is-not-a-credit"),
+]
+
+
+@pytest.mark.parametrize("missing,title", COINCIDENTAL_TITLES)
+def test_credit_evidence_must_come_from_a_credit_clause(missing, title):
+    assert not _credits_are_accounted_for(missing, title)
+
+
+# 카탈로그가 실제로 쓰는 크레딧 표기.
+CREDIT_CLAUSES = [
+    pytest.param(["Halsey"], "Boy With Luv (feat. Halsey)", id="feat-parens"),
+    pytest.param(["SUGA"], "eight (Prod.&Feat. SUGA)", id="prod-feat"),
+    pytest.param(["Rihanna"], "Love the Way You Lie (with Rihanna)", id="with-parens"),
+    pytest.param(["IU"], "Love Story feat. IU", id="feat-bare"),
+    pytest.param(["Crush"], "Zone [ft. Crush]", id="ft-brackets"),
+]
+
+
+@pytest.mark.parametrize("missing,title", CREDIT_CLAUSES)
+def test_credit_evidence_reads_real_catalog_spellings(missing, title):
+    assert _credits_are_accounted_for(missing, title)
 
 
 def test_artist_score_does_not_bridge_languages_on_its_own():

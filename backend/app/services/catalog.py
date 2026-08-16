@@ -238,22 +238,48 @@ def _artist_parts(value: str) -> set[str]:
     return {compact_text(piece) for piece in _artist_pieces(value)} - {""}
 
 
+# 제목이 참여자를 밝히는 형식. `feat.`류는 괄호 밖에도 오지만(`Song feat. X`),
+# `with`는 괄호 안에서만 크레딧이다 — 그러지 않으면 `Boy With Luv`의 `Luv`가
+# 크레딧으로 읽힌다.
+_CREDIT_CLAUSE = re.compile(
+    r"\b(?:feat(?:uring)?|ft|prod)\b\.?\s*(?P<names>[^()\[\]]*)"
+    r"|[(\[]\s*with\s+(?P<with_names>[^()\[\]]*)[)\]]",
+    re.IGNORECASE,
+)
+
+
+def _credit_clause(title: str) -> str:
+    """제목에서 참여자를 밝히는 부분만 뽑는다. 없으면 빈 문자열."""
+    return " ".join(
+        text
+        for match in _CREDIT_CLAUSE.finditer(title or "")
+        for text in (match.group("names"), match.group("with_names"))
+        if text
+    )
+
+
 def _credits_are_accounted_for(missing: list[str], credit_text: str) -> bool:
-    """후보가 빠뜨린 참여자가 그 후보의 제목에 남아 있는지 본다.
+    """후보가 빠뜨린 참여자를 그 후보의 제목이 밝히고 있는지 본다.
 
-    진짜 협업이면 카탈로그가 아티스트란에서 뺀 참여자를 제목에 남긴다 —
-    iTunes는 `Boy With Luv (feat. Halsey)` / `BTS`로 싣는다. 그룹명은 그렇지
-    않다. `Earth, Wind & Fire`의 `September`에는 `Wind`도 `Fire`도 없다.
-    이것이 협업 표기와 그룹명을 문자열만으로 가를 수 있는 유일한 근거다.
+    진짜 협업이면 카탈로그가 아티스트란에서 뺀 참여자를 제목의 크레딧 표기에
+    남긴다 — iTunes는 `Boy With Luv (feat. Halsey)` / `BTS`로 싣는다. 그룹명은
+    그런 표기를 만들지 않는다. 이것이 협업과 그룹명을 문자열만으로 가를 수 있는
+    유일한 근거다.
 
-    문장부호를 지운 뒤 부분문자열로 보면 짧은 이름이 우연히 걸린다 — `IU`는
-    `Genius` 안에 들어 있다. 그래서 원문에서 단어 경계로 찾는다. 하나라도
-    확인되지 않으면 통째로 거절한다.
+    제목 아무 데나 이름이 있으면 되는 것이 아니라 크레딧 표기 안에 있어야 한다.
+    임의 위치를 근거로 삼으면 `Earth, Wind & Fire` 요청에 `Wind and Fire`라는
+    제목의 다른 곡이 통과한다 — 우연히 같은 단어가 들어 있을 뿐인데 협업의
+    증거로 읽히기 때문이다.
+
+    크레딧 안에서도 부분문자열이 아니라 단어 경계로 찾는다. 짧은 이름은 아무
+    단어에나 들어 있다 — `IU`는 `Genius` 안에 있다. 하나라도 확인되지 않으면
+    통째로 거절한다.
     """
-    if not credit_text or not missing:
+    clause = _credit_clause(credit_text)
+    if not clause or not missing:
         return False
     return all(
-        re.search(rf"\b{re.escape(piece)}\b", credit_text, re.IGNORECASE)
+        re.search(rf"\b{re.escape(piece)}\b", clause, re.IGNORECASE)
         for piece in missing
     )
 
