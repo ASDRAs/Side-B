@@ -4,6 +4,7 @@ import time
 from collections import OrderedDict
 from unittest.mock import AsyncMock
 
+import pylast
 import pytest
 
 from app.services.catalog import (
@@ -11,7 +12,9 @@ from app.services.catalog import (
     DeezerRateLimitError,
     ItunesRateLimitError,
 )
+from recommend_algo import similar_listening_pattern
 from recommend_algo.common import sources
+from tests.test_api_call_counts import EmptyHttp
 
 
 async def test_deezer_429_propagates_rate_limit_error():
@@ -181,6 +184,113 @@ async def test_lastfm_call_times_out_instead_of_hanging(monkeypatch):
         await sources._lf_call("lf:timeout", 600, hanging_call)
 
     assert "lf:timeout" not in sources._cache
+
+
+async def test_lastfm_rate_limit_opens_circuit_and_skips_followup_call(monkeypatch):
+    """제한을 받고도 계속 두드리면 차단이 길어진다. iTunes·Deezer와 같은 규칙."""
+    monkeypatch.setattr(sources, "_cache", OrderedDict())
+    calls = []
+
+    def rate_limited_call():
+        calls.append(1)
+        raise pylast.WSError(
+            None,
+            str(pylast.STATUS_RATE_LIMIT_EXCEEDED),
+            "Rate limit exceeded",
+        )
+
+    with pytest.raises(sources.LastfmRateLimitError):
+        await sources._lf_call("lf:limited:1", 600, rate_limited_call)
+    assert sources._is_lf_rate_limited()
+
+    # 차단 중에는 pylast를 아예 부르지 않는다.
+    with pytest.raises(sources.LastfmRateLimitError):
+        await sources._lf_call("lf:limited:2", 600, rate_limited_call)
+    assert len(calls) == 1
+
+
+async def test_other_lastfm_errors_do_not_open_the_circuit(monkeypatch):
+    """제한이 아닌 오류까지 차단으로 다루면 곡 하나 없는 응답이 60초를 막는다."""
+    monkeypatch.setattr(sources, "_cache", OrderedDict())
+
+    def missing_resource():
+        raise pylast.WSError(None, str(pylast.STATUS_INVALID_RESOURCE), "not found")
+
+    with pytest.raises(pylast.WSError):
+        await sources._lf_call("lf:other-error", 600, missing_resource)
+    assert not sources._is_lf_rate_limited()
+
+
+async def test_open_lastfm_circuit_empties_a_bucket_instead_of_failing(monkeypatch):
+    """차단 중에는 버킷이 비는 것이 맞는 동작이다. 500이 되면 안 된다."""
+    monkeypatch.setattr(sources, "_cache", OrderedDict())
+    sources._mark_lf_rate_limited(60)
+
+    class ExplodingLastFm:
+        def get_artist(self, name):
+            raise AssertionError("차단 중에 Last.fm을 불렀다")
+
+        def get_track(self, artist, name):
+            raise AssertionError("차단 중에 Last.fm을 불렀다")
+
+    result = await similar_listening_pattern(
+        "Seed", "Artist", EmptyHttp(), ExplodingLastFm(), top_n=10
+    )
+
+    assert result == []
+
+
+async def test_bursts_within_the_window_budget_are_not_delayed(monkeypatch):
+    """ToS는 초당 5회를 5분 평균으로 요구한다. 봉우리 자체는 위반이 아니다.
+
+    매 호출을 0.2초로 벌리면 실측 direct 1건의 응답이 4.8초에서 11.5초가 된다.
+    규정이 요구하지 않는 지연이므로 예산이 남아 있는 동안은 기다리지 않는다.
+    """
+    monkeypatch.setattr(sources, "_cache", OrderedDict())
+    delays = []
+
+    async def fake_sleep(seconds):
+        delays.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    for index in range(50):
+        await sources._lf_call(f"lf:burst:{index}", 600, lambda i=index: i)
+
+    assert delays == []
+    assert len(sources._LASTFM_SENT) == 50
+
+
+async def test_spent_window_budget_makes_the_next_call_wait(monkeypatch):
+    """창이 가득 차면 가장 오래된 호출이 빠져나갈 때까지 기다린다."""
+    monkeypatch.setattr(sources, "_cache", OrderedDict())
+    monkeypatch.setattr(sources, "_LASTFM_MAX_PER_WINDOW", 3)
+    monkeypatch.setattr(sources, "_LASTFM_RATE_WINDOW", 10.0)
+    delays = []
+
+    async def fake_sleep(seconds):
+        delays.append(seconds)
+        # 잠든 사이에 창이 지나간 것으로 만든다. 그러지 않으면 예산이 영원히
+        # 차 있어 무한 루프가 된다.
+        sources._LASTFM_SENT.clear()
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    for index in range(4):
+        await sources._lf_call(f"lf:budget:{index}", 600, lambda i=index: i)
+
+    assert len(delays) == 1
+    assert 0 < delays[0] <= 10.0
+
+
+async def test_cached_lastfm_reads_do_not_consume_budget(monkeypatch):
+    """캐시 적중은 공급자를 부르지 않으므로 예산과 무관하다."""
+    monkeypatch.setattr(sources, "_cache", OrderedDict())
+
+    for _ in range(5):
+        await sources._lf_call("lf:same-key", 600, lambda: "value")
+
+    assert len(sources._LASTFM_SENT) == 1
 
 
 def test_artist_top_cache_keys_differ_by_limit():

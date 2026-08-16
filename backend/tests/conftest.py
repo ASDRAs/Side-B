@@ -15,3 +15,18 @@ def _clear_lastfm_cache():
     sources._cache.clear()
     yield
     sources._cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_lastfm_rate_state():
+    """차단 상태와 호출 예산도 모듈 전역이라 테스트 사이에 새어 나간다.
+
+    제한을 재현한 테스트가 60초짜리 차단을 남기면 뒤 테스트의 Last.fm 호출이
+    전부 건너뛰어진다. 예산도 마찬가지로, 앞 테스트가 채워 둔 창 때문에 뒤
+    테스트가 이유 없이 기다린다.
+    """
+    sources._LASTFM_RATE_LIMIT_UNTIL = 0.0
+    sources._LASTFM_SENT.clear()
+    yield
+    sources._LASTFM_RATE_LIMIT_UNTIL = 0.0
+    sources._LASTFM_SENT.clear()
