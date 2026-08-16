@@ -216,6 +216,11 @@ def _alias_artist_score(artist: str, expected_artists: Sequence[str]) -> float:
     return max((_artist_ratio(artist, expected) for expected in targets), default=0.0)
 
 
+def _artist_parts(value: str) -> set[str]:
+    """협업·병기 표기를 조각으로 쪼갠다. 빈 조각은 버린다."""
+    return {compact_text(part) for part in _ARTIST_SEPARATORS.split(value or "")} - {""}
+
+
 def _artist_ratio(artist: str, expected: str) -> float:
     """아티스트 전용 비교. text_ratio와 달리 부분문자열에 점수를 주지 않는다.
 
@@ -226,19 +231,24 @@ def _artist_ratio(artist: str, expected: str) -> float:
     대신 구분자로 쪼갠 조각이 정확히 일치하면 만점을 준다. 협업 표기
     "IU & G-DRAGON"과 병기 표기 "IU (아이유)"를 살리면서, 구분자가 없는
     "Definitely Not Adele"은 통과시키지 않는다.
+
+    양쪽을 모두 쪼개는 이유는 협업곡의 크레딧이 공급자마다 다르기 때문이다.
+    Last.fm은 `BTS, Halsey`로, iTunes는 `BTS`로 싣는다. 한쪽만 쪼개면 요청이
+    합동 표기일 때 제목이 완전히 일치해도 0.500으로 탈락한다(실측
+    `Boy With Luv (feat. Halsey)`). 조각 하나가 일치하면 같은 곡으로 본다 —
+    남은 판정은 제목 하한이 맡는다.
     """
-    target = compact_text(expected)
-    if not target:
+    target_parts = _artist_parts(expected)
+    if not target_parts:
         # 호출부(_alias_artist_score)가 걸러야 하는 입력이다. 여기까지 왔다면
         # 검증할 수 없다는 뜻이므로 만점이 아니라 0점을 준다.
         return 0.0
-    parts = {compact_text(part) for part in _ARTIST_SEPARATORS.split(artist or "")}
-    if target in parts - {""}:
+    if _artist_parts(artist) & target_parts:
         return 1.0
     candidate = compact_text(artist or "")
     if not candidate:
         return 0.0
-    return SequenceMatcher(None, candidate, target).ratio()
+    return SequenceMatcher(None, candidate, compact_text(expected)).ratio()
 
 
 def _strict_title_ratio(title: str, expected: str) -> float:

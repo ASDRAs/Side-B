@@ -104,6 +104,35 @@ def test_artist_score_finds_credit_in_any_position(catalog_artist, expected):
     assert _alias_artist_score(catalog_artist, (expected,)) == 1.0
 
 
+# 요청 쪽이 합동 표기이고 카탈로그가 단독 표기인 경우. Last.fm은 협업곡을
+# "BTS, Halsey"로 싣지만 iTunes는 "BTS"로 싣는다.
+REQUESTED_COLLABORATIONS = [
+    pytest.param("BTS", "BTS, Halsey", id="requested-comma"),
+    pytest.param("Halsey", "BTS, Halsey", id="requested-comma-second"),
+    pytest.param("IU", "IU & SUGA", id="requested-ampersand"),
+    pytest.param("Zion.T", "Zion.T, IU, Crush", id="requested-three"),
+]
+
+
+@pytest.mark.parametrize("catalog_artist,requested", REQUESTED_COLLABORATIONS)
+def test_artist_score_matches_when_request_lists_more_artists(
+    catalog_artist, requested
+):
+    """실측 회귀: `Boy With Luv (feat. Halsey)`가 여기서 탈락했다.
+
+    제목 일치도가 1.000인데 아티스트가 0.500이라 하한 0.8에 걸렸다. 한쪽만
+    쪼개면 요청이 합동 표기일 때 정상 곡을 통째로 잃는다.
+    """
+    assert _alias_artist_score(catalog_artist, (requested,)) == 1.0
+
+
+def test_splitting_the_request_does_not_open_the_gate():
+    """양쪽을 쪼개도 남남은 계속 탈락해야 한다."""
+    assert _alias_artist_score("Adele", ("Definitely Not Adele",)) < 0.8
+    assert _alias_artist_score("TAEMIN", ("TAEYEON, IU",)) < 0.8
+    assert _alias_artist_score("Flow Music", ("IU, 아이유",)) < 0.8
+
+
 def test_artist_score_does_not_bridge_languages_on_its_own():
     """언어가 다른 같은 아티스트는 이 함수가 잇지 못한다. 호출부 계약이다.
 
