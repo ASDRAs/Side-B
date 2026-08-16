@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Any, Literal
 
 import httpx
@@ -38,6 +38,25 @@ _LASTFM_SEMAPHORE = asyncio.Semaphore(8)
 # 스레드 누수가 실제로 문제되면 pylast를 async HTTP 호출로 교체해야 한다.
 _LASTFM_CALL_TIMEOUT = 8.0
 
+# Last.fm ToS(§4.4)는 "IP당 초당 5회, 5분 평균"이다. 순간 상한이 아니라
+# 평균이므로 봉우리 자체는 위반이 아니다. 지켜야 하는 것은 창 안의 총량이다.
+#
+# 이 구분이 응답 시간을 가른다. direct 1건 실측이 41회를 2.4초에 보내고(피크
+# 30/s) 응답이 4.8초인데, 이걸 매 호출 0.2초 간격으로 깎으면 응답이 11.5초가
+# 된다. 규정이 요구하지 않는 6.7초다. 그래서 간격이 아니라 창 예산만 센다.
+# 예산이 남아 있으면 아무도 기다리지 않고, 소진되면 가장 오래된 호출이 창을
+# 빠져나갈 때까지 기다린다.
+#
+# 세마포어는 동시 실행 수만 제어하므로 이 총량을 대신하지 못한다.
+# ponytail: 프로세스 로컬이다. 인스턴스가 늘면 창 예산도 인스턴스 수만큼
+# 곱해진다. 공용 저장소로 옮기려면 캐시·회로차단기와 함께 옮긴다.
+_LASTFM_RATE_WINDOW = 300.0
+_LASTFM_MAX_PER_WINDOW = 5 * int(_LASTFM_RATE_WINDOW)
+_LASTFM_RATE_LIMIT_COOLDOWN = 60.0
+_LASTFM_RATE_LIMIT_UNTIL: float = 0.0
+# 창 안에서 실제로 보낸 시각들. 캐시 적중은 공급자를 부르지 않으므로 넣지 않는다.
+_LASTFM_SENT: deque[float] = deque()
+
 # Deezer circuit breaker — 429 감지 시 해당 시각까지 모든 Deezer 호출 스킵
 _DZ_RATE_LIMIT_UNTIL: float = 0.0
 _ITUNES_RATE_LIMIT_UNTIL: float = 0.0
@@ -64,6 +83,63 @@ def _mark_dz_rate_limited(headers: dict) -> None:
     retry_after = int(headers.get("Retry-After", 60))
     _DZ_RATE_LIMIT_UNTIL = max(_DZ_RATE_LIMIT_UNTIL, time.monotonic() + retry_after)
     logger.warning("[Deezer] 429 — %d초 차단", retry_after)
+
+
+class LastfmRateLimitError(Exception):
+    """Last.fm이 호출 제한을 알렸거나 차단 중이라 호출하지 않았다.
+
+    호출부는 이 예외를 따로 잡지 않는다. 버킷 단위 예외 처리가 빈 결과로
+    떨어뜨리는데, 제한 중에는 그게 맞는 동작이다 — 계속 두드리면 제한이 길어진다.
+    """
+
+
+def _is_lf_rate_limited() -> bool:
+    return time.monotonic() < _LASTFM_RATE_LIMIT_UNTIL
+
+
+def _mark_lf_rate_limited(cooldown: float = _LASTFM_RATE_LIMIT_COOLDOWN) -> None:
+    global _LASTFM_RATE_LIMIT_UNTIL
+    _LASTFM_RATE_LIMIT_UNTIL = max(
+        _LASTFM_RATE_LIMIT_UNTIL,
+        time.monotonic() + cooldown,
+    )
+    logger.warning("[Last.fm] 호출 제한 — %d초 차단", cooldown)
+
+
+def _is_lastfm_rate_limit_error(exc: BaseException) -> bool:
+    """pylast는 제한을 XML 본문의 error code 29로 전달한다.
+
+    HTTP 429를 따로 보지 않는다. pylast가 5xx만 상태 코드로 구분하고 나머지는
+    본문을 파싱하기 때문이다. `status`는 본문에서 온 문자열이라 숫자와 비교하기
+    전에 문자열로 맞춘다.
+    """
+    return (
+        isinstance(exc, pylast.WSError)
+        and str(getattr(exc, "status", "")) == str(pylast.STATUS_RATE_LIMIT_EXCEEDED)
+    )
+
+
+async def _await_lastfm_slot() -> None:
+    """5분 창의 호출 예산 안에서만 보낸다.
+
+    예산이 남아 있으면 즉시 통과한다 — 평상시에는 아무 지연도 없다. 소진되면
+    가장 오래된 호출이 창을 빠져나갈 때까지 기다린 뒤 다시 확인한다. 기다린
+    호출들이 동시에 깨어나도 재확인 때문에 예산을 넘겨 나가지 않는다.
+    """
+    while True:
+        now = time.monotonic()
+        while _LASTFM_SENT and now - _LASTFM_SENT[0] >= _LASTFM_RATE_WINDOW:
+            _LASTFM_SENT.popleft()
+        if len(_LASTFM_SENT) < _LASTFM_MAX_PER_WINDOW:
+            _LASTFM_SENT.append(now)
+            return
+        wait = _LASTFM_RATE_WINDOW - (now - _LASTFM_SENT[0])
+        logger.warning(
+            "[Last.fm] 5분 예산 %d회 소진 — %.1f초 대기",
+            _LASTFM_MAX_PER_WINDOW,
+            wait,
+        )
+        await asyncio.sleep(max(wait, 0.0))
 
 
 def _is_itunes_rate_limited() -> bool:
@@ -108,6 +184,11 @@ async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
     hit, cached = _cache_get(key, ttl)
     if hit:
         return cached
+    if _is_lf_rate_limited():
+        raise LastfmRateLimitError("Last.fm 호출 제한 중")
+    # 캐시에 없을 때만 자리를 쓴다. 세마포어를 잡기 전에 기다려야 잠든 호출이
+    # 동시 실행 자리를 물고 있지 않는다.
+    await _await_lastfm_slot()
     await _LASTFM_SEMAPHORE.acquire()
     try:
         task = asyncio.create_task(asyncio.to_thread(fn, *args))
@@ -115,7 +196,15 @@ async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
         _LASTFM_SEMAPHORE.release()
         raise
     task.add_done_callback(lambda _: _LASTFM_SEMAPHORE.release())
-    result = await asyncio.wait_for(asyncio.shield(task), timeout=_LASTFM_CALL_TIMEOUT)
+    try:
+        result = await asyncio.wait_for(
+            asyncio.shield(task), timeout=_LASTFM_CALL_TIMEOUT
+        )
+    except Exception as exc:
+        if _is_lastfm_rate_limit_error(exc):
+            _mark_lf_rate_limited()
+            raise LastfmRateLimitError("Last.fm 호출 제한") from exc
+        raise
     _cache_set(key, result)
     return result
 
