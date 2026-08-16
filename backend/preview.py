@@ -635,7 +635,12 @@ def _select_best(
         item_artist = candidate.resolved_artist
         if _looks_like_bad_version(title) or _looks_like_bad_version(item_artist):
             continue
-        if artist and _alias_artist_score(item_artist, (artist,)) < _ARTIST_MIN_SCORE:
+        # 제목을 함께 넘긴다. 요청이 합동 표기이고 후보가 단독 표기일 때, 빠진
+        # 참여자가 제목에 남아 있는지로 협업과 그룹명을 가른다(catalog 참고).
+        if (
+            artist
+            and _alias_artist_score(item_artist, (artist,), title) < _ARTIST_MIN_SCORE
+        ):
             continue
 
         # 요청한 버전은 반드시 보존하고, 요청하지 않은 다른 버전도 허용하지

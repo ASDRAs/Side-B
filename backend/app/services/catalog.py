@@ -78,7 +78,7 @@ class CatalogClient:
                 continue
             if (
                 min_artist_score
-                and _alias_artist_score(item_artist, expected_artists)
+                and _alias_artist_score(item_artist, expected_artists, title)
                 < min_artist_score
             ):
                 continue
@@ -195,7 +195,7 @@ def _alias_match_score(
         ),
         default=0.0,
     )
-    artist_score = _alias_artist_score(artist, expected_artists)
+    artist_score = _alias_artist_score(artist, expected_artists, title)
     return (title_score * 0.68) + (artist_score * 0.32)
 
 
@@ -206,22 +206,59 @@ _ARTIST_SEPARATORS = re.compile(
 )
 
 
-def _alias_artist_score(artist: str, expected_artists: Sequence[str]) -> float:
+def _alias_artist_score(
+    artist: str,
+    expected_artists: Sequence[str],
+    credit_text: str = "",
+) -> float:
+    """`credit_text`는 같은 후보의 제목이다. 왜 필요한지는 `_artist_ratio` 참고."""
     # 비교에 쓸 수 없는 표기(공백·문장부호뿐)는 "모르는 것"으로 본다.
     # 여기서 걸러내지 않고 _artist_ratio가 만점을 주면, max() 안에서 그 한 개가
     # 정상 alias의 판정을 덮어써 아티스트 게이트 전체가 무력해진다.
     targets = [expected for expected in expected_artists if compact_text(expected)]
     if not targets:
         return 1.0  # 기대 아티스트를 모르면 제목만으로 판단한다.
-    return max((_artist_ratio(artist, expected) for expected in targets), default=0.0)
+    return max(
+        (_artist_ratio(artist, expected, credit_text) for expected in targets),
+        default=0.0,
+    )
+
+
+def _artist_pieces(value: str) -> list[str]:
+    """협업·병기 표기를 원문 조각으로 쪼갠다. 빈 조각은 버린다."""
+    return [
+        piece.strip()
+        for piece in _ARTIST_SEPARATORS.split(value or "")
+        if piece and piece.strip() and compact_text(piece)
+    ]
 
 
 def _artist_parts(value: str) -> set[str]:
-    """협업·병기 표기를 조각으로 쪼갠다. 빈 조각은 버린다."""
-    return {compact_text(part) for part in _ARTIST_SEPARATORS.split(value or "")} - {""}
+    """조각을 비교용으로 정규화한 집합."""
+    return {compact_text(piece) for piece in _artist_pieces(value)} - {""}
 
 
-def _artist_ratio(artist: str, expected: str) -> float:
+def _credits_are_accounted_for(missing: list[str], credit_text: str) -> bool:
+    """후보가 빠뜨린 참여자가 그 후보의 제목에 남아 있는지 본다.
+
+    진짜 협업이면 카탈로그가 아티스트란에서 뺀 참여자를 제목에 남긴다 —
+    iTunes는 `Boy With Luv (feat. Halsey)` / `BTS`로 싣는다. 그룹명은 그렇지
+    않다. `Earth, Wind & Fire`의 `September`에는 `Wind`도 `Fire`도 없다.
+    이것이 협업 표기와 그룹명을 문자열만으로 가를 수 있는 유일한 근거다.
+
+    문장부호를 지운 뒤 부분문자열로 보면 짧은 이름이 우연히 걸린다 — `IU`는
+    `Genius` 안에 들어 있다. 그래서 원문에서 단어 경계로 찾는다. 하나라도
+    확인되지 않으면 통째로 거절한다.
+    """
+    if not credit_text or not missing:
+        return False
+    return all(
+        re.search(rf"\b{re.escape(piece)}\b", credit_text, re.IGNORECASE)
+        for piece in missing
+    )
+
+
+def _artist_ratio(artist: str, expected: str, credit_text: str = "") -> float:
     """아티스트 전용 비교. text_ratio와 달리 부분문자열에 점수를 주지 않는다.
 
     text_ratio는 한쪽이 다른 쪽에 포함되기만 하면 0.9를 준다. 제목에는 맞는
@@ -232,19 +269,33 @@ def _artist_ratio(artist: str, expected: str) -> float:
     "IU & G-DRAGON"과 병기 표기 "IU (아이유)"를 살리면서, 구분자가 없는
     "Definitely Not Adele"은 통과시키지 않는다.
 
-    양쪽을 모두 쪼개는 이유는 협업곡의 크레딧이 공급자마다 다르기 때문이다.
-    Last.fm은 `BTS, Halsey`로, iTunes는 `BTS`로 싣는다. 한쪽만 쪼개면 요청이
-    합동 표기일 때 제목이 완전히 일치해도 0.500으로 탈락한다(실측
-    `Boy With Luv (feat. Halsey)`). 조각 하나가 일치하면 같은 곡으로 본다 —
-    남은 판정은 제목 하한이 맡는다.
+    요청 쪽도 쪼개는 이유는 협업곡의 크레딧이 공급자마다 다르기 때문이다.
+    Last.fm은 `BTS, Halsey`로, iTunes는 `BTS`로 싣는다. 요청 쪽을 통째로 비교하면
+    제목이 완전히 일치해도 0.500으로 탈락한다(실측 `Boy With Luv (feat. Halsey)`).
+
+    다만 요청 쪽 분해는 그냥 열어 주면 안 된다. 그룹명도 같은 구분자를 쓰기
+    때문에 `Earth, Wind & Fire` 요청에 `Earth`라는 다른 아티스트가, `AC/DC`에
+    `AC`가 통과한다. 그래서 후보가 빠뜨린 참여자가 그 후보의 제목에 남아 있는
+    경우에만 인정한다(`_credits_are_accounted_for`). 근거가 없으면 변경 전과
+    똑같이 거절하므로 이 조건이 기존 판정을 넓히지는 않는다.
+
+    반대 방향(후보가 그룹, 요청이 그 조각)은 예전부터 통과했고 그대로 둔다.
+    `Simon & Garfunkel`에 `Simon`이 붙는 알려진 약점이며 별도 판단 사안이다.
     """
     target_parts = _artist_parts(expected)
     if not target_parts:
         # 호출부(_alias_artist_score)가 걸러야 하는 입력이다. 여기까지 왔다면
         # 검증할 수 없다는 뜻이므로 만점이 아니라 0점을 준다.
         return 0.0
-    if _artist_parts(artist) & target_parts:
-        return 1.0
+    candidate_parts = _artist_parts(artist)
+    if candidate_parts & target_parts:
+        missing = [
+            piece
+            for piece in _artist_pieces(expected)
+            if compact_text(piece) not in candidate_parts
+        ]
+        if not missing or _credits_are_accounted_for(missing, credit_text):
+            return 1.0
     candidate = compact_text(artist or "")
     if not candidate:
         return 0.0
@@ -285,7 +336,7 @@ def _select_deezer_item(
         if _strict_title_ratio(title, track_name) < 0.8:
             continue
         score = _catalog_match_score(title, item_artist, track_name, artist)
-        artist_score = _alias_artist_score(item_artist, (artist,))
+        artist_score = _alias_artist_score(item_artist, (artist,), title)
         if artist and artist_score < 0.8:
             continue
         if best is None or score > best[0]:

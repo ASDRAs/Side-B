@@ -2,6 +2,7 @@ import pytest
 
 from app.services.catalog import (
     _alias_artist_score,
+    _credits_are_accounted_for,
     _select_deezer_item,
     _strict_title_ratio,
 )
@@ -105,32 +106,76 @@ def test_artist_score_finds_credit_in_any_position(catalog_artist, expected):
 
 
 # 요청 쪽이 합동 표기이고 카탈로그가 단독 표기인 경우. Last.fm은 협업곡을
-# "BTS, Halsey"로 싣지만 iTunes는 "BTS"로 싣는다.
+# "BTS, Halsey"로 싣지만 iTunes는 "BTS"로 싣는다. 빠진 참여자는 제목에 남는다.
 REQUESTED_COLLABORATIONS = [
-    pytest.param("BTS", "BTS, Halsey", id="requested-comma"),
-    pytest.param("Halsey", "BTS, Halsey", id="requested-comma-second"),
-    pytest.param("IU", "IU & SUGA", id="requested-ampersand"),
-    pytest.param("Zion.T", "Zion.T, IU, Crush", id="requested-three"),
+    pytest.param("BTS", "BTS, Halsey", "Boy With Luv (feat. Halsey)", id="comma"),
+    pytest.param("Halsey", "BTS, Halsey", "Boy With Luv (feat. BTS)", id="comma-second"),
+    pytest.param("IU", "IU & SUGA", "eight (Prod.&Feat. SUGA)", id="ampersand"),
+    pytest.param("Epik High", "Epik High feat. IU", "Love Story (feat. IU)", id="feat"),
 ]
 
 
-@pytest.mark.parametrize("catalog_artist,requested", REQUESTED_COLLABORATIONS)
+@pytest.mark.parametrize(
+    "catalog_artist,requested,candidate_title", REQUESTED_COLLABORATIONS
+)
 def test_artist_score_matches_when_request_lists_more_artists(
-    catalog_artist, requested
+    catalog_artist, requested, candidate_title
 ):
     """실측 회귀: `Boy With Luv (feat. Halsey)`가 여기서 탈락했다.
 
-    제목 일치도가 1.000인데 아티스트가 0.500이라 하한 0.8에 걸렸다. 한쪽만
-    쪼개면 요청이 합동 표기일 때 정상 곡을 통째로 잃는다.
+    제목 일치도가 1.000인데 아티스트가 0.500이라 하한 0.8에 걸렸다. 요청 쪽을
+    통째로만 비교하면 합동 표기에서 정상 곡을 잃는다.
     """
-    assert _alias_artist_score(catalog_artist, (requested,)) == 1.0
+    assert _alias_artist_score(catalog_artist, (requested,), candidate_title) == 1.0
+
+
+# 그룹명도 협업과 같은 구분자를 쓴다. 근거 없이 요청 쪽을 쪼개면 다른 아티스트가
+# 통과한다.
+GROUP_NAME_IMPOSTORS = [
+    pytest.param("Earth", "Earth, Wind & Fire", "September", id="comma-group"),
+    pytest.param("Simon", "Simon & Garfunkel", "The Sound of Silence", id="duo"),
+    pytest.param("AC", "AC/DC", "Back In Black", id="slash"),
+    pytest.param("Tyler", "Tyler, The Creator", "Yonkers", id="comma-in-name"),
+]
+
+
+@pytest.mark.parametrize(
+    "catalog_artist,requested,candidate_title", GROUP_NAME_IMPOSTORS
+)
+def test_artist_score_rejects_a_group_name_split_into_pieces(
+    catalog_artist, requested, candidate_title
+):
+    """빠진 조각이 후보 제목에 없으면 협업이라고 볼 근거가 없다."""
+    assert _alias_artist_score(catalog_artist, (requested,), candidate_title) < 0.8
+
+
+def test_credit_evidence_is_required_not_optional():
+    """제목을 넘기지 않으면 요청 쪽 분해는 인정되지 않는다.
+
+    호출부가 제목을 빠뜨렸을 때 게이트가 조용히 넓어지면 안 된다. 근거가 없으면
+    변경 전과 같은 판정으로 돌아간다.
+    """
+    assert _alias_artist_score("BTS", ("BTS, Halsey",)) < 0.8
+    assert _alias_artist_score("BTS", ("BTS, Halsey",), "Spring Day") < 0.8
 
 
 def test_splitting_the_request_does_not_open_the_gate():
-    """양쪽을 쪼개도 남남은 계속 탈락해야 한다."""
+    """근거가 있어도 남남은 계속 탈락해야 한다."""
     assert _alias_artist_score("Adele", ("Definitely Not Adele",)) < 0.8
-    assert _alias_artist_score("TAEMIN", ("TAEYEON, IU",)) < 0.8
-    assert _alias_artist_score("Flow Music", ("IU, 아이유",)) < 0.8
+    assert _alias_artist_score("TAEMIN", ("TAEYEON, IU",), "If (feat. IU)") < 0.8
+    assert _alias_artist_score("Flow Music", ("IU, 아이유",), "밤편지") < 0.8
+
+
+def test_missing_credit_needs_a_word_boundary_not_a_substring():
+    """짧은 이름은 아무 제목에나 들어 있다. `IU`는 `Genius` 안에 있다.
+
+    점수까지 보면 `SUGA` 대 `SUGA, IU`는 퍼지 비교만으로도 0.8이라(이 변경과
+    무관한 기존 동작) 근거 규칙만 따로 확인한다.
+    """
+    assert not _credits_are_accounted_for(["IU"], "Genius")
+    assert _credits_are_accounted_for(["IU"], "Love Story (feat. IU)")
+    assert not _credits_are_accounted_for(["Fire"], "Firestarter")
+    assert not _credits_are_accounted_for(["Halsey"], "")
 
 
 def test_artist_score_does_not_bridge_languages_on_its_own():
