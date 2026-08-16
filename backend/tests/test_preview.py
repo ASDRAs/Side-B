@@ -8,6 +8,7 @@ from preview import (
     _best_itunes_candidate,
     _content_disposition,
     _fetch_deezer_preview,
+    _fetch_itunes_preview,
     _lookup_media,
     _resolve_media,
     _retry_after_seconds,
@@ -500,6 +501,38 @@ async def test_itunes_circuit_breaker_skips_the_search_entirely():
 
     assert match.provider == "deezer"
     assert http.itunes_terms == []
+
+
+class BreakerOpeningHttp:
+    """첫 응답을 준 직후 다른 요청이 차단기를 연 상황을 만든다."""
+
+    def __init__(self, open_breaker):
+        self.calls = []
+        self._open_breaker = open_breaker
+
+    async def get(self, url, params=None, timeout=None):
+        self.calls.append(params)
+        self._open_breaker()
+        # 매치가 없는 정상 응답. 루프는 다음 검색어로 넘어가려 한다.
+        return FakeResponse({"resultCount": 0, "results": [], "data": []})
+
+
+async def test_itunes_search_stops_when_the_breaker_opens_between_terms():
+    """검색어 사이에 열린 차단기를 못 보면 남은 검색어가 그대로 나간다."""
+    http = BreakerOpeningHttp(lambda: sources._mark_itunes_rate_limited(30))
+
+    assert await _fetch_itunes_preview(http, "Creep (Acoustic)", "Radiohead") is None
+    assert len(http.calls) == 1
+
+
+async def test_deezer_search_stops_when_the_breaker_opens_between_queries():
+    http = BreakerOpeningHttp(
+        lambda: sources._mark_dz_rate_limited({"Retry-After": "30"})
+    )
+
+    with pytest.raises(PreviewProviderUnavailable):
+        await _fetch_deezer_preview(http, "Creep (Acoustic)", "Radiohead")
+    assert len(http.calls) == 1
 
 
 async def test_no_match_is_returned_as_none_not_raised():

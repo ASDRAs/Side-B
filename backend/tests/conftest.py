@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from recommend_algo.common import sources
@@ -15,3 +17,22 @@ def _clear_lastfm_cache():
     sources._cache.clear()
     yield
     sources._cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_lastfm_rate_state():
+    """차단 상태와 토큰도 모듈 전역이라 테스트 사이에 새어 나간다.
+
+    제한을 재현한 테스트가 60초짜리 차단을 남기면 뒤 테스트의 Last.fm 호출이
+    전부 건너뛰어진다. 토큰도 마찬가지로, 앞 테스트가 비워 두면 뒤 테스트가
+    이유 없이 기다린다.
+    """
+    _reset_lastfm_state()
+    yield
+    _reset_lastfm_state()
+
+
+def _reset_lastfm_state():
+    sources._LASTFM_RATE_LIMIT_UNTIL = 0.0
+    sources._LASTFM_TOKENS = sources._LASTFM_BURST
+    sources._LASTFM_TOKENS_UPDATED = time.monotonic()

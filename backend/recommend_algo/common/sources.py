@@ -38,6 +38,26 @@ _LASTFM_SEMAPHORE = asyncio.Semaphore(8)
 # 스레드 누수가 실제로 문제되면 pylast를 async HTTP 호출로 교체해야 한다.
 _LASTFM_CALL_TIMEOUT = 8.0
 
+# Last.fm은 구체적인 수치를 공개하지 않는다. ToS §4.4는 "재량으로 제한한다"일
+# 뿐이고, 실행 가능한 규칙은 API 소개 문서의 한 문장뿐이다 — "계속해서 초당
+# 여러 번 호출하면 계정이 정지될 수 있다". 널리 인용되는 "초당 5회, 5분 평균"은
+# 현재 공식 문서에 없다.
+#
+# 그 문장이 금지하는 것은 봉우리가 아니라 '지속'이다. 그래서 토큰 버킷을 쓴다.
+# 한 요청의 팬아웃(실측 41회)은 모아 둔 토큰으로 한 번에 통과하고, 그 뒤로는
+# 채워지는 속도 이상으로 나가지 못한다. 세마포어는 동시 실행 수만 제어하므로
+# 이것을 대신하지 못한다.
+#
+# ponytail: 아래 두 값은 근거 있는 상수가 아니라 정책값이다. 공개된 수치가
+# 없으므로 code 29가 로그에 보이면 refill부터 낮춘다. 프로세스 로컬이라
+# 인스턴스가 늘면 그만큼 곱해진다 — 캐시·회로차단기와 함께 옮겨야 한다.
+_LASTFM_BURST = 45.0
+_LASTFM_REFILL_PER_SECOND = 5.0
+_LASTFM_TOKENS: float = _LASTFM_BURST
+_LASTFM_TOKENS_UPDATED: float = time.monotonic()
+_LASTFM_RATE_LIMIT_COOLDOWN = 60.0
+_LASTFM_RATE_LIMIT_UNTIL: float = 0.0
+
 # Deezer circuit breaker — 429 감지 시 해당 시각까지 모든 Deezer 호출 스킵
 _DZ_RATE_LIMIT_UNTIL: float = 0.0
 _ITUNES_RATE_LIMIT_UNTIL: float = 0.0
@@ -64,6 +84,88 @@ def _mark_dz_rate_limited(headers: dict) -> None:
     retry_after = int(headers.get("Retry-After", 60))
     _DZ_RATE_LIMIT_UNTIL = max(_DZ_RATE_LIMIT_UNTIL, time.monotonic() + retry_after)
     logger.warning("[Deezer] 429 — %d초 차단", retry_after)
+
+
+class LastfmRateLimitError(Exception):
+    """Last.fm이 호출 제한을 알렸거나 차단 중이라 호출하지 않았다.
+
+    호출부는 이 예외를 따로 잡지 않는다. 버킷 단위 예외 처리가 빈 결과로
+    떨어뜨리는데, 제한 중에는 그게 맞는 동작이다 — 계속 두드리면 제한이 길어진다.
+    """
+
+
+def _is_lf_rate_limited() -> bool:
+    return time.monotonic() < _LASTFM_RATE_LIMIT_UNTIL
+
+
+def _mark_lf_rate_limited(cooldown: float = _LASTFM_RATE_LIMIT_COOLDOWN) -> None:
+    global _LASTFM_RATE_LIMIT_UNTIL
+    _LASTFM_RATE_LIMIT_UNTIL = max(
+        _LASTFM_RATE_LIMIT_UNTIL,
+        time.monotonic() + cooldown,
+    )
+    logger.warning("[Last.fm] 호출 제한 — %d초 차단", cooldown)
+
+
+def _is_lastfm_rate_limit_error(exc: BaseException) -> bool:
+    """pylast는 제한을 XML 본문의 error code 29로 전달한다.
+
+    HTTP 429를 따로 보지 않는다. pylast가 5xx만 상태 코드로 구분하고 나머지는
+    본문을 파싱하기 때문이다. `status`는 본문에서 온 문자열이라 숫자와 비교하기
+    전에 문자열로 맞춘다.
+    """
+    return (
+        isinstance(exc, pylast.WSError)
+        and str(getattr(exc, "status", "")) == str(pylast.STATUS_RATE_LIMIT_EXCEEDED)
+    )
+
+
+def _release_lastfm_slot(task: asyncio.Task) -> None:
+    """호출이 끝나면 차단 여부를 먼저 기록하고 자리를 돌려준다.
+
+    순서가 중요하다. 자리를 먼저 놓으면 기다리던 호출이 깨어나 차단기를 확인하는
+    시점이 기록보다 빨라, 방금 거절당한 것을 모른 채 그대로 나간다. 호출부의
+    `except`에서 기록하면 이 경합이 그대로 생긴다 — 자리는 태스크가 끝나는 순간
+    풀리는데 `except`는 그 뒤에 깨어나기 때문이다.
+    """
+    if not task.cancelled():
+        exc = task.exception()
+        if exc is not None and _is_lastfm_rate_limit_error(exc):
+            _mark_lf_rate_limited()
+    _LASTFM_SEMAPHORE.release()
+
+
+async def _await_lastfm_permission() -> None:
+    """호출해도 되는 상태가 될 때까지 기다린다. 차단기와 토큰을 함께 본다.
+
+    호출 직전에 부른다. 토큰을 미리 잡아 두면 세마포어를 기다리는 동안 그 표가
+    낡아, 실제로는 몰려 나가는 호출이 장부에는 흩어진 것으로 남는다.
+
+    차단기를 매 바퀴 확인하는 것이 핵심이다. 토큰이 마른 상태가 곧 지속 트래픽이고
+    그때가 제한을 받기 가장 쉬운 순간인데, 한 번만 확인하면 기다리는 동안 다른
+    호출이 거절당해 차단기가 열려도 토큰이 채워지는 순간 그대로 나간다.
+
+    잠든 호출들이 한꺼번에 깨어나도 다시 확인하므로 토큰 하나를 여럿이 나눠
+    갖지 않는다.
+    """
+    global _LASTFM_TOKENS, _LASTFM_TOKENS_UPDATED
+    while True:
+        if _is_lf_rate_limited():
+            raise LastfmRateLimitError("Last.fm 호출 제한 중")
+        now = time.monotonic()
+        _LASTFM_TOKENS = min(
+            _LASTFM_BURST,
+            _LASTFM_TOKENS + (now - _LASTFM_TOKENS_UPDATED) * _LASTFM_REFILL_PER_SECOND,
+        )
+        _LASTFM_TOKENS_UPDATED = now
+        # 부동소수 오차로 0.9999...가 나오면 제자리를 돈다. 기다린 만큼은
+        # 채워진 것으로 인정한다.
+        if _LASTFM_TOKENS + 1e-9 >= 1.0:
+            _LASTFM_TOKENS = max(0.0, _LASTFM_TOKENS - 1.0)
+            return
+        wait = (1.0 - _LASTFM_TOKENS) / _LASTFM_REFILL_PER_SECOND
+        logger.info("[Last.fm] 지속 호출 상한 — %.2f초 대기", wait)
+        await asyncio.sleep(wait)
 
 
 def _is_itunes_rate_limited() -> bool:
@@ -108,14 +210,25 @@ async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
     hit, cached = _cache_get(key, ttl)
     if hit:
         return cached
+    # 허가 확인은 세마포어를 잡은 뒤에, 호출 직전에 한다. 진입 전에 한 번만 보면
+    # 이미 줄을 선 호출들은 그사이에 차단기가 열려도 그대로 나간다 — 팬아웃이
+    # 41회인 경로에서는 첫 거절 뒤에도 나머지가 계속 두드린다.
     await _LASTFM_SEMAPHORE.acquire()
     try:
+        await _await_lastfm_permission()
         task = asyncio.create_task(asyncio.to_thread(fn, *args))
-    except Exception:
+    except BaseException:
         _LASTFM_SEMAPHORE.release()
         raise
-    task.add_done_callback(lambda _: _LASTFM_SEMAPHORE.release())
-    result = await asyncio.wait_for(asyncio.shield(task), timeout=_LASTFM_CALL_TIMEOUT)
+    task.add_done_callback(_release_lastfm_slot)
+    try:
+        result = await asyncio.wait_for(
+            asyncio.shield(task), timeout=_LASTFM_CALL_TIMEOUT
+        )
+    except Exception as exc:
+        if _is_lastfm_rate_limit_error(exc):
+            raise LastfmRateLimitError("Last.fm 호출 제한") from exc
+        raise
     _cache_set(key, result)
     return result
 
