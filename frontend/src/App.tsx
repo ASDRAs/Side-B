@@ -11,7 +11,7 @@ import {
   X,
 } from 'lucide-react';
 
-import { fetchPreviewArtwork, previewStreamUrl, recommend } from './api';
+import { previewStreamUrl, recommend, resolvePreview } from './api';
 import type { RecommendationBucket, RecommendResponse, TrackRecommendation } from './types';
 
 type View = 'search' | 'map' | 'group';
@@ -88,6 +88,8 @@ export default function App() {
   const [history, setHistory] = useState<string[]>([]);
   const [player, setPlayer] = useState<PlayerState | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // 곡 확정을 기다리는 동안 다른 곡을 누르면 앞선 재생을 버리기 위한 표식.
+  const playRequestRef = useRef(0);
 
   const allTracks = useMemo(() => {
     if (!response) return [];
@@ -157,6 +159,8 @@ export default function App() {
   }
 
   function stopPreview() {
+    // 아직 곡을 확정하는 중이었다면 그 재생도 시작하지 않는다.
+    playRequestRef.current += 1;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.src = '';
@@ -165,7 +169,7 @@ export default function App() {
     setPlayer(null);
   }
 
-  function togglePreview(track: TrackRecommendation) {
+  async function togglePreview(track: TrackRecommendation) {
     const key = trackKey(track);
     if (player?.key === key && audioRef.current) {
       if (audioRef.current.paused) {
@@ -179,9 +183,17 @@ export default function App() {
     }
 
     stopPreview();
-    const audio = new Audio(previewStreamUrl(track));
-    audioRef.current = audio;
     setPlayer({ key, track, status: 'loading' });
+
+    // 재생할 곡을 먼저 확정한다. 그 한 번의 결과에서 음원과 앨범아트가 함께
+    // 나오므로 둘이 어긋날 수 없다. 확정 실패는 곡명 경로로 흘려보낸다.
+    const request = ++playRequestRef.current;
+    const resolved = await resolvePreview(track).catch(() => null);
+    // 확정을 기다리는 사이에 다른 곡을 눌렀으면 이 재생은 버린다.
+    if (request !== playRequestRef.current) return;
+
+    const audio = new Audio(previewStreamUrl(track, resolved));
+    audioRef.current = audio;
     audio.addEventListener('playing', () => setPlayer({ key, track, status: 'playing' }));
     audio.addEventListener('pause', () =>
       setPlayer((current) => (current?.key === key ? { key, track, status: 'paused' } : current)),
@@ -189,26 +201,18 @@ export default function App() {
     audio.addEventListener('ended', stopPreview);
     audio.addEventListener('error', stopPreview);
     void audio.play();
-    hydrateArtwork(track, key);
-  }
 
-  /**
-   * 추천 카드는 앨범아트 없이 도착한다(백엔드가 후보마다 공급자를 부르지 않는다).
-   * 재생을 누른 곡만 이 시점에 채운다. 재생을 막지 않도록 뒤에서 돌린다.
-   */
-  function hydrateArtwork(track: TrackRecommendation, key: string) {
-    if (track.album_art_url) return;
-    void fetchPreviewArtwork(track)
-      .then((url) => {
-        if (!url) return;
-        setResponse((current) => withArtwork(current, key, url));
-        setPlayer((current) =>
-          current?.key === key
-            ? { ...current, track: { ...current.track, album_art_url: url } }
-            : current,
-        );
-      })
-      .catch(() => undefined);
+    // 추천 카드는 앨범아트 없이 도착한다(백엔드가 후보마다 공급자를 부르지 않는다).
+    // 방금 확정한 곡의 것으로 이 카드만 채운다.
+    if (resolved?.artworkUrl && !track.album_art_url) {
+      const artworkUrl = resolved.artworkUrl;
+      setResponse((current) => withArtwork(current, key, artworkUrl));
+      setPlayer((current) =>
+        current?.key === key
+          ? { ...current, track: { ...current.track, album_art_url: artworkUrl } }
+          : current,
+      );
+    }
   }
 
   if (view === 'group' && response && activeGroup) {

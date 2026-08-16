@@ -79,25 +79,56 @@ function previewParams(track: TrackRecommendation): string {
   return params.toString();
 }
 
-export function previewStreamUrl(track: TrackRecommendation): string {
-  return `${resolveApiBaseUrl()}/preview/stream?${previewParams(track)}`;
+export interface ResolvedPreview {
+  provider: string;
+  providerTrackId: string;
+  artworkUrl: string | null;
 }
 
 /**
- * 재생하는 곡의 앨범아트를 그 시점에 가져온다.
+ * 재생할 곡을 먼저 확정한다. 응답에는 공급자 ID와 앨범아트가 함께 들어 있다.
  *
  * 추천 응답은 더 이상 후보의 앨범아트를 채우지 않는다. 곡마다 공급자를 부르면
- * 추천 한 번에 30회가 나가는데 iTunes 상한이 분당 20회라, 한 명이 한 번
- * 검색하는 것만으로 제한을 넘겼다.
+ * 추천 한 번에 30회가 나가는데 iTunes 상한이 분당 20회이기 때문이다. 그래서
+ * 재생하는 곡만 이 시점에 확정한다.
  *
- * 서버가 같은 조회를 캐시하므로 stream 요청과 동시에 보내도 공급자 호출은
- * 한 번이다. 실패는 삼킨다 — 앨범아트가 없다고 재생을 막을 이유는 없다.
+ * 스트림과 나란히 보내지 않는 이유는, 서버 캐시가 프로세스 로컬이라 두 요청이
+ * 다른 인스턴스로 가면 각자 조회하기 때문이다. 그러면 공급자를 두 번 부르고,
+ * 장애나 rate limit 중에는 들리는 음원과 보이는 앨범아트가 다른 binding에서
+ * 나올 수도 있다. 확정을 한 번만 하고 그 ID로 재생한다.
  */
-export async function fetchPreviewArtwork(
+export async function resolvePreview(
   track: TrackRecommendation,
-): Promise<string | null> {
+): Promise<ResolvedPreview | null> {
   const response = await fetch(`${resolveApiBaseUrl()}/preview?${previewParams(track)}`);
   if (!response.ok) return null;
-  const payload = (await response.json()) as { artwork_url?: string | null };
-  return payload.artwork_url ?? null;
+  const payload = (await response.json()) as {
+    provider?: string;
+    provider_track_id?: string;
+    artwork_url?: string | null;
+  };
+  if (!payload.provider || !payload.provider_track_id) return null;
+  return {
+    provider: payload.provider,
+    providerTrackId: payload.provider_track_id,
+    artworkUrl: payload.artwork_url ?? null,
+  };
+}
+
+/**
+ * 확정된 곡이 있으면 그 ID로 스트리밍한다. 서버가 검색이 아니라 조회를 하므로
+ * 방금 확정한 것과 같은 음원이 나온다. 확정에 실패했으면 곡명 경로로 되돌아가
+ * 재생 자체를 잃지는 않는다.
+ */
+export function previewStreamUrl(
+  track: TrackRecommendation,
+  resolved?: ResolvedPreview | null,
+): string {
+  const params = resolved
+    ? new URLSearchParams({
+        provider: resolved.provider,
+        provider_track_id: resolved.providerTrackId,
+      }).toString()
+    : previewParams(track);
+  return `${resolveApiBaseUrl()}/preview/stream?${params}`;
 }
