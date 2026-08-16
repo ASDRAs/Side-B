@@ -135,17 +135,23 @@ def _release_lastfm_slot(task: asyncio.Task) -> None:
     _LASTFM_SEMAPHORE.release()
 
 
-async def _take_lastfm_token() -> None:
-    """토큰을 하나 쓴다. 없으면 채워질 때까지 기다린다.
+async def _await_lastfm_permission() -> None:
+    """호출해도 되는 상태가 될 때까지 기다린다. 차단기와 토큰을 함께 본다.
 
-    호출 직전에 부른다. 자리를 미리 잡아 두면 세마포어를 기다리는 동안 그 표가
+    호출 직전에 부른다. 토큰을 미리 잡아 두면 세마포어를 기다리는 동안 그 표가
     낡아, 실제로는 몰려 나가는 호출이 장부에는 흩어진 것으로 남는다.
+
+    차단기를 매 바퀴 확인하는 것이 핵심이다. 토큰이 마른 상태가 곧 지속 트래픽이고
+    그때가 제한을 받기 가장 쉬운 순간인데, 한 번만 확인하면 기다리는 동안 다른
+    호출이 거절당해 차단기가 열려도 토큰이 채워지는 순간 그대로 나간다.
 
     잠든 호출들이 한꺼번에 깨어나도 다시 확인하므로 토큰 하나를 여럿이 나눠
     갖지 않는다.
     """
     global _LASTFM_TOKENS, _LASTFM_TOKENS_UPDATED
     while True:
+        if _is_lf_rate_limited():
+            raise LastfmRateLimitError("Last.fm 호출 제한 중")
         now = time.monotonic()
         _LASTFM_TOKENS = min(
             _LASTFM_BURST,
@@ -204,14 +210,12 @@ async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
     hit, cached = _cache_get(key, ttl)
     if hit:
         return cached
-    # 차단 확인과 토큰 소모는 세마포어를 잡은 뒤에, 호출 직전에 한다. 진입 전에
-    # 한 번만 보면 이미 줄을 선 호출들은 그사이에 차단기가 열려도 그대로 나간다 —
-    # 팬아웃이 41회인 경로에서는 첫 거절 뒤에도 나머지가 계속 두드린다.
+    # 허가 확인은 세마포어를 잡은 뒤에, 호출 직전에 한다. 진입 전에 한 번만 보면
+    # 이미 줄을 선 호출들은 그사이에 차단기가 열려도 그대로 나간다 — 팬아웃이
+    # 41회인 경로에서는 첫 거절 뒤에도 나머지가 계속 두드린다.
     await _LASTFM_SEMAPHORE.acquire()
     try:
-        if _is_lf_rate_limited():
-            raise LastfmRateLimitError("Last.fm 호출 제한 중")
-        await _take_lastfm_token()
+        await _await_lastfm_permission()
         task = asyncio.create_task(asyncio.to_thread(fn, *args))
     except BaseException:
         _LASTFM_SEMAPHORE.release()

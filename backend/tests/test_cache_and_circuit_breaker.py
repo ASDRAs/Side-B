@@ -270,6 +270,40 @@ async def test_open_circuit_stops_calls_already_queued_behind_it(monkeypatch):
     assert len(calls) == 1
 
 
+async def test_circuit_opened_while_waiting_for_a_token_still_blocks(monkeypatch):
+    """토큰이 마른 상태가 곧 지속 트래픽이고, 제한을 받기 가장 쉬운 순간이다.
+
+    허가를 한 번만 확인하면 기다리는 동안 다른 호출이 거절당해도, 토큰이 채워지는
+    순간 그대로 나간다.
+    """
+    monkeypatch.setattr(sources, "_cache", OrderedDict())
+    monkeypatch.setattr(sources, "_LASTFM_SEMAPHORE", asyncio.Semaphore(2))
+    monkeypatch.setattr(sources, "_LASTFM_BURST", 1.0)
+    sources._LASTFM_TOKENS = 1.0
+    sources._LASTFM_TOKENS_UPDATED = time.monotonic()
+    calls = []
+
+    def first_call():
+        calls.append("first")
+        time.sleep(0.01)
+        raise pylast.WSError(
+            None, str(pylast.STATUS_RATE_LIMIT_EXCEEDED), "Rate limit exceeded"
+        )
+
+    def second_call():
+        calls.append("second")
+        return "answered anyway"
+
+    results = await asyncio.gather(
+        sources._lf_call("lf:starved:1", 600, first_call),
+        sources._lf_call("lf:starved:2", 600, second_call),
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(result, sources.LastfmRateLimitError) for result in results)
+    assert calls == ["first"]
+
+
 async def test_one_request_fanout_passes_without_waiting(monkeypatch):
     """정지 경고는 봉우리가 아니라 '지속'을 겨눈다.
 
