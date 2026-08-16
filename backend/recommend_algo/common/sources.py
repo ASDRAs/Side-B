@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 import time
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from typing import Any, Literal
 
 import httpx
@@ -38,24 +38,25 @@ _LASTFM_SEMAPHORE = asyncio.Semaphore(8)
 # 스레드 누수가 실제로 문제되면 pylast를 async HTTP 호출로 교체해야 한다.
 _LASTFM_CALL_TIMEOUT = 8.0
 
-# Last.fm ToS(§4.4)는 "IP당 초당 5회, 5분 평균"이다. 순간 상한이 아니라
-# 평균이므로 봉우리 자체는 위반이 아니다. 지켜야 하는 것은 창 안의 총량이다.
+# Last.fm은 구체적인 수치를 공개하지 않는다. ToS §4.4는 "재량으로 제한한다"일
+# 뿐이고, 실행 가능한 규칙은 API 소개 문서의 한 문장뿐이다 — "계속해서 초당
+# 여러 번 호출하면 계정이 정지될 수 있다". 널리 인용되는 "초당 5회, 5분 평균"은
+# 현재 공식 문서에 없다.
 #
-# 이 구분이 응답 시간을 가른다. direct 1건 실측이 41회를 2.4초에 보내고(피크
-# 30/s) 응답이 4.8초인데, 이걸 매 호출 0.2초 간격으로 깎으면 응답이 11.5초가
-# 된다. 규정이 요구하지 않는 6.7초다. 그래서 간격이 아니라 창 예산만 센다.
-# 예산이 남아 있으면 아무도 기다리지 않고, 소진되면 가장 오래된 호출이 창을
-# 빠져나갈 때까지 기다린다.
+# 그 문장이 금지하는 것은 봉우리가 아니라 '지속'이다. 그래서 토큰 버킷을 쓴다.
+# 한 요청의 팬아웃(실측 41회)은 모아 둔 토큰으로 한 번에 통과하고, 그 뒤로는
+# 채워지는 속도 이상으로 나가지 못한다. 세마포어는 동시 실행 수만 제어하므로
+# 이것을 대신하지 못한다.
 #
-# 세마포어는 동시 실행 수만 제어하므로 이 총량을 대신하지 못한다.
-# ponytail: 프로세스 로컬이다. 인스턴스가 늘면 창 예산도 인스턴스 수만큼
-# 곱해진다. 공용 저장소로 옮기려면 캐시·회로차단기와 함께 옮긴다.
-_LASTFM_RATE_WINDOW = 300.0
-_LASTFM_MAX_PER_WINDOW = 5 * int(_LASTFM_RATE_WINDOW)
+# ponytail: 아래 두 값은 근거 있는 상수가 아니라 정책값이다. 공개된 수치가
+# 없으므로 code 29가 로그에 보이면 refill부터 낮춘다. 프로세스 로컬이라
+# 인스턴스가 늘면 그만큼 곱해진다 — 캐시·회로차단기와 함께 옮겨야 한다.
+_LASTFM_BURST = 45.0
+_LASTFM_REFILL_PER_SECOND = 5.0
+_LASTFM_TOKENS: float = _LASTFM_BURST
+_LASTFM_TOKENS_UPDATED: float = time.monotonic()
 _LASTFM_RATE_LIMIT_COOLDOWN = 60.0
 _LASTFM_RATE_LIMIT_UNTIL: float = 0.0
-# 창 안에서 실제로 보낸 시각들. 캐시 적중은 공급자를 부르지 않으므로 넣지 않는다.
-_LASTFM_SENT: deque[float] = deque()
 
 # Deezer circuit breaker — 429 감지 시 해당 시각까지 모든 Deezer 호출 스킵
 _DZ_RATE_LIMIT_UNTIL: float = 0.0
@@ -119,27 +120,46 @@ def _is_lastfm_rate_limit_error(exc: BaseException) -> bool:
     )
 
 
-async def _await_lastfm_slot() -> None:
-    """5분 창의 호출 예산 안에서만 보낸다.
+def _release_lastfm_slot(task: asyncio.Task) -> None:
+    """호출이 끝나면 차단 여부를 먼저 기록하고 자리를 돌려준다.
 
-    예산이 남아 있으면 즉시 통과한다 — 평상시에는 아무 지연도 없다. 소진되면
-    가장 오래된 호출이 창을 빠져나갈 때까지 기다린 뒤 다시 확인한다. 기다린
-    호출들이 동시에 깨어나도 재확인 때문에 예산을 넘겨 나가지 않는다.
+    순서가 중요하다. 자리를 먼저 놓으면 기다리던 호출이 깨어나 차단기를 확인하는
+    시점이 기록보다 빨라, 방금 거절당한 것을 모른 채 그대로 나간다. 호출부의
+    `except`에서 기록하면 이 경합이 그대로 생긴다 — 자리는 태스크가 끝나는 순간
+    풀리는데 `except`는 그 뒤에 깨어나기 때문이다.
     """
+    if not task.cancelled():
+        exc = task.exception()
+        if exc is not None and _is_lastfm_rate_limit_error(exc):
+            _mark_lf_rate_limited()
+    _LASTFM_SEMAPHORE.release()
+
+
+async def _take_lastfm_token() -> None:
+    """토큰을 하나 쓴다. 없으면 채워질 때까지 기다린다.
+
+    호출 직전에 부른다. 자리를 미리 잡아 두면 세마포어를 기다리는 동안 그 표가
+    낡아, 실제로는 몰려 나가는 호출이 장부에는 흩어진 것으로 남는다.
+
+    잠든 호출들이 한꺼번에 깨어나도 다시 확인하므로 토큰 하나를 여럿이 나눠
+    갖지 않는다.
+    """
+    global _LASTFM_TOKENS, _LASTFM_TOKENS_UPDATED
     while True:
         now = time.monotonic()
-        while _LASTFM_SENT and now - _LASTFM_SENT[0] >= _LASTFM_RATE_WINDOW:
-            _LASTFM_SENT.popleft()
-        if len(_LASTFM_SENT) < _LASTFM_MAX_PER_WINDOW:
-            _LASTFM_SENT.append(now)
-            return
-        wait = _LASTFM_RATE_WINDOW - (now - _LASTFM_SENT[0])
-        logger.warning(
-            "[Last.fm] 5분 예산 %d회 소진 — %.1f초 대기",
-            _LASTFM_MAX_PER_WINDOW,
-            wait,
+        _LASTFM_TOKENS = min(
+            _LASTFM_BURST,
+            _LASTFM_TOKENS + (now - _LASTFM_TOKENS_UPDATED) * _LASTFM_REFILL_PER_SECOND,
         )
-        await asyncio.sleep(max(wait, 0.0))
+        _LASTFM_TOKENS_UPDATED = now
+        # 부동소수 오차로 0.9999...가 나오면 제자리를 돈다. 기다린 만큼은
+        # 채워진 것으로 인정한다.
+        if _LASTFM_TOKENS + 1e-9 >= 1.0:
+            _LASTFM_TOKENS = max(0.0, _LASTFM_TOKENS - 1.0)
+            return
+        wait = (1.0 - _LASTFM_TOKENS) / _LASTFM_REFILL_PER_SECOND
+        logger.info("[Last.fm] 지속 호출 상한 — %.2f초 대기", wait)
+        await asyncio.sleep(wait)
 
 
 def _is_itunes_rate_limited() -> bool:
@@ -184,25 +204,25 @@ async def _lf_call(key: str, ttl: float, fn, *args) -> Any:
     hit, cached = _cache_get(key, ttl)
     if hit:
         return cached
-    if _is_lf_rate_limited():
-        raise LastfmRateLimitError("Last.fm 호출 제한 중")
-    # 캐시에 없을 때만 자리를 쓴다. 세마포어를 잡기 전에 기다려야 잠든 호출이
-    # 동시 실행 자리를 물고 있지 않는다.
-    await _await_lastfm_slot()
+    # 차단 확인과 토큰 소모는 세마포어를 잡은 뒤에, 호출 직전에 한다. 진입 전에
+    # 한 번만 보면 이미 줄을 선 호출들은 그사이에 차단기가 열려도 그대로 나간다 —
+    # 팬아웃이 41회인 경로에서는 첫 거절 뒤에도 나머지가 계속 두드린다.
     await _LASTFM_SEMAPHORE.acquire()
     try:
+        if _is_lf_rate_limited():
+            raise LastfmRateLimitError("Last.fm 호출 제한 중")
+        await _take_lastfm_token()
         task = asyncio.create_task(asyncio.to_thread(fn, *args))
-    except Exception:
+    except BaseException:
         _LASTFM_SEMAPHORE.release()
         raise
-    task.add_done_callback(lambda _: _LASTFM_SEMAPHORE.release())
+    task.add_done_callback(_release_lastfm_slot)
     try:
         result = await asyncio.wait_for(
             asyncio.shield(task), timeout=_LASTFM_CALL_TIMEOUT
         )
     except Exception as exc:
         if _is_lastfm_rate_limit_error(exc):
-            _mark_lf_rate_limited()
             raise LastfmRateLimitError("Last.fm 호출 제한") from exc
         raise
     _cache_set(key, result)

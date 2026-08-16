@@ -240,11 +240,41 @@ async def test_open_lastfm_circuit_empties_a_bucket_instead_of_failing(monkeypat
     assert result == []
 
 
-async def test_bursts_within_the_window_budget_are_not_delayed(monkeypatch):
-    """ToS는 초당 5회를 5분 평균으로 요구한다. 봉우리 자체는 위반이 아니다.
+async def test_open_circuit_stops_calls_already_queued_behind_it(monkeypatch):
+    """진입 시 한 번만 확인하면 줄을 선 호출은 차단을 못 본다.
 
-    매 호출을 0.2초로 벌리면 실측 direct 1건의 응답이 4.8초에서 11.5초가 된다.
-    규정이 요구하지 않는 지연이므로 예산이 남아 있는 동안은 기다리지 않는다.
+    공개된 수치가 없는 상황에서 실제 거절에 반응하는 것이 이 가드의 핵심인데,
+    첫 거절 뒤에도 팬아웃의 나머지가 계속 나가면 반응한 의미가 없다.
+    """
+    monkeypatch.setattr(sources, "_cache", OrderedDict())
+    monkeypatch.setattr(sources, "_LASTFM_SEMAPHORE", asyncio.Semaphore(1))
+    calls = []
+
+    def rate_limited_call(index):
+        calls.append(index)
+        time.sleep(0.01)
+        raise pylast.WSError(
+            None, str(pylast.STATUS_RATE_LIMIT_EXCEEDED), "Rate limit exceeded"
+        )
+
+    results = await asyncio.gather(
+        *[
+            sources._lf_call(f"lf:queued:{index}", 600, rate_limited_call, index)
+            for index in range(4)
+        ],
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(result, sources.LastfmRateLimitError) for result in results)
+    # 첫 호출만 공급자에 닿는다. 나머지 셋은 차단을 보고 되돌아간다.
+    assert len(calls) == 1
+
+
+async def test_one_request_fanout_passes_without_waiting(monkeypatch):
+    """정지 경고는 봉우리가 아니라 '지속'을 겨눈다.
+
+    실측 direct 1건이 41회다. 이걸 매 호출 간격으로 깎으면 응답이 4.8초에서
+    11.5초가 되는데, 공개된 규정이 요구하는 바가 아니다.
     """
     monkeypatch.setattr(sources, "_cache", OrderedDict())
     delays = []
@@ -254,43 +284,47 @@ async def test_bursts_within_the_window_budget_are_not_delayed(monkeypatch):
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
-    for index in range(50):
+    for index in range(41):
         await sources._lf_call(f"lf:burst:{index}", 600, lambda i=index: i)
 
     assert delays == []
-    assert len(sources._LASTFM_SENT) == 50
 
 
-async def test_spent_window_budget_makes_the_next_call_wait(monkeypatch):
-    """창이 가득 차면 가장 오래된 호출이 빠져나갈 때까지 기다린다."""
+async def test_sustained_calls_are_held_to_the_refill_rate(monkeypatch):
+    """모아 둔 토큰을 다 쓰면 채워지는 속도 이상으로는 나가지 못한다."""
     monkeypatch.setattr(sources, "_cache", OrderedDict())
-    monkeypatch.setattr(sources, "_LASTFM_MAX_PER_WINDOW", 3)
-    monkeypatch.setattr(sources, "_LASTFM_RATE_WINDOW", 10.0)
+    monkeypatch.setattr(sources, "_LASTFM_BURST", 2.0)
+    monkeypatch.setattr(sources, "_LASTFM_REFILL_PER_SECOND", 5.0)
+    sources._LASTFM_TOKENS = 2.0
+    sources._LASTFM_TOKENS_UPDATED = time.monotonic()
     delays = []
 
     async def fake_sleep(seconds):
         delays.append(seconds)
-        # 잠든 사이에 창이 지나간 것으로 만든다. 그러지 않으면 예산이 영원히
-        # 차 있어 무한 루프가 된다.
-        sources._LASTFM_SENT.clear()
+        # 잠든 만큼 시간이 흐른 것으로 만든다. 실제로 자면 테스트가 느려진다.
+        sources._LASTFM_TOKENS_UPDATED -= seconds
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
     for index in range(4):
-        await sources._lf_call(f"lf:budget:{index}", 600, lambda i=index: i)
+        await sources._lf_call(f"lf:sustained:{index}", 600, lambda i=index: i)
 
-    assert len(delays) == 1
-    assert 0 < delays[0] <= 10.0
+    # 앞의 둘은 모아 둔 토큰으로 나가고, 뒤의 둘은 채워지길 기다린다.
+    assert len(delays) == 2
+    assert all(0 < delay <= 1.0 / 5.0 for delay in delays)
 
 
-async def test_cached_lastfm_reads_do_not_consume_budget(monkeypatch):
-    """캐시 적중은 공급자를 부르지 않으므로 예산과 무관하다."""
+async def test_cached_lastfm_reads_do_not_consume_a_token(monkeypatch):
+    """캐시 적중은 공급자를 부르지 않으므로 상한과 무관하다."""
     monkeypatch.setattr(sources, "_cache", OrderedDict())
+    sources._LASTFM_TOKENS = 1.0
+    sources._LASTFM_TOKENS_UPDATED = time.monotonic()
 
     for _ in range(5):
         await sources._lf_call("lf:same-key", 600, lambda: "value")
 
-    assert len(sources._LASTFM_SENT) == 1
+    # 첫 호출만 토큰을 쓴다. 나머지 넷은 캐시에서 답한다.
+    assert sources._LASTFM_TOKENS < 1.0
 
 
 def test_artist_top_cache_keys_differ_by_limit():
