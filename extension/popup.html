@@ -6,6 +6,7 @@
     <title>Side-B</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
+
   <body>
     <main class="shell">
       <header class="header">
@@ -13,11 +14,34 @@
           <p class="eyebrow">MUSIC DISCOVERY</p>
           <h1>Side-B</h1>
         </div>
-        <span id="connectionBadge" class="badge badge-idle">대기</span>
+
+        <span id="connectionBadge" class="badge badge-idle">
+          대기
+        </span>
       </header>
 
+      <!-- 현재 재생 중인 곡 -->
+      <section class="current-track">
+        <button id="currentTrackButton" type="button">
+          현재 곡 가져오기
+        </button>
+
+        <div id="currentTrackResult" hidden>
+          <p class="section-label">현재 재생 중</p>
+
+          <div class="seed-line">
+            <strong id="currentTrackTitle"></strong>
+            <span id="currentTrackArtist"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 추천 요청 -->
       <form id="recommendForm" class="request-form">
-        <label for="apiBaseUrl">백엔드 주소</label>
+        <label for="apiBaseUrl">
+          백엔드 주소
+        </label>
+
         <input
           id="apiBaseUrl"
           name="apiBaseUrl"
@@ -27,7 +51,10 @@
           required
         />
 
-        <label for="query">검색어</label>
+        <label for="query">
+          검색어
+        </label>
+
         <div class="query-row">
           <input
             id="query"
@@ -38,43 +65,69 @@
             autocomplete="off"
             required
           />
-          <button id="submitButton" type="submit">추천 요청</button>
+
+          <button id="submitButton" type="submit">
+            추천 요청
+          </button>
         </div>
       </form>
 
-      <p id="statusMessage" class="status" role="status" aria-live="polite">
+      <!-- 상태 메시지 -->
+      <p
+        id="statusMessage"
+        class="status"
+        role="status"
+        aria-live="polite"
+      >
         검색어를 입력하세요.
       </p>
 
+      <!-- 추천 기준 음악 -->
       <section id="seedSection" class="seed-section" hidden>
-        <p class="section-label">기준 음악</p>
+        <p class="section-label">
+          기준 음악
+        </p>
+
         <div class="seed-line">
           <strong id="seedTitle"></strong>
           <span id="seedArtist"></span>
         </div>
       </section>
 
-      <section id="results" class="results" aria-label="추천 결과"></section>
+      <!-- 추천 결과 -->
+      <section
+        id="results"
+        class="results"
+        aria-label="추천 결과"
+      ></section>
 
+      <!-- 원본 JSON -->
       <details id="rawPanel" class="raw-panel" hidden>
-        <summary>원본 JSON</summary>
+        <summary>
+          원본 JSON
+        </summary>
+
         <pre id="rawResponse"></pre>
       </details>
     </main>
 
+    <!-- 추천 bucket template -->
     <template id="bucketTemplate">
       <section class="bucket">
         <div class="bucket-heading">
           <h2></h2>
           <span class="count"></span>
         </div>
+
         <ol class="track-list"></ol>
       </section>
     </template>
 
+    <!-- 개별 track template -->
     <template id="trackTemplate">
       <li class="track-item">
         <span class="rank"></span>
+
         <div class="track-copy">
           <strong class="track-title"></strong>
           <span class="track-artist"></span>
@@ -83,6 +136,6 @@
       </li>
     </template>
 
-    <script src="popup.js"></script>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

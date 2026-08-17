@@ -14,7 +14,7 @@
 
 body {
   width: 400px;
-  max-width: 100vw;
+  max-width: 400px;
   min-height: 480px;
   margin: 0;
   background: #f4f6f7;
@@ -284,4 +284,20 @@ button:disabled {
   font: 10px/1.45 Consolas, monospace;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.current-track {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.current-track button {
+  width: 100%;
+}
+
+#currentTrackResult {
+  border-left: 3px solid #24728c;
+  background: #eaf3f6;
+  padding: 9px 11px;
 }

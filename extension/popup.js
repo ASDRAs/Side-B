@@ -1,3 +1,6 @@
+import { readCurrentTrack } from "./scripts/tab.js";
+
+
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 90_000;
 const BUCKET_LABELS = {
@@ -21,6 +24,10 @@ const rawPanel = document.querySelector("#rawPanel");
 const rawResponse = document.querySelector("#rawResponse");
 const bucketTemplate = document.querySelector("#bucketTemplate");
 const trackTemplate = document.querySelector("#trackTemplate");
+const currentTrackButton = document.querySelector("#currentTrackButton");
+const currentTrackResult = document.querySelector("#currentTrackResult");
+const currentTrackTitle = document.querySelector("#currentTrackTitle");
+const currentTrackArtist = document.querySelector("#currentTrackArtist");
 
 function normalizeApiBaseUrl(value) {
   const url = new URL(value.trim());
@@ -158,6 +165,33 @@ form.addEventListener("submit", async (event) => {
         ? "요청 시간이 초과되었습니다. 백엔드 로그를 확인하세요."
         : error?.message || "추천 요청에 실패했습니다.";
     setState("error", message);
+  }
+});
+
+currentTrackButton.addEventListener("click", async () => {
+  currentTrackButton.disabled = true;
+
+  try {
+    const track = await readCurrentTrack();
+
+    if (!track) {
+      currentTrackResult.hidden = true;
+      setState("error", "현재 재생 중인 곡을 찾을 수 없습니다.");
+      return;
+    }
+
+    currentTrackTitle.textContent = track.title;
+    currentTrackArtist.textContent = track.artist || "아티스트 정보 없음";
+    currentTrackResult.hidden = false;
+
+    setState("success", "현재 재생 중인 곡을 가져왔습니다.");
+  } catch (error) {
+    console.error("Failed to read current track:", error);
+
+    currentTrackResult.hidden = true;
+    setState("error", "현재 곡 정보를 가져오는 데 실패했습니다.");
+  } finally {
+    currentTrackButton.disabled = false;
   }
 });
 
