@@ -285,3 +285,19 @@ button:disabled {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.current-track {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.current-track button {
+  width: 100%;
+}
+
+#currentTrackResult {
+  border-left: 3px solid #24728c;
+  background: #eaf3f6;
+  padding: 9px 11px;
+}
