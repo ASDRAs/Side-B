@@ -224,26 +224,26 @@ readStoredApiBaseUrl()
     apiBaseUrlInput.value = DEFAULT_API_BASE_URL;
   });
 
-  eqTestButton.addEventListener("click", async () => {
-  eqTestButton.disabled = true;
+eqTestButton.addEventListener("click", async () => {
+eqTestButton.disabled = true;
 
-  try {
-    eqTestStatus.textContent = "EQ 적용 중...";
+try {
+  eqTestStatus.textContent = "EQ 적용 중...";
 
-    // TEST_EQ_PRESET에 EQ값 넘겨주면 됨
-    // 지금은 버튼 누르면 작동하는데, backend에서 해당 값 보낼 수 있도록
-    await startEq(TEST_EQ_PRESET);
+  // TEST_EQ_PRESET에 EQ값 넘겨주면 됨
+  // 지금은 버튼 누르면 작동하는데, backend에서 해당 값 보낼 수 있도록
+  await startEq(TEST_EQ_PRESET);
 
-    eqTestStatus.textContent = "EQ가 적용되었습니다.";
-  } catch (error) {
-    console.error("Failed to apply EQ:", error);
+  eqTestStatus.textContent = "EQ가 적용되었습니다.";
+} catch (error) {
+  console.error("Failed to apply EQ:", error);
 
-    eqTestStatus.textContent = `EQ 적용 실패: ${
-      error?.message || "알 수 없는 오류"
-    }`;
-  } finally {
-    eqTestButton.disabled = false;
-  }
+  eqTestStatus.textContent = `EQ 적용 실패: ${
+    error?.message || "알 수 없는 오류"
+  }`;
+} finally {
+  eqTestButton.disabled = false;
+}
 });
 
 eqStopButton.addEventListener("click", async () => {
