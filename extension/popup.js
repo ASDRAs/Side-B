@@ -230,10 +230,11 @@ readStoredApiBaseUrl()
   try {
     eqTestStatus.textContent = "EQ 적용 중...";
 
+    // TEST_EQ_PRESET에 EQ값 넘겨주면 됨
+    // 지금은 버튼 누르면 작동하는데, backend에서 해당 값 보낼 수 있도록
     await startEq(TEST_EQ_PRESET);
 
-    eqTestStatus.textContent = "EQ 테스트가 적용되었습니다.";
-    console.log("EQ applied:", TEST_EQ_PRESET);
+    eqTestStatus.textContent = "EQ가 적용되었습니다.";
   } catch (error) {
     console.error("Failed to apply EQ:", error);
 
@@ -252,7 +253,6 @@ eqStopButton.addEventListener("click", async () => {
     await stopEq();
 
     eqTestStatus.textContent = "EQ를 해제했습니다.";
-    console.log("EQ stopped.");
   } catch (error) {
     console.error("Failed to stop EQ:", error);
 
