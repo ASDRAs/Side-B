@@ -1,5 +1,5 @@
 import { readCurrentTrack } from "./scripts/tab.js";
-
+import { startEq, stopEq } from "./scripts/eq.js";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 90_000;
@@ -28,6 +28,26 @@ const currentTrackButton = document.querySelector("#currentTrackButton");
 const currentTrackResult = document.querySelector("#currentTrackResult");
 const currentTrackTitle = document.querySelector("#currentTrackTitle");
 const currentTrackArtist = document.querySelector("#currentTrackArtist");
+const eqTestButton = document.querySelector("#eqTestButton");
+const eqStopButton = document.querySelector("#eqStopButton");
+const eqTestStatus = document.querySelector("#eqTestStatus");
+
+// EQ 테스트용
+const TEST_EQ_PRESET = {
+  preamp: -6,
+  bands: [
+    { frequency: 31, gain: 12 },
+    { frequency: 62, gain: 12 },
+    { frequency: 125, gain: 8 },
+    { frequency: 250, gain: 4 },
+    { frequency: 500, gain: -6 },
+    { frequency: 1000, gain: -8 },
+    { frequency: 2000, gain: -4 },
+    { frequency: 4000, gain: 4 },
+    { frequency: 8000, gain: 6 },
+    { frequency: 16000, gain: 6 },
+  ],
+};
 
 function normalizeApiBaseUrl(value) {
   const url = new URL(value.trim());
@@ -203,3 +223,43 @@ readStoredApiBaseUrl()
   .catch(() => {
     apiBaseUrlInput.value = DEFAULT_API_BASE_URL;
   });
+
+eqTestButton.addEventListener("click", async () => {
+  eqTestButton.disabled = true;
+
+  try {
+    eqTestStatus.textContent = "EQ 적용 중...";
+
+    // TEST_EQ_PRESET에 EQ값 넘겨주면 됨
+    // 지금은 버튼 누르면 작동하는데, backend에서 해당 값 보낼 수 있도록
+    await startEq(TEST_EQ_PRESET);
+
+    eqTestStatus.textContent = "EQ가 적용되었습니다.";
+  } catch (error) {
+    console.error("Failed to apply EQ:", error);
+
+    eqTestStatus.textContent = `EQ 적용 실패: ${
+      error?.message || "알 수 없는 오류"
+    }`;
+  } finally {
+    eqTestButton.disabled = false;
+  }
+});
+
+eqStopButton.addEventListener("click", async () => {
+  eqStopButton.disabled = true;
+
+  try {
+    await stopEq();
+
+    eqTestStatus.textContent = "EQ를 해제했습니다.";
+  } catch (error) {
+    console.error("Failed to stop EQ:", error);
+
+    eqTestStatus.textContent = `EQ 해제 실패: ${
+      error?.message || "알 수 없는 오류"
+    }`;
+  } finally {
+    eqStopButton.disabled = false;
+  }
+});

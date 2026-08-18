@@ -301,3 +301,15 @@ button:disabled {
   background: #eaf3f6;
   padding: 9px 11px;
 }
+
+.eq-test-section {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.eq-test-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}

@@ -1,17 +1,23 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "116",
   "name": "Side-B Recommendation Client",
   "version": "0.1.0",
   "description": "Side-B 백엔드 추천 응답을 확인하는 개발용 익스텐션",
   "permissions": [
-  "storage",
-  "activeTab",
-  "scripting"
-],
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabCapture",
+    "offscreen"
+  ],
   "host_permissions": [
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_title": "Side-B",
     "default_popup": "popup.html"
