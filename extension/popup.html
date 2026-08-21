@@ -70,7 +70,7 @@
         />
 
         <label for="youtubeExportToken">
-          YouTube 내보내기 토큰
+          팀 내보내기 토큰
         </label>
 
         <input
@@ -78,8 +78,14 @@
           name="youtubeExportToken"
           type="password"
           autocomplete="off"
-          placeholder="YOUTUBE_EXPORT_TOKEN"
+          aria-describedby="youtubeExportTokenHelp"
+          placeholder="운영자에게 받은 토큰"
         />
+
+        <p id="youtubeExportTokenHelp" class="field-help">
+          사용자별 Google 토큰이 아닙니다. Cloud Run의 YOUTUBE_EXPORT_TOKEN과 같은
+          팀 공용 값을 입력하세요.
+        </p>
 
         <label for="query">
           검색어
