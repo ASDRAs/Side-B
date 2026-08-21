@@ -104,15 +104,23 @@ export async function fetchYouTubeMatches(
   apiBaseUrl,
   bucketName,
   tracks,
+  exportToken,
   timeoutMs,
 ) {
+  const token = String(exportToken || "").trim();
+  if (!token) {
+    throw new Error("YouTube 내보내기 토큰을 입력하세요.");
+  }
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetchImpl(`${apiBaseUrl}/exports/youtube/matches`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Side-B-Export-Token": token,
+      },
       body: JSON.stringify({ bucket: bucketName, tracks }),
       signal: controller.signal,
     });

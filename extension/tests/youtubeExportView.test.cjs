@@ -132,6 +132,7 @@ test("sends a bounded match request and returns the response", async () => {
     "https://api.example",
     "similar",
     [{ name: "Hello", artist: "Adele" }],
+    "export-token",
     100,
   );
 
@@ -142,6 +143,10 @@ test("sends a bounded match request and returns the response", async () => {
     bucket: "similar",
     tracks: [{ name: "Hello", artist: "Adele" }],
   });
+  assert.equal(
+    calls[0].init.headers["X-Side-B-Export-Token"],
+    "export-token",
+  );
   assert.ok(calls[0].init.signal);
 });
 
@@ -162,8 +167,29 @@ test("aborts a match request after the configured timeout", async () => {
       "https://api.example",
       "similar",
       [{ name: "Hello", artist: "Adele" }],
+      "export-token",
       1,
     ),
     { name: "AbortError" },
   );
+});
+
+test("rejects a missing export token before sending a request", async () => {
+  const { fetchYouTubeMatches } = await loadModule();
+  let called = false;
+
+  await assert.rejects(
+    fetchYouTubeMatches(
+      async () => {
+        called = true;
+      },
+      "https://api.example",
+      "similar",
+      [{ name: "Hello", artist: "Adele" }],
+      "  ",
+      100,
+    ),
+    /토큰을 입력/,
+  );
+  assert.equal(called, false);
 });

@@ -25,6 +25,7 @@ const BUCKET_LABELS = {
 
 const form = document.querySelector("#recommendForm");
 const apiBaseUrlInput = document.querySelector("#apiBaseUrl");
+const youtubeExportTokenInput = document.querySelector("#youtubeExportToken");
 const queryInput = document.querySelector("#query");
 const submitButton = document.querySelector("#submitButton");
 const connectionBadge = document.querySelector("#connectionBadge");
@@ -310,12 +311,18 @@ youtubeMatchCancel.addEventListener("click", () => {
   resolve(null);
 });
 
-async function requestYouTubeMatches(apiBaseUrl, bucketName, tracks) {
+async function requestYouTubeMatches(
+  apiBaseUrl,
+  bucketName,
+  tracks,
+  exportToken,
+) {
   return fetchYouTubeMatches(
     fetch,
     apiBaseUrl,
     bucketName,
     tracks,
+    exportToken,
     REQUEST_TIMEOUT_MS,
   );
 }
@@ -352,10 +359,16 @@ async function exportBucket(bucketName, tracks) {
       throw new Error("곡명과 아티스트가 있는 추천곡이 없습니다.");
     }
     const apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput.value);
+    const exportToken = youtubeExportTokenInput.value.trim();
+    if (!exportToken) {
+      throw new Error("YouTube 내보내기 토큰을 입력하세요.");
+    }
+    await storeYouTubeExportToken(exportToken);
     const matches = await requestYouTubeMatches(
       apiBaseUrl,
       bucketName,
       exportable.valid,
+      exportToken,
     );
     if (!isCurrentExport()) {
       return;
@@ -461,6 +474,22 @@ async function storeApiBaseUrl(apiBaseUrl) {
   localStorage.setItem("apiBaseUrl", apiBaseUrl);
 }
 
+async function readStoredYouTubeExportToken() {
+  if (globalThis.chrome?.storage?.session) {
+    const stored = await chrome.storage.session.get("youtubeExportToken");
+    return stored.youtubeExportToken;
+  }
+  return sessionStorage.getItem("youtubeExportToken");
+}
+
+async function storeYouTubeExportToken(exportToken) {
+  if (globalThis.chrome?.storage?.session) {
+    await chrome.storage.session.set({ youtubeExportToken: exportToken });
+    return;
+  }
+  sessionStorage.setItem("youtubeExportToken", exportToken);
+}
+
 async function requestRecommendations(apiBaseUrl, query) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -548,6 +577,14 @@ readStoredApiBaseUrl()
   })
   .catch(() => {
     apiBaseUrlInput.value = DEFAULT_API_BASE_URL;
+  });
+
+readStoredYouTubeExportToken()
+  .then((storedToken) => {
+    youtubeExportTokenInput.value = storedToken || "";
+  })
+  .catch(() => {
+    youtubeExportTokenInput.value = "";
   });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {

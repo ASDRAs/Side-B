@@ -20,6 +20,15 @@ Side-B 백엔드의 `/recommend` 응답을 확인하는 개발용 Chrome MV3 익
 `manifest.json`의 `host_permissions`에도 해당 origin을 추가한 뒤 익스텐션을
 다시 로드해야 합니다.
 
+## 테스트
+
+확장 프로그램 단위 테스트는 Node 내장 테스트 러너로 실행합니다.
+
+```powershell
+cd extension
+npm test
+```
+
 ## YouTube Music 내보내기 설정
 
 추천 조회만 사용할 때는 Google 설정이 필요하지 않습니다. 버킷별 `YouTube Music`
@@ -36,8 +45,11 @@ Side-B 백엔드의 `/recommend` 응답을 확인하는 개발용 Chrome MV3 익
    사용하는 확장 프로그램 ID를 입력합니다.
 4. `manifest.json`의 `REPLACE_WITH_CHROME_EXTENSION_OAUTH_CLIENT_ID`를 발급받은
    Client ID로 바꿉니다.
-5. 프로젝트 루트 `.env`에 서버 검색용 `YOUTUBE_API_KEY`를 설정합니다.
+5. 프로젝트 루트 `.env`에 서버 검색용 `YOUTUBE_API_KEY`와 임의의 긴
+   `YOUTUBE_EXPORT_TOKEN`을 설정합니다.
 6. Chrome의 확장 프로그램 화면에서 Side-B를 다시 로드합니다.
+7. 팝업의 `YouTube 내보내기 토큰`에 같은 값을 입력합니다. 토큰은
+   `chrome.storage.session`에만 보관되어 브라우저 세션이 끝나면 사라집니다.
 
 OAuth scope는 `youtube.force-ssl` 하나만 사용합니다. access token은 백엔드나
 `chrome.storage`에 저장하지 않고 Chrome Identity API의 메모리 캐시에 맡깁니다.
