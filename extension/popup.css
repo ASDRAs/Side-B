@@ -197,6 +197,19 @@ button:disabled {
   font-size: 14px;
 }
 
+.bucket-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.export-button {
+  width: 106px;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
 .count {
   color: #647681;
   font-size: 11px;
@@ -312,4 +325,150 @@ button:disabled {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+}
+
+.export-panel {
+  margin-top: 18px;
+  border: 1px solid #c8d4da;
+  border-left: 3px solid #c62828;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 10px 11px;
+}
+
+.export-panel-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.export-panel-heading strong {
+  color: #9f2f2a;
+  font-size: 11px;
+}
+
+.export-title,
+.export-detail {
+  overflow-wrap: anywhere;
+}
+
+.export-title {
+  margin: 7px 0 3px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.export-detail {
+  margin: 0;
+  color: #536875;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.export-failures {
+  display: grid;
+  gap: 3px;
+  margin: 7px 0 0;
+  padding-left: 17px;
+  color: #8f2f2a;
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.export-failures[hidden] {
+  display: none;
+}
+
+.match-review {
+  margin-top: 10px;
+  border-top: 1px solid #d6dde1;
+  padding-top: 6px;
+}
+
+.match-review[hidden] {
+  display: none;
+}
+
+.match-list {
+  display: grid;
+  gap: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.match-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 7px;
+  border-bottom: 1px solid #e3e8eb;
+  padding: 7px 0;
+}
+
+.match-item input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+}
+
+.match-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.match-copy strong,
+.match-copy span {
+  overflow-wrap: anywhere;
+}
+
+.match-copy strong {
+  font-size: 11px;
+}
+
+.match-copy span {
+  color: #5b6c76;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.match-review-actions {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.match-review-actions button {
+  height: 32px;
+}
+
+.secondary-button {
+  border: 1px solid #aebbc2;
+  background: #ffffff;
+  color: #405967;
+}
+
+.secondary-button:hover {
+  background: #edf1f3;
+}
+
+.export-links {
+  display: flex;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.export-links[hidden] {
+  display: none;
+}
+
+.export-links a {
+  color: #1f5d78;
+  font-size: 11px;
+  font-weight: 700;
 }

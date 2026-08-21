@@ -119,6 +119,33 @@
         aria-label="추천 결과"
       ></section>
 
+      <section id="youtubeExportPanel" class="export-panel" hidden>
+        <div class="export-panel-heading">
+          <p class="section-label">YouTube Music 내보내기</p>
+          <strong id="youtubeExportStatus"></strong>
+        </div>
+        <p id="youtubeExportTitle" class="export-title"></p>
+        <p id="youtubeExportDetail" class="export-detail"></p>
+        <ul id="youtubeExportFailures" class="export-failures" hidden></ul>
+        <div id="youtubeMatchReview" class="match-review" hidden>
+          <ol id="youtubeMatchList" class="match-list"></ol>
+          <div class="match-review-actions">
+            <button id="youtubeMatchCancel" class="secondary-button" type="button">
+              취소
+            </button>
+            <button id="youtubeMatchConfirm" type="button">
+              플레이리스트 생성
+            </button>
+          </div>
+        </div>
+        <div id="youtubeExportLinks" class="export-links" hidden>
+          <a id="youtubeLink" target="_blank" rel="noreferrer">YouTube</a>
+          <a id="youtubeMusicLink" target="_blank" rel="noreferrer">
+            YouTube Music
+          </a>
+        </div>
+      </section>
+
       <!-- 원본 JSON -->
       <details id="rawPanel" class="raw-panel" hidden>
         <summary>
@@ -134,7 +161,12 @@
       <section class="bucket">
         <div class="bucket-heading">
           <h2></h2>
-          <span class="count"></span>
+          <div class="bucket-actions">
+            <span class="count"></span>
+            <button class="export-button" type="button">
+              YouTube Music
+            </button>
+          </div>
         </div>
 
         <ol class="track-list"></ol>
