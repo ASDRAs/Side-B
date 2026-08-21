@@ -1,0 +1,328 @@
+import asyncio
+import html
+import re
+import time
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Literal
+
+from app.services.youtube.client import YouTubeSearchClient
+from app.utils.text import compact_text, text_ratio
+from app.utils.track_matching import (
+    artist_score,
+    clean_title,
+    contains_bad_version_marker,
+    identity_qualifiers_match,
+    looks_like_bad_version,
+    version_markers,
+)
+
+MatchFailureReason = Literal["not_found", "unusable_result", "low_confidence"]
+
+_OFFICIAL_MARKERS = (
+    "official audio",
+    "official video",
+    "official music video",
+    "official mv",
+    "m/v",
+    "mv",
+)
+_BAD_DERIVATIVE_MARKERS = (
+    "karaoke",
+    "instrumental",
+    "tribute",
+    "cover",
+    "reaction",
+    "MR",
+    "musicmaru",
+    "뮤직마루",
+    "노래방",
+    "반주",
+)
+_ALTERED_SPEED_MARKERS = ("nightcore", "sped up", "slowed")
+
+
+@dataclass(frozen=True, slots=True)
+class YouTubeMatch:
+    video_id: str
+    youtube_title: str
+    channel_title: str
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class MatchOutcome:
+    match: YouTubeMatch | None
+    reason: MatchFailureReason | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _CacheEntry:
+    expires_at: float
+    outcome: MatchOutcome
+
+
+@dataclass(slots=True)
+class _InflightEntry:
+    task: asyncio.Task[MatchOutcome]
+    waiters: int = 0
+
+
+def _candidate_fields(item: dict[str, Any]) -> tuple[str, str, str] | None:
+    identity = item.get("id")
+    snippet = item.get("snippet")
+    video_id = identity.get("videoId") if isinstance(identity, dict) else None
+    if not video_id or not isinstance(snippet, dict):
+        return None
+    title = html.unescape(str(snippet.get("title") or "")).strip()
+    channel = html.unescape(str(snippet.get("channelTitle") or "")).strip()
+    if not title:
+        return None
+    return str(video_id), title, channel
+
+
+def _title_score(candidate_title: str, expected_title: str) -> float:
+    fragments = [candidate_title]
+    fragments.extend(
+        part.strip()
+        for part in re.split(r"\s+(?:[|:_-])\s+", candidate_title)
+        if part.strip()
+    )
+    fragments.extend(
+        match.strip()
+        for match in re.findall(r"['\"‘’“”]([^'\"‘’“”]+)['\"‘’“”]", candidate_title)
+        if match.strip()
+    )
+    return max(
+        (
+            (
+                text_ratio(clean_title(fragment), clean_title(expected_title))
+                if identity_qualifiers_match(fragment, expected_title)
+                else 0.0
+            )
+            for fragment in fragments
+        ),
+        default=0.0,
+    )
+
+
+def _channel_artist(channel_title: str) -> str:
+    value = re.sub(r"\s*-\s*topic\s*$", "", channel_title, flags=re.I)
+    value = re.sub(r"\bofficial\b", "", value, flags=re.I)
+    value = re.sub(r"vevo\s*$", "", value, flags=re.I)
+    return re.sub(r"\s+", " ", value).strip(" -")
+
+
+def _title_artist_candidates(candidate_title: str) -> list[str]:
+    value = re.sub(r"^\s*\[(?:mv|m/v|official)\]\s*", "", candidate_title, flags=re.I)
+    candidates: list[str] = []
+    for separator in (r"\s+-\s+", r"\s+_\s+"):
+        prefix = re.split(separator, value, maxsplit=1)
+        if len(prefix) == 2 and prefix[0].strip():
+            candidates.append(prefix[0].strip())
+    quoted = re.split(r"\s+['\"‘“]", value, maxsplit=1)
+    if len(quoted) == 2 and quoted[0].strip():
+        candidates.append(quoted[0].strip())
+    return candidates
+
+
+def _starts_with_artist(candidate: str, artist: str) -> bool:
+    expected = artist.strip()
+    if not expected:
+        return False
+    return bool(
+        re.match(
+            rf"^\s*{re.escape(expected)}(?!\w)",
+            candidate,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _artist_score(candidate_title: str, channel_title: str, artist: str) -> float:
+    candidates = [
+        _channel_artist(channel_title),
+        *_title_artist_candidates(candidate_title),
+    ]
+    return max(
+        (
+            1.0
+            if _starts_with_artist(candidate, artist)
+            else artist_score(candidate, (artist,), candidate_title)
+            for candidate in candidates
+            if candidate
+        ),
+        default=0.0,
+    )
+
+
+def score_candidate(
+    item: dict[str, Any],
+    expected_title: str,
+    expected_artist: str,
+) -> YouTubeMatch | None:
+    fields = _candidate_fields(item)
+    if not fields:
+        return None
+    video_id, title, channel = fields
+    lowered_title = title.lower()
+    expected = expected_title.lower()
+    topic_channel = bool(re.search(r"\s-\s*topic\s*$", channel, re.I))
+    official_channel = (
+        topic_channel
+        or bool(re.search(r"\bofficial\b", channel, re.I))
+        or bool(re.search(r"vevo\s*$", channel, re.I))
+    )
+    official_marker = topic_channel or any(
+        re.search(rf"(?<!\w){re.escape(marker)}(?!\w)", lowered_title, re.I)
+        for marker in _OFFICIAL_MARKERS
+    )
+
+    score = _title_score(title, expected_title) * 0.53
+    score += _artist_score(title, channel, expected_artist) * 0.35
+    score += 0.07 if official_channel else 0.0
+    score += 0.05 if official_marker else 0.0
+
+    if any(
+        (
+            contains_bad_version_marker(title, marker)
+            or contains_bad_version_marker(channel, marker, title_context=False)
+        )
+        and not contains_bad_version_marker(expected_title, marker)
+        and not contains_bad_version_marker(
+            expected_artist, marker, title_context=False
+        )
+        for marker in _BAD_DERIVATIVE_MARKERS
+    ):
+        score -= 0.35
+    if any(
+        re.search(rf"(?<!\w){re.escape(marker)}(?!\w)", lowered_title, re.I)
+        and marker not in expected
+        for marker in _ALTERED_SPEED_MARKERS
+    ):
+        score -= 0.30
+    if version_markers(title) - version_markers(expected_title):
+        score -= 0.20
+    candidate_has_bad_version = looks_like_bad_version(title) or looks_like_bad_version(
+        channel, title_context=False
+    )
+    if (
+        candidate_has_bad_version
+        and not looks_like_bad_version(expected_title)
+        and not looks_like_bad_version(expected_artist, title_context=False)
+    ):
+        score = min(score, 0.64)
+
+    return YouTubeMatch(
+        video_id=video_id,
+        youtube_title=title,
+        channel_title=channel,
+        confidence=round(max(0.0, min(score, 1.0)), 4),
+    )
+
+
+def select_best_candidate(
+    items: list[dict[str, Any]],
+    expected_title: str,
+    expected_artist: str,
+) -> YouTubeMatch | None:
+    best: YouTubeMatch | None = None
+    for item in items:
+        candidate = score_candidate(item, expected_title, expected_artist)
+        if candidate and (best is None or candidate.confidence > best.confidence):
+            best = candidate
+    return best
+
+
+class YouTubeMatcher:
+    def __init__(
+        self,
+        client: YouTubeSearchClient,
+        *,
+        threshold: float = 0.85,
+        concurrency: int = 3,
+        positive_ttl_seconds: float = 3600.0,
+        negative_ttl_seconds: float = 600.0,
+        max_cache_size: int = 512,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.client = client
+        self.threshold = threshold
+        self.positive_ttl_seconds = positive_ttl_seconds
+        self.negative_ttl_seconds = negative_ttl_seconds
+        self.max_cache_size = max_cache_size
+        self._clock = clock
+        self._semaphore = asyncio.Semaphore(max(1, concurrency))
+        self._cache: OrderedDict[tuple[str, str], _CacheEntry] = OrderedDict()
+        self._inflight: dict[tuple[str, str], _InflightEntry] = {}
+
+    @staticmethod
+    def cache_key(name: str, artist: str) -> tuple[str, str]:
+        return compact_text(artist), compact_text(name)
+
+    def _get_cached(self, key: tuple[str, str]) -> MatchOutcome | None:
+        entry = self._cache.get(key)
+        if not entry:
+            return None
+        if entry.expires_at <= self._clock():
+            del self._cache[key]
+            return None
+        self._cache.move_to_end(key)
+        return entry.outcome
+
+    def _store(self, key: tuple[str, str], outcome: MatchOutcome) -> None:
+        ttl = self.positive_ttl_seconds if outcome.match else self.negative_ttl_seconds
+        self._cache[key] = _CacheEntry(self._clock() + ttl, outcome)
+        self._cache.move_to_end(key)
+        while len(self._cache) > self.max_cache_size:
+            self._cache.popitem(last=False)
+
+    async def _match_uncached(
+        self, key: tuple[str, str], name: str, artist: str
+    ) -> MatchOutcome:
+        async with self._semaphore:
+            items = await self.client.search(name, artist)
+        if not items:
+            outcome = MatchOutcome(match=None, reason="not_found")
+        else:
+            best = select_best_candidate(items, name, artist)
+            if best is None:
+                outcome = MatchOutcome(match=None, reason="unusable_result")
+            elif best.confidence >= self.threshold:
+                outcome = MatchOutcome(match=best)
+            else:
+                outcome = MatchOutcome(match=None, reason="low_confidence")
+        self._store(key, outcome)
+        return outcome
+
+    async def match_track(self, name: str, artist: str) -> MatchOutcome:
+        key = self.cache_key(name, artist)
+        cached = self._get_cached(key)
+        if cached is not None:
+            return cached
+
+        entry = self._inflight.get(key)
+        if entry is None:
+            task = asyncio.create_task(self._match_uncached(key, name, artist))
+            entry = _InflightEntry(task=task)
+            self._inflight[key] = entry
+
+            def clear_inflight(completed: asyncio.Task[MatchOutcome]) -> None:
+                if self._inflight.get(key) is entry:
+                    del self._inflight[key]
+
+            task.add_done_callback(clear_inflight)
+        entry.waiters += 1
+        cancelled = False
+        try:
+            return await asyncio.shield(entry.task)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            entry.waiters -= 1
+            if cancelled and entry.waiters == 0 and not entry.task.done():
+                if self._inflight.get(key) is entry:
+                    del self._inflight[key]
+                entry.task.cancel()

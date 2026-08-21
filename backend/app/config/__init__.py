@@ -19,6 +19,27 @@ class Settings(BaseSettings):
     gemini_model: str = Field(
         default="gemini-3-flash-preview", validation_alias="GEMINI_MODEL"
     )
+    youtube_api_key: str | None = Field(
+        default=None, validation_alias="YOUTUBE_API_KEY"
+    )
+    youtube_match_threshold: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        validation_alias="YOUTUBE_MATCH_THRESHOLD",
+    )
+    youtube_search_max_results: int = Field(
+        default=5,
+        ge=1,
+        le=5,
+        validation_alias="YOUTUBE_SEARCH_MAX_RESULTS",
+    )
+    youtube_search_concurrency: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        validation_alias="YOUTUBE_SEARCH_CONCURRENCY",
+    )
     http_timeout_seconds: float = Field(
         default=6.0, validation_alias="HTTP_TIMEOUT_SECONDS"
     )

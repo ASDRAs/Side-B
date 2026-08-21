@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers.recommend import router as recommend_router
+from app.routers.youtube_export import router as youtube_export_router
+from app.services.youtube import YouTubeMatcher, YouTubeSearchClient
 from preview import router as preview_router
 
 logging.basicConfig(
@@ -34,6 +36,15 @@ async def lifespan(app: FastAPI):
 
     app.state.settings = settings
     app.state.http = http
+    app.state.youtube_matcher = YouTubeMatcher(
+        YouTubeSearchClient(
+            http,
+            settings.youtube_api_key,
+            max_results=settings.youtube_search_max_results,
+        ),
+        threshold=settings.youtube_match_threshold,
+        concurrency=settings.youtube_search_concurrency,
+    )
     app.state.lastfm_pylast = pylast.LastFMNetwork(
         api_key=settings.lastfm_api_key or "",
         api_secret=settings.lastfm_api_secret or "",
@@ -43,6 +54,8 @@ async def lifespan(app: FastAPI):
         logger.warning("LASTFM_API_KEY not set — Last.fm calls will fail.")
     if not settings.gemini_api_key:
         logger.warning("GEMINI_API_KEY not set — LLM scoring disabled.")
+    if not settings.youtube_api_key:
+        logger.warning("YOUTUBE_API_KEY not set — YouTube playlist matching disabled.")
 
     logger.info("Startup complete (model=%s)", settings.gemini_model)
     try:
@@ -63,6 +76,7 @@ app.add_middleware(
 # router 설정 fetch하면 아래의 기능들 불러옴. 실제 기능들이 수행되는 곳
 app.include_router(preview_router)
 app.include_router(recommend_router)
+app.include_router(youtube_export_router)
 
 
 @app.get("/health")
