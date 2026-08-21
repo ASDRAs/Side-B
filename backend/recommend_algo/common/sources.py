@@ -366,7 +366,9 @@ async def _lastfm_search(
                 artist = str(track.get_artist().get_name() or "").strip()
                 if not name or not artist or artist.lower() == "[unknown]":
                     continue
-                if _looks_like_bad_version(name) or _looks_like_bad_version(artist):
+                if _looks_like_bad_version(name) or _looks_like_bad_version(
+                    artist, title_context=False
+                ):
                     continue
                 # Last.fm 검색은 점수를 주지 않는다. 아는 표기가 있으면 iTunes와 같은
                 # 기준으로 거르고, 없으면 기존대로 첫 유효 결과를 쓴다.

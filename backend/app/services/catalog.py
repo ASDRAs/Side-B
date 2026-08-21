@@ -1,11 +1,16 @@
-import re
 from collections.abc import Sequence
-from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
 
-from app.utils.text import compact_text, text_ratio
+from app.utils import track_matching
+from app.utils.text import text_ratio
+
+_alias_artist_score = track_matching.artist_score
+_clean_title = track_matching.clean_title
+_identity_qualifiers_match = track_matching.identity_qualifiers_match
+_looks_like_bad_version = track_matching.looks_like_bad_version
+_strict_title_ratio = track_matching.strict_title_ratio
 
 
 class DeezerRateLimitError(Exception):
@@ -74,7 +79,9 @@ class CatalogClient:
                 continue
             title = str(item.get("trackName") or "")
             item_artist = str(item.get("artistName") or "")
-            if _looks_like_bad_version(title) or _looks_like_bad_version(item_artist):
+            if _looks_like_bad_version(title) or _looks_like_bad_version(
+                item_artist, title_context=False
+            ):
                 continue
             if (
                 min_artist_score
@@ -124,45 +131,6 @@ class CatalogClient:
         return None
 
 
-_BAD_VERSION_MARKERS = (
-    "karaoke",
-    "instrumental",
-    "instrumental karaoke",
-    "inst.",
-    "originally performed",
-    "originally perfomed",
-    "tribute",
-    "cover",
-    "cover version",
-    "sped up",
-    "slowed",
-    "nightcore",
-    "musicmaru",
-    "뮤직마루",
-    "노래방",
-    "반주",
-)
-
-
-def _looks_like_bad_version(value: str) -> bool:
-    lowered = value.lower()
-    return any(marker in lowered for marker in _BAD_VERSION_MARKERS)
-
-
-def _clean_title(value: str) -> str:
-    cleaned = re.sub(r"\(.*?\)|\[.*?\]", " ", value)
-    # "- 2012 Remaster"처럼 연도가 키워드 앞에 오는 표기도 벗긴다. 스트리밍
-    # 카탈로그에서 흔한 형태인데 이게 남으면 원곡 요청과 아예 매칭되지 않는다
-    # ("봄날 - 2017 Remaster" 대 "봄날" -> 0.00).
-    cleaned = re.sub(
-        r"\s+-\s+(?:\d{4}\s+)?(remaster(?:ed)?|live|radio edit|single version).*$",
-        " ",
-        cleaned,
-        flags=re.I,
-    )
-    return re.sub(r"\s+", " ", cleaned).strip()
-
-
 def _catalog_match_score(
     title: str, artist: str, expected_title: str, expected_artist: str = ""
 ) -> float:
@@ -190,6 +158,8 @@ def _alias_match_score(
     title_score = max(
         (
             text_ratio(_clean_title(title), _clean_title(expected))
+            if _identity_qualifiers_match(title, expected)
+            else 0.0
             for expected in expected_titles
             if expected
         ),
@@ -197,148 +167,6 @@ def _alias_match_score(
     )
     artist_score = _alias_artist_score(artist, expected_artists, title)
     return (title_score * 0.68) + (artist_score * 0.32)
-
-
-# 협업·병기 표기를 쪼개는 구분자. "IU & G-DRAGON"에서 "IU"를 꺼내기 위한 것이다.
-_ARTIST_SEPARATORS = re.compile(
-    r"\s*(?:&|,|/)\s*|\s+(?:feat(?:uring)?|ft|with)\.?\s*|[()\[\]]",
-    re.IGNORECASE,
-)
-
-
-def _alias_artist_score(
-    artist: str,
-    expected_artists: Sequence[str],
-    credit_text: str = "",
-) -> float:
-    """`credit_text`는 같은 후보의 제목이다. 왜 필요한지는 `_artist_ratio` 참고."""
-    # 비교에 쓸 수 없는 표기(공백·문장부호뿐)는 "모르는 것"으로 본다.
-    # 여기서 걸러내지 않고 _artist_ratio가 만점을 주면, max() 안에서 그 한 개가
-    # 정상 alias의 판정을 덮어써 아티스트 게이트 전체가 무력해진다.
-    targets = [expected for expected in expected_artists if compact_text(expected)]
-    if not targets:
-        return 1.0  # 기대 아티스트를 모르면 제목만으로 판단한다.
-    return max(
-        (_artist_ratio(artist, expected, credit_text) for expected in targets),
-        default=0.0,
-    )
-
-
-def _artist_pieces(value: str) -> list[str]:
-    """협업·병기 표기를 원문 조각으로 쪼갠다. 빈 조각은 버린다."""
-    return [
-        piece.strip()
-        for piece in _ARTIST_SEPARATORS.split(value or "")
-        if piece and piece.strip() and compact_text(piece)
-    ]
-
-
-def _artist_parts(value: str) -> set[str]:
-    """조각을 비교용으로 정규화한 집합."""
-    return {compact_text(piece) for piece in _artist_pieces(value)} - {""}
-
-
-# 제목이 참여자를 밝히는 형식. `feat.`류는 괄호 밖에도 오지만(`Song feat. X`),
-# `with`는 괄호 안에서만 크레딧이다 — 그러지 않으면 `Boy With Luv`의 `Luv`가
-# 크레딧으로 읽힌다.
-_CREDIT_CLAUSE = re.compile(
-    r"\b(?:feat(?:uring)?|ft|prod)\b\.?\s*(?P<names>[^()\[\]]*)"
-    r"|[(\[]\s*with\s+(?P<with_names>[^()\[\]]*)[)\]]",
-    re.IGNORECASE,
-)
-
-
-def _credit_clause(title: str) -> str:
-    """제목에서 참여자를 밝히는 부분만 뽑는다. 없으면 빈 문자열."""
-    return " ".join(
-        text
-        for match in _CREDIT_CLAUSE.finditer(title or "")
-        for text in (match.group("names"), match.group("with_names"))
-        if text
-    )
-
-
-def _credits_are_accounted_for(missing: list[str], credit_text: str) -> bool:
-    """후보가 빠뜨린 참여자를 그 후보의 제목이 밝히고 있는지 본다.
-
-    진짜 협업이면 카탈로그가 아티스트란에서 뺀 참여자를 제목의 크레딧 표기에
-    남긴다 — iTunes는 `Boy With Luv (feat. Halsey)` / `BTS`로 싣는다. 그룹명은
-    그런 표기를 만들지 않는다. 이것이 협업과 그룹명을 문자열만으로 가를 수 있는
-    유일한 근거다.
-
-    제목 아무 데나 이름이 있으면 되는 것이 아니라 크레딧 표기 안에 있어야 한다.
-    임의 위치를 근거로 삼으면 `Earth, Wind & Fire` 요청에 `Wind and Fire`라는
-    제목의 다른 곡이 통과한다 — 우연히 같은 단어가 들어 있을 뿐인데 협업의
-    증거로 읽히기 때문이다.
-
-    크레딧 안에서도 부분문자열이 아니라 단어 경계로 찾는다. 짧은 이름은 아무
-    단어에나 들어 있다 — `IU`는 `Genius` 안에 있다. 하나라도 확인되지 않으면
-    통째로 거절한다.
-    """
-    clause = _credit_clause(credit_text)
-    if not clause or not missing:
-        return False
-    return all(
-        re.search(rf"\b{re.escape(piece)}\b", clause, re.IGNORECASE)
-        for piece in missing
-    )
-
-
-def _artist_ratio(artist: str, expected: str, credit_text: str = "") -> float:
-    """아티스트 전용 비교. text_ratio와 달리 부분문자열에 점수를 주지 않는다.
-
-    text_ratio는 한쪽이 다른 쪽에 포함되기만 하면 0.9를 준다. 제목에는 맞는
-    규칙이지만("Creep"은 "Creep (Acoustic)"의 일부다) 아티스트에는 해롭다.
-    "Adele"이 "Definitely Not Adele"에 포함된다고 같은 가수가 되지는 않는다.
-
-    대신 구분자로 쪼갠 조각이 정확히 일치하면 만점을 준다. 협업 표기
-    "IU & G-DRAGON"과 병기 표기 "IU (아이유)"를 살리면서, 구분자가 없는
-    "Definitely Not Adele"은 통과시키지 않는다.
-
-    요청 쪽도 쪼개는 이유는 협업곡의 크레딧이 공급자마다 다르기 때문이다.
-    Last.fm은 `BTS, Halsey`로, iTunes는 `BTS`로 싣는다. 요청 쪽을 통째로 비교하면
-    제목이 완전히 일치해도 0.500으로 탈락한다(실측 `Boy With Luv (feat. Halsey)`).
-
-    다만 요청 쪽 분해는 그냥 열어 주면 안 된다. 그룹명도 같은 구분자를 쓰기
-    때문에 `Earth, Wind & Fire` 요청에 `Earth`라는 다른 아티스트가, `AC/DC`에
-    `AC`가 통과한다. 그래서 후보가 빠뜨린 참여자가 그 후보의 제목에 남아 있는
-    경우에만 인정한다(`_credits_are_accounted_for`). 근거가 없으면 변경 전과
-    똑같이 거절하므로 이 조건이 기존 판정을 넓히지는 않는다.
-
-    반대 방향(후보가 그룹, 요청이 그 조각)은 예전부터 통과했고 그대로 둔다.
-    `Simon & Garfunkel`에 `Simon`이 붙는 알려진 약점이며 별도 판단 사안이다.
-    """
-    target_parts = _artist_parts(expected)
-    if not target_parts:
-        # 호출부(_alias_artist_score)가 걸러야 하는 입력이다. 여기까지 왔다면
-        # 검증할 수 없다는 뜻이므로 만점이 아니라 0점을 준다.
-        return 0.0
-    candidate_parts = _artist_parts(artist)
-    if candidate_parts & target_parts:
-        missing = [
-            piece
-            for piece in _artist_pieces(expected)
-            if compact_text(piece) not in candidate_parts
-        ]
-        if not missing or _credits_are_accounted_for(missing, credit_text):
-            return 1.0
-    candidate = compact_text(artist or "")
-    if not candidate:
-        return 0.0
-    return SequenceMatcher(None, candidate, compact_text(expected)).ratio()
-
-
-def _strict_title_ratio(title: str, expected: str) -> float:
-    """Deezer metadata 후보용 제목 비교. 짧은 부분문자열 특례는 허용하지 않는다."""
-    candidate = compact_text(_clean_title(title))
-    target = compact_text(_clean_title(expected))
-    if not candidate or not target:
-        return 0.0
-    if candidate == target:
-        return 1.0
-    if min(len(candidate), len(target)) <= 4:
-        return 0.0
-    return SequenceMatcher(None, candidate, target).ratio()
 
 
 def _select_deezer_item(
@@ -357,7 +185,9 @@ def _select_deezer_item(
             if isinstance(artist_payload, dict) and artist_payload.get("name")
             else ""
         )
-        if _looks_like_bad_version(title) or _looks_like_bad_version(item_artist):
+        if _looks_like_bad_version(title) or _looks_like_bad_version(
+            item_artist, title_context=False
+        ):
             continue
         if _strict_title_ratio(title, track_name) < 0.8:
             continue
