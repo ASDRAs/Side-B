@@ -2,6 +2,7 @@ import asyncio
 import html
 import re
 import time
+import unicodedata
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -131,13 +132,41 @@ def _starts_with_artist(candidate: str, artist: str) -> bool:
     expected = artist.strip()
     if not expected:
         return False
-    return bool(
-        re.match(
-            rf"^\s*{re.escape(expected)}(?!\w)",
-            candidate,
-            re.IGNORECASE,
-        )
+    match = re.match(
+        rf"^\s*{re.escape(expected)}(?!\w)",
+        candidate,
+        re.IGNORECASE,
     )
+    if not match:
+        return False
+    remainder = candidate[match.end() :].strip(" -_()[]")
+    if not remainder:
+        return True
+    expected_scripts = _letter_scripts(expected)
+    remainder_scripts = _letter_scripts(remainder)
+    return bool(
+        expected_scripts
+        and remainder_scripts
+        and expected_scripts.isdisjoint(remainder_scripts)
+    )
+
+
+def _letter_scripts(value: str) -> set[str]:
+    scripts: set[str] = set()
+    for char in value:
+        if not char.isalpha():
+            continue
+        name = unicodedata.name(char, "")
+        family = next(
+            (
+                marker
+                for marker in ("LATIN", "HANGUL", "HIRAGANA", "KATAKANA", "CJK")
+                if marker in name
+            ),
+            "OTHER",
+        )
+        scripts.add(family)
+    return scripts
 
 
 def _artist_score(candidate_title: str, channel_title: str, artist: str) -> float:
@@ -202,7 +231,7 @@ def score_candidate(
         for marker in _ALTERED_SPEED_MARKERS
     ):
         score -= 0.30
-    if version_markers(title) - version_markers(expected_title):
+    if version_markers(title) != version_markers(expected_title):
         score -= 0.20
     candidate_has_bad_version = looks_like_bad_version(title) or looks_like_bad_version(
         channel, title_context=False

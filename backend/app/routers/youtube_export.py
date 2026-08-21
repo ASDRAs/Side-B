@@ -1,7 +1,7 @@
 import asyncio
 from typing import NoReturn
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.schemas.youtube_export import (
     YouTubeMatchedTrack,
@@ -13,6 +13,9 @@ from app.schemas.youtube_export import (
 from app.services.youtube import (
     YouTubeAPIUnavailableError,
     YouTubeConfigurationError,
+    YouTubeExportAccessConfigurationError,
+    YouTubeExportRateLimitError,
+    YouTubeExportUnauthorizedError,
     YouTubeQuotaExceededError,
 )
 from app.utils.text import compact_text
@@ -40,7 +43,36 @@ async def _match_all(matcher, tracks: list[tuple[int, YouTubeTrackRequest]]):
 
 
 @router.post("/matches", response_model=YouTubeMatchResponse)
-async def match_youtube_tracks(req: YouTubeMatchRequest, request: Request):
+async def match_youtube_tracks(
+    req: YouTubeMatchRequest,
+    request: Request,
+    export_token: str | None = Header(default=None, alias="X-Side-B-Export-Token"),
+):
+    try:
+        await request.app.state.youtube_export_access.authorize(export_token)
+    except YouTubeExportAccessConfigurationError:
+        _service_unavailable(
+            "youtube_export_configuration_error",
+            "백엔드에 YOUTUBE_EXPORT_TOKEN이 설정되지 않았습니다.",
+        )
+    except YouTubeExportUnauthorizedError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "youtube_export_unauthorized",
+                "message": "YouTube 내보내기 토큰이 올바르지 않습니다.",
+            },
+        ) from exc
+    except YouTubeExportRateLimitError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "youtube_export_rate_limited",
+                "message": "YouTube 내보내기 요청이 너무 많습니다.",
+            },
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+
     matcher = request.app.state.youtube_matcher
     unique: list[tuple[int, YouTubeTrackRequest]] = []
     seen: set[tuple[str, str]] = set()

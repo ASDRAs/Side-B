@@ -86,6 +86,47 @@ def test_wrong_artist_and_derivative_versions_stay_below_threshold():
     assert cover.confidence < 0.85
 
 
+def test_same_script_artist_prefix_does_not_count_as_an_alias():
+    candidate = score_candidate(
+        _item(
+            "tribute",
+            "Adele Tribute - Hello (Official Audio)",
+            "Music Archive",
+        ),
+        "Hello",
+        "Adele",
+    )
+
+    assert candidate is not None
+    assert candidate.confidence < 0.85
+
+
+def test_intrinsic_live_title_rejects_an_unrequested_live_version():
+    candidate = score_candidate(
+        _item(
+            "live-version",
+            "Oasis - Live Forever (Live)",
+            "Oasis - Topic",
+        ),
+        "Live Forever",
+        "Oasis",
+    )
+
+    assert candidate is not None
+    assert candidate.confidence < 0.85
+
+
+def test_requested_acoustic_version_rejects_the_original_recording():
+    candidate = score_candidate(
+        _item("original", "Artist - Song", "Artist - Topic"),
+        "Song (Acoustic)",
+        "Artist",
+    )
+
+    assert candidate is not None
+    assert candidate.confidence < 0.85
+
+
 @pytest.mark.parametrize(
     ("candidate_title", "expected_title"),
     [

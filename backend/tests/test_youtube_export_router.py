@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.routers.youtube_export import match_youtube_tracks
 from app.schemas.youtube_export import YouTubeMatchRequest
+from app.services.youtube.access import YouTubeExportAccess
 from app.services.youtube.client import (
     YouTubeConfigurationError,
     YouTubeQuotaExceededError,
@@ -30,7 +31,12 @@ class _Matcher:
 
 def _request(matcher):
     return SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(youtube_matcher=matcher))
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                youtube_matcher=matcher,
+                youtube_export_access=YouTubeExportAccess("test-token"),
+            )
+        )
     )
 
 
@@ -76,7 +82,7 @@ async def test_router_deduplicates_tracks_and_preserves_original_positions():
         ],
     )
 
-    response = await match_youtube_tracks(req, _request(matcher))
+    response = await match_youtube_tracks(req, _request(matcher), "test-token")
 
     assert response.requested == 3
     assert response.deduplicated == 1
@@ -106,7 +112,7 @@ async def test_router_deduplicates_matches_that_resolve_to_the_same_video():
         ],
     )
 
-    response = await match_youtube_tracks(req, _request(matcher))
+    response = await match_youtube_tracks(req, _request(matcher), "test-token")
 
     assert [track.name for track in response.matched] == ["Track A"]
     assert response.unmatched[0].reason == "duplicate_video"
@@ -139,7 +145,7 @@ async def test_router_cancels_sibling_searches_when_one_fails():
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await match_youtube_tracks(req, _request(matcher))
+        await match_youtube_tracks(req, _request(matcher), "test-token")
 
     assert exc_info.value.detail["code"] == "youtube_quota_exceeded"
     assert set(matcher.cancelled) == {"Sibling A", "Sibling B"}
@@ -159,7 +165,44 @@ async def test_router_maps_service_errors_to_typed_503(error, code):
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await match_youtube_tracks(req, _request(_Matcher(error=error)))
+        await match_youtube_tracks(
+            req, _request(_Matcher(error=error)), "test-token"
+        )
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail["code"] == code
+
+
+async def test_router_rejects_missing_or_invalid_export_token():
+    matcher = _Matcher()
+    req = YouTubeMatchRequest(
+        bucket="hidden",
+        tracks=[{"name": "Hello", "artist": "Adele"}],
+    )
+
+    for token in (None, "wrong-token"):
+        with pytest.raises(HTTPException) as exc_info:
+            await match_youtube_tracks(req, _request(matcher), token)
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail["code"] == "youtube_export_unauthorized"
+    assert matcher.calls == []
+
+
+async def test_router_rate_limits_authenticated_export_requests():
+    access = YouTubeExportAccess("test-token", requests_per_minute=1)
+    matcher = _Matcher(
+        {("Hello", "Adele"): MatchOutcome(match=None, reason="not_found")}
+    )
+    request = _request(matcher)
+    request.app.state.youtube_export_access = access
+    req = YouTubeMatchRequest(
+        bucket="hidden",
+        tracks=[{"name": "Hello", "artist": "Adele"}],
+    )
+
+    await match_youtube_tracks(req, request, "test-token")
+    with pytest.raises(HTTPException) as exc_info:
+        await match_youtube_tracks(req, request, "test-token")
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.headers["Retry-After"] == "60"

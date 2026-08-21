@@ -1,3 +1,6 @@
+import asyncio
+import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -44,14 +47,34 @@ class YouTubeSearchClient:
         api_key: str | None,
         *,
         max_results: int = 5,
+        daily_budget: int = 80,
+        budget_period_seconds: float = 86_400.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.http = http
         self.api_key = api_key
         self.max_results = max(1, min(max_results, 5))
+        self.daily_budget = max(1, daily_budget)
+        self.budget_period_seconds = max(1.0, budget_period_seconds)
+        self._clock = clock
+        self._budget_started_at = clock()
+        self._budget_used = 0
+        self._budget_lock = asyncio.Lock()
+
+    async def _reserve_search(self) -> None:
+        async with self._budget_lock:
+            now = self._clock()
+            if now - self._budget_started_at >= self.budget_period_seconds:
+                self._budget_started_at = now
+                self._budget_used = 0
+            if self._budget_used >= self.daily_budget:
+                raise YouTubeQuotaExceededError("Local YouTube search budget exceeded")
+            self._budget_used += 1
 
     async def search(self, name: str, artist: str) -> list[dict[str, Any]]:
         if not self.api_key:
             raise YouTubeConfigurationError("YOUTUBE_API_KEY is not configured")
+        await self._reserve_search()
 
         try:
             response = await self.http.get(

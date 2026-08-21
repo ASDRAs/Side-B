@@ -90,3 +90,14 @@ async def test_search_maps_network_and_malformed_payload_to_unavailable():
         await YouTubeSearchClient(
             _HTTP(_Response(payload={"unexpected": []})), "key"
         ).search("A", "B")
+
+
+async def test_search_stops_before_http_when_local_daily_budget_is_spent():
+    http = _HTTP()
+    client = YouTubeSearchClient(http, "key", daily_budget=1)
+
+    await client.search("First", "Artist")
+    with pytest.raises(YouTubeQuotaExceededError):
+        await client.search("Second", "Artist")
+
+    assert len(http.calls) == 1

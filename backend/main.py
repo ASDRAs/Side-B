@@ -13,7 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.routers.recommend import router as recommend_router
 from app.routers.youtube_export import router as youtube_export_router
-from app.services.youtube import YouTubeMatcher, YouTubeSearchClient
+from app.services.youtube import (
+    YouTubeExportAccess,
+    YouTubeMatcher,
+    YouTubeSearchClient,
+)
 from preview import router as preview_router
 
 logging.basicConfig(
@@ -41,9 +45,14 @@ async def lifespan(app: FastAPI):
             http,
             settings.youtube_api_key,
             max_results=settings.youtube_search_max_results,
+            daily_budget=settings.youtube_search_daily_budget,
         ),
         threshold=settings.youtube_match_threshold,
         concurrency=settings.youtube_search_concurrency,
+    )
+    app.state.youtube_export_access = YouTubeExportAccess(
+        settings.youtube_export_token,
+        requests_per_minute=settings.youtube_export_requests_per_minute,
     )
     app.state.lastfm_pylast = pylast.LastFMNetwork(
         api_key=settings.lastfm_api_key or "",
@@ -56,6 +65,8 @@ async def lifespan(app: FastAPI):
         logger.warning("GEMINI_API_KEY not set — LLM scoring disabled.")
     if not settings.youtube_api_key:
         logger.warning("YOUTUBE_API_KEY not set — YouTube playlist matching disabled.")
+    if not settings.youtube_export_token:
+        logger.warning("YOUTUBE_EXPORT_TOKEN not set — YouTube export endpoint disabled.")
 
     logger.info("Startup complete (model=%s)", settings.gemini_model)
     try:
