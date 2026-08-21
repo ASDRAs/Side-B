@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RecommendRequest(BaseModel):
@@ -13,6 +13,31 @@ class RecommendRequest(BaseModel):
 
     query: str = Field(..., min_length=1, max_length=200)
     top_n: Literal[10] = 10
+
+
+class RecommendedTrack(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    artist: str = Field(min_length=1)
+    source_id: str | None = None
+    album_art_url: str | None = None
+    popularity: int | None = Field(default=None, ge=0, le=100)
+    exposure_source: str = "none"
+    match_score: float | None = None
+    reverse_score: float | None = None
+    algo: str = ""
+    label: str = ""
+    reason_tags: list[str] = Field(default_factory=list)
+
+
+class RecommendationBuckets(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    similar: list[RecommendedTrack] = Field(default_factory=list)
+    reverse: list[RecommendedTrack] | None = None
+    opposite: list[RecommendedTrack] | None = None
+    hidden: list[RecommendedTrack] = Field(default_factory=list)
 
 
 class RecommendResponse(BaseModel):
@@ -32,6 +57,6 @@ class RecommendResponse(BaseModel):
     track_name: str
     artist: str
     top_n: Literal[10]
-    result: dict
+    result: RecommendationBuckets
     source_id: str | None = None
     album_art_url: str | None = None
