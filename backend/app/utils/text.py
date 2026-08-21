@@ -1,9 +1,25 @@
-import re
+import unicodedata
 from difflib import SequenceMatcher
 
 
+def _fold_latin_diacritics(char: str) -> str:
+    """Fold Latin accents without stripping marks from Hangul or kana."""
+    decomposed = unicodedata.normalize("NFD", char)
+    base = next(
+        (part for part in decomposed if not unicodedata.category(part).startswith("M")),
+        char,
+    )
+    if "LATIN" not in unicodedata.name(base, ""):
+        return char
+    return "".join(
+        part for part in decomposed if not unicodedata.category(part).startswith("M")
+    )
+
+
 def compact_text(value: str) -> str:
-    return re.sub(r"[^0-9a-z가-힣ぁ-ゟ゠-ヿ一-鿿]+", "", value.lower())
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    folded = "".join(_fold_latin_diacritics(char) for char in normalized)
+    return "".join(char for char in folded if char.isalnum())
 
 
 def text_ratio(left: str, right: str) -> float:

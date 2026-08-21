@@ -636,7 +636,9 @@ def _select_best(
     for candidate in candidates:
         title = candidate.resolved_title
         item_artist = candidate.resolved_artist
-        if _looks_like_bad_version(title) or _looks_like_bad_version(item_artist):
+        if _looks_like_bad_version(title) or _looks_like_bad_version(
+            item_artist, title_context=False
+        ):
             continue
         # 제목을 함께 넘긴다. 요청이 합동 표기이고 후보가 단독 표기일 때, 빠진
         # 참여자가 제목에 남아 있는지로 협업과 그룹명을 가른다(catalog 참고).

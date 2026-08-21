@@ -2,10 +2,11 @@ import pytest
 
 from app.services.catalog import (
     _alias_artist_score,
-    _credits_are_accounted_for,
+    _alias_match_score,
     _select_deezer_item,
     _strict_title_ratio,
 )
+from app.utils.track_matching import credits_are_accounted_for
 
 
 def _item(track_id, title, artist):
@@ -70,7 +71,8 @@ def test_unusable_artist_is_treated_as_unknown_not_as_a_match():
     """
     assert _alias_artist_score("Adele", ()) == 1.0
     assert _alias_artist_score("Adele", ("",)) == 1.0
-    assert _alias_artist_score("Adele", ("!!!",)) == _alias_artist_score("Adele", ())
+    assert _alias_artist_score("Adele", ("!!!",)) == 0.0
+    assert _alias_artist_score("!!!", ("!!!",)) == 1.0
 
 
 # 대소문자·공백·문장부호만 다른 표기는 같은 아티스트로 봐야 한다.
@@ -109,7 +111,9 @@ def test_artist_score_finds_credit_in_any_position(catalog_artist, expected):
 # "BTS, Halsey"로 싣지만 iTunes는 "BTS"로 싣는다. 빠진 참여자는 제목에 남는다.
 REQUESTED_COLLABORATIONS = [
     pytest.param("BTS", "BTS, Halsey", "Boy With Luv (feat. Halsey)", id="comma"),
-    pytest.param("Halsey", "BTS, Halsey", "Boy With Luv (feat. BTS)", id="comma-second"),
+    pytest.param(
+        "Halsey", "BTS, Halsey", "Boy With Luv (feat. BTS)", id="comma-second"
+    ),
     pytest.param("IU", "IU & SUGA", "eight (Prod.&Feat. SUGA)", id="ampersand"),
     pytest.param("Epik High", "Epik High feat. IU", "Love Story (feat. IU)", id="feat"),
 ]
@@ -175,10 +179,10 @@ def test_missing_credit_needs_a_word_boundary_not_a_substring():
     점수까지 보면 `SUGA` 대 `SUGA, IU`는 퍼지 비교만으로도 0.8이라(이 변경과
     무관한 기존 동작) 근거 규칙만 따로 확인한다.
     """
-    assert not _credits_are_accounted_for(["IU"], "Genius (feat. Halsey)")
-    assert _credits_are_accounted_for(["IU"], "Love Story (feat. IU)")
-    assert not _credits_are_accounted_for(["Fire"], "Firestarter (feat. Halsey)")
-    assert not _credits_are_accounted_for(["Halsey"], "")
+    assert not credits_are_accounted_for(["IU"], "Genius (feat. Halsey)")
+    assert credits_are_accounted_for(["IU"], "Love Story (feat. IU)")
+    assert not credits_are_accounted_for(["Fire"], "Firestarter (feat. Halsey)")
+    assert not credits_are_accounted_for(["Halsey"], "")
 
 
 # 크레딧 표기가 아닌 곳에 이름이 있는 제목. 우연이지 협업의 증거가 아니다.
@@ -192,7 +196,7 @@ COINCIDENTAL_TITLES = [
 
 @pytest.mark.parametrize("missing,title", COINCIDENTAL_TITLES)
 def test_credit_evidence_must_come_from_a_credit_clause(missing, title):
-    assert not _credits_are_accounted_for(missing, title)
+    assert not credits_are_accounted_for(missing, title)
 
 
 # 카탈로그가 실제로 쓰는 크레딧 표기.
@@ -207,7 +211,7 @@ CREDIT_CLAUSES = [
 
 @pytest.mark.parametrize("missing,title", CREDIT_CLAUSES)
 def test_credit_evidence_reads_real_catalog_spellings(missing, title):
-    assert _credits_are_accounted_for(missing, title)
+    assert credits_are_accounted_for(missing, title)
 
 
 def test_artist_score_does_not_bridge_languages_on_its_own():
@@ -253,7 +257,19 @@ def test_strict_title_ratio_keeps_normalization_and_tolerance():
     assert _strict_title_ratio("Creep", "Creeps") >= 0.8
 
 
-# 버전 구분은 이 함수가 하지 않는다. preview._version_markers가 담당한다.
+def test_catalog_title_score_rejects_a_different_meaningful_qualifier():
+    matching = _alias_match_score(
+        "Intro (Part 1)", "Artist", ("Intro (Part 1)",), ("Artist",)
+    )
+    wrong_part = _alias_match_score(
+        "Intro (Part 2)", "Artist", ("Intro (Part 1)",), ("Artist",)
+    )
+
+    assert matching == 1.0
+    assert wrong_part == pytest.approx(0.32)
+
+
+# 라이브·리믹스처럼 허용된 버전 표기는 제목 정규화 뒤에도 같은 곡으로 본다.
 VERSION_SUFFIXES = [
     "Creep (Acoustic)",
     "Creep [Live]",
