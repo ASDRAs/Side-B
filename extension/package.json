@@ -3,6 +3,11 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "test": "node --test tests/*.test.cjs"
+    "test": "node --test tests/*.test.cjs",
+    "test:e2e": "playwright test --config=playwright.config.cjs",
+    "test:e2e:headed": "playwright test --config=playwright.config.cjs --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
   }
 }

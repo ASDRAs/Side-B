@@ -24,6 +24,33 @@ cd extension
 npm test
 ```
 
+## 추천 API E2E 테스트
+
+Playwright가 번들 Chromium에 실제 MV3 익스텐션을 로드하고, 팝업에서 배포된
+`/recommend`를 호출한 뒤 HTTP 200 응답과 세 버킷의 10곡 렌더링을 검증합니다.
+
+```powershell
+cd extension
+npm install
+npx playwright install chromium
+npm run test:e2e
+```
+
+브라우저 화면을 보면서 실행하려면 다음 명령을 사용합니다.
+
+```powershell
+npm run test:e2e:headed
+```
+
+다른 백엔드나 검색어를 사용할 때는 환경변수로 덮어쓸 수 있습니다. 백엔드 origin은
+반드시 `manifest.json`의 `host_permissions`에도 있어야 합니다.
+
+```powershell
+$env:SIDE_B_API_BASE_URL = "https://example.run.app"
+$env:SIDE_B_E2E_QUERY = "Radiohead - Creep"
+npm run test:e2e
+```
+
 ## YouTube Music 내보내기 설정
 
 추천 조회만 사용할 때는 Google 설정이 필요하지 않습니다. 버킷별 `YouTube Music`

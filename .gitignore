@@ -14,6 +14,9 @@ backend/tests/quality_test_30*.py
 
 frontend/dist/
 frontend/node_modules/
+extension/node_modules/
+extension/test-results/
+extension/playwright-report/
 
 *.log
 .DS_Store
