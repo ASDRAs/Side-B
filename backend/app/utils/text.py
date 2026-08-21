@@ -12,9 +12,7 @@ def _fold_latin_diacritics(char: str) -> str:
     if "LATIN" not in unicodedata.name(base, ""):
         return char
     return "".join(
-        part
-        for part in decomposed
-        if not unicodedata.category(part).startswith("M")
+        part for part in decomposed if not unicodedata.category(part).startswith("M")
     )
 
 

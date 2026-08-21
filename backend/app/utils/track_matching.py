@@ -107,7 +107,9 @@ def contains_bad_version_marker(
         return bool(_MR_VERSION_PATTERN.search(value))
     if not title_context:
         return _contains_text_marker(value, marker)
-    if any(_contains_text_marker(content, marker) for content in _bracket_contents(value)):
+    if any(
+        _contains_text_marker(content, marker) for content in _bracket_contents(value)
+    ):
         return True
     escaped = re.escape(marker)
     if re.search(
