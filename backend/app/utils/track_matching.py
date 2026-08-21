@@ -26,6 +26,12 @@ BAD_VERSION_MARKERS = (
 
 VERSION_MARKERS = ("live", "remix", "acoustic")
 
+_VERSION_SUFFIX_PATTERN = re.compile(
+    r"\s[-\u2013\u2014|:]\s*"
+    r"((?:live|remix|acoustic)(?:\s+(?:version|ver\.?))?)\s*$",
+    re.IGNORECASE,
+)
+
 _MR_VERSION_PATTERN = re.compile(
     r"""
     (?:
@@ -293,8 +299,12 @@ def strict_title_ratio(title: str, expected: str) -> float:
 
 
 def version_markers(value: str) -> set[str]:
+    contexts = _bracket_contents(value)
+    suffix = _VERSION_SUFFIX_PATTERN.search(value)
+    if suffix:
+        contexts.append(suffix.group(1))
     return {
         marker
         for marker in VERSION_MARKERS
-        if _contains_text_marker(value, marker)
+        if any(_contains_text_marker(context, marker) for context in contexts)
     }

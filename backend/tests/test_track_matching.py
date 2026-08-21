@@ -5,6 +5,7 @@ from app.utils.track_matching import (
     identity_qualifiers_match,
     looks_like_bad_version,
     strict_title_ratio,
+    version_markers,
 )
 
 
@@ -38,3 +39,16 @@ def test_identity_qualifiers_preserve_meaningful_parenthetical_versions():
         "Song (Japanese Version)", "Song (Korean Version)"
     )
     assert strict_title_ratio("Intro (Part 2)", "Intro (Part 1)") == 0.0
+
+
+def test_strict_title_ratio_folds_diacritics_before_short_title_guard():
+    assert strict_title_ratio("Björk", "Bjork") == 1.0
+    assert strict_title_ratio("Déjà Vu", "Deja Vu") == 1.0
+    assert strict_title_ratio("Zoë", "Zoe") == 1.0
+
+
+def test_version_markers_only_read_explicit_qualifier_contexts():
+    assert version_markers("Live Forever") == set()
+    assert version_markers("Oasis - Live Forever") == set()
+    assert version_markers("Oasis - Live Forever (Live)") == {"live"}
+    assert version_markers("Song - Acoustic Version") == {"acoustic"}
