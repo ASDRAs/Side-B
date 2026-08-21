@@ -9,6 +9,7 @@ from app.routers.recommend import RecommendRequest, RecommendResponse
 from app.services.recommend_service import (
     _pick_representative_track,
     _run_direct_recommendations,
+    _serialize_tracks,
     run_recommend,
 )
 from main import app
@@ -41,8 +42,53 @@ def test_recommend_contract_uses_query_source_and_hidden_bucket():
 
     assert request.query == "아이유 너랑나"
     assert request.top_n == 10
-    assert response.result["hidden"] == []
+    assert response.result.hidden == []
     assert response.source_id == "itunes:1"
+
+
+def test_recommend_contract_rejects_blank_recommended_track_fields():
+    with pytest.raises(ValidationError):
+        RecommendResponse(
+            track_name="너랑나",
+            artist="IU",
+            top_n=10,
+            result={
+                "similar": [{"name": "너랑나", "artist": ""}],
+                "reverse": [],
+                "hidden": [],
+            },
+        )
+
+
+def test_recommend_contract_accepts_catalog_metadata_longer_than_export_limit():
+    long_name = "x" * 201
+
+    response = RecommendResponse(
+        track_name="Seed",
+        artist="Artist",
+        top_n=10,
+        result={
+            "similar": [{"name": long_name, "artist": "Artist"}],
+            "reverse": [],
+            "hidden": [],
+        },
+    )
+
+    assert response.result.similar[0].name == long_name
+
+
+def test_recommend_serializer_drops_tracks_without_export_identity():
+    tracks = [
+        TrackInfo(name="Valid", artist="Artist"),
+        TrackInfo(name="Missing artist", artist=""),
+        TrackInfo(name="", artist="Missing title"),
+    ]
+
+    serialized = _serialize_tracks(tracks)
+
+    assert [(track["name"], track["artist"]) for track in serialized] == [
+        ("Valid", "Artist")
+    ]
 
 
 def test_recommend_contract_rejects_non_ten_track_bucket_size():
@@ -124,9 +170,7 @@ async def test_direct_recommendations_are_disjoint_and_backfilled(monkeypatch):
         "hidden": 2,
     }
     all_keys = [
-        scoring._track_key(track)
-        for tracks in result.values()
-        for track in tracks
+        scoring._track_key(track) for tracks in result.values() for track in tracks
     ]
     assert len(all_keys) == len(set(all_keys))
     assert [bucket for bucket, _ in calls] == [

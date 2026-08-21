@@ -10,7 +10,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/recommend", response_model=RecommendResponse)
+@router.post(
+    "/recommend",
+    response_model=RecommendResponse,
+    response_model_exclude_none=True,
+)
 async def recommend(req: RecommendRequest, request: Request):
     """
     유저의 query를 입력받아 추천결과를 return

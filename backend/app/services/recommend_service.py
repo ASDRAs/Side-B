@@ -25,16 +25,32 @@ from recommend_algo.common.sources import analyze_music_query
 logger = logging.getLogger(__name__)
 
 
+def _is_exportable_track(track: TrackInfo) -> bool:
+    return bool(str(track.name or "").strip() and str(track.artist or "").strip())
+
+
+def _serialize_tracks(tracks: list[TrackInfo]) -> list[dict]:
+    return [track_to_api_dict(track) for track in tracks if _is_exportable_track(track)]
+
+
 def _pick_representative_track(tag_results: dict):
     return next(
         (
             track
             for tracks in tag_results.values()
             for track in tracks
-            if track.album_art_url
+            if _is_exportable_track(track) and track.album_art_url
         ),
         None,
-    ) or next((track for tracks in tag_results.values() for track in tracks), None)
+    ) or next(
+        (
+            track
+            for tracks in tag_results.values()
+            for track in tracks
+            if _is_exportable_track(track)
+        ),
+        None,
+    )
 
 
 def _log_signal_coverage(scope: str, results: dict[str, list[TrackInfo]]) -> None:
@@ -202,9 +218,7 @@ async def run_recommend(
         )
         if tag_results and any(tag_results.values()):
             _log_signal_coverage("mood", tag_results)
-            processed = {
-                k: [track_to_api_dict(t) for t in v] for k, v in tag_results.items()
-            }
+            processed = {k: _serialize_tracks(v) for k, v in tag_results.items()}
             representative = _pick_representative_track(tag_results)
             logger.info("Tag fallback used for query: %s", query)
             return dict(
@@ -271,7 +285,7 @@ async def run_recommend(
         )
 
         processed_rcmd_results = {
-            rcmd_type: [track_to_api_dict(track) for track in rcmd_result]
+            rcmd_type: _serialize_tracks(rcmd_result)
             for rcmd_type, rcmd_result in rcmd_results.items()
         }
 
