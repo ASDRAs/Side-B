@@ -165,9 +165,7 @@ async def test_router_maps_service_errors_to_typed_503(error, code):
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await match_youtube_tracks(
-            req, _request(_Matcher(error=error)), "test-token"
-        )
+        await match_youtube_tracks(req, _request(_Matcher(error=error)), "test-token")
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail["code"] == code

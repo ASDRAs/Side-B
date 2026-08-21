@@ -66,7 +66,9 @@ async def lifespan(app: FastAPI):
     if not settings.youtube_api_key:
         logger.warning("YOUTUBE_API_KEY not set — YouTube playlist matching disabled.")
     if not settings.youtube_export_token:
-        logger.warning("YOUTUBE_EXPORT_TOKEN not set — YouTube export endpoint disabled.")
+        logger.warning(
+            "YOUTUBE_EXPORT_TOKEN not set — YouTube export endpoint disabled."
+        )
 
     logger.info("Startup complete (model=%s)", settings.gemini_model)
     try:
