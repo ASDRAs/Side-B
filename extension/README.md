@@ -29,7 +29,8 @@ docker compose up --build
 
 ## 테스트
 
-확장 프로그램 단위 테스트는 Node 내장 테스트 러너로 실행합니다.
+테스트 실행에는 Node.js 20 이상이 필요합니다. 확장 프로그램 단위 테스트는 Node
+내장 테스트 러너로 실행합니다.
 
 ```powershell
 cd extension
