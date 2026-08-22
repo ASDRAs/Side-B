@@ -6,7 +6,7 @@ module.exports = defineConfig({
   outputDir: "./test-results",
   timeout: 120_000,
   expect: {
-    timeout: 100_000,
+    timeout: 10_000,
   },
   fullyParallel: false,
   workers: 1,

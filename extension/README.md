@@ -37,10 +37,16 @@ cd extension
 npm test
 ```
 
-## 추천 API E2E 테스트
+## Extension E2E 테스트
 
-Playwright가 번들 Chromium에 실제 MV3 익스텐션을 로드하고, 팝업에서 배포된
-`/recommend`를 호출한 뒤 HTTP 200 응답과 세 버킷의 10곡 렌더링을 검증합니다.
+Playwright가 번들 Chromium에 실제 MV3 익스텐션을 로드하고, 고정 Extension ID가
+`hfcclomfoickmehgmdgjdjmiiekaciam`인지 확인합니다. 추천 시나리오는 배포된
+`/recommend`를 호출한 뒤 HTTP 200 응답과 응답 곡 수만큼의 UI 렌더링을 검증합니다.
+외부 추천 소스가 일부 곡을 제외할 수 있으므로 버킷당 정확히 10곡을 요구하지 않습니다.
+
+YouTube 내보내기 시나리오는 기본적으로 추천·매칭 응답을 고정해 Extension의 토큰
+전달과 매칭 검토 UI까지 재현합니다. Google OAuth와 실제 플레이리스트 생성 직전에는
+취소하므로 사용자 계정은 변경하지 않습니다.
 
 ```powershell
 cd extension
@@ -49,11 +55,31 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
+각 시나리오만 따로 실행할 수도 있습니다.
+
+```powershell
+npm run test:e2e:recommend
+npm run test:e2e:export
+```
+
 브라우저 화면을 보면서 실행하려면 다음 명령을 사용합니다.
 
 ```powershell
 npm run test:e2e:headed
 ```
+
+배포된 `/exports/youtube/matches`까지 실제로 확인하려면 Cloud Run의
+`YOUTUBE_EXPORT_TOKEN`과 같은 값을 테스트 프로세스에만 전달합니다. 이 모드도
+매칭 검토 화면에서 취소하며 Google OAuth나 플레이리스트 생성은 실행하지 않습니다.
+
+```powershell
+$env:SIDE_B_E2E_EXPORT_TOKEN = "<팀 내보내기 토큰>"
+npm run test:e2e:export
+Remove-Item Env:SIDE_B_E2E_EXPORT_TOKEN
+```
+
+추천 E2E와 실백엔드 내보내기 E2E는 네트워크·외부 API 상태에 의존하는 smoke
+test이므로 단위 테스트의 필수 CI 경로와 분리합니다.
 
 다른 백엔드나 검색어를 사용할 때는 환경변수로 덮어쓸 수 있습니다. 백엔드 origin은
 반드시 `manifest.json`의 `host_permissions`에도 있어야 합니다.
