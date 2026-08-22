@@ -45,6 +45,10 @@ docker compose up -d --build
 http://127.0.0.1:8000/api/health
 ```
 
+Chrome Extension은 기본적으로 배포된 Cloud Run 백엔드를 사용합니다. 로컬 백엔드와
+연결해 개발하려면 Extension 팝업의 `백엔드 주소`를
+`http://127.0.0.1:8000` 또는 `http://localhost:8000`으로 변경합니다.
+
 8000 포트를 다른 프로그램이 사용 중이면 호스트 포트만 변경할 수 있습니다.
 
 PowerShell:

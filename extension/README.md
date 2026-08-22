@@ -15,6 +15,18 @@ Side-B 백엔드의 `/recommend` 응답을 확인하는 개발용 Chrome MV3 익
 `manifest.json`의 `host_permissions`에도 해당 origin을 추가한 뒤 익스텐션을
 다시 로드해야 합니다.
 
+### 로컬 백엔드 연결
+
+프로젝트 루트에서 백엔드를 실행합니다.
+
+```powershell
+docker compose up --build
+```
+
+팝업의 `백엔드 주소`를 `http://127.0.0.1:8000` 또는
+`http://localhost:8000`으로 변경합니다. 두 로컬 주소는 개발용
+`host_permissions`에 포함되어 있으며, 선택한 주소는 다음 팝업에서도 유지됩니다.
+
 ## 테스트
 
 확장 프로그램 단위 테스트는 Node 내장 테스트 러너로 실행합니다.

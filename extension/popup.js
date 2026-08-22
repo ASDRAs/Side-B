@@ -16,10 +16,6 @@ import {
 
 const DEFAULT_API_BASE_URL =
   "https://side-b-backend-7hmhv6htsa-du.a.run.app";
-const LEGACY_LOCAL_API_BASE_URLS = new Set([
-  "http://127.0.0.1:8000",
-  "http://localhost:8000",
-]);
 const REQUEST_TIMEOUT_MS = 90_000;
 const BUCKET_LABELS = {
   similar: "유사한 곡",
@@ -466,19 +462,9 @@ async function exportBucket(bucketName, tracks) {
 async function readStoredApiBaseUrl() {
   if (globalThis.chrome?.storage?.local) {
     const stored = await chrome.storage.local.get("apiBaseUrl");
-    if (LEGACY_LOCAL_API_BASE_URLS.has(stored.apiBaseUrl?.replace(/\/+$/, ""))) {
-      await chrome.storage.local.remove("apiBaseUrl");
-      return null;
-    }
     return stored.apiBaseUrl;
   }
-
-  const storedApiBaseUrl = localStorage.getItem("apiBaseUrl");
-  if (LEGACY_LOCAL_API_BASE_URLS.has(storedApiBaseUrl?.replace(/\/+$/, ""))) {
-    localStorage.removeItem("apiBaseUrl");
-    return null;
-  }
-  return storedApiBaseUrl;
+  return localStorage.getItem("apiBaseUrl");
 }
 
 async function storeApiBaseUrl(apiBaseUrl) {
