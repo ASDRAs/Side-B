@@ -18,14 +18,19 @@ function assertApiOriginIsAllowed(apiBaseUrl) {
 }
 
 async function launchExtensionPage(testInfo) {
-  const context = await chromium.launchPersistentContext("", {
-    channel: "chromium",
-    headless: testInfo.project.use.headless !== false,
-    args: [
-      `--disable-extensions-except=${extensionPath}`,
-      `--load-extension=${extensionPath}`,
-    ],
-  });
+  // Every test gets an explicit empty profile under its own output directory.
+  // Reusing a profile would leak chrome.storage state between scenarios.
+  const context = await chromium.launchPersistentContext(
+    testInfo.outputPath("chromium-profile"),
+    {
+      channel: "chromium",
+      headless: testInfo.project.use.headless !== false,
+      args: [
+        `--disable-extensions-except=${extensionPath}`,
+        `--load-extension=${extensionPath}`,
+      ],
+    },
+  );
 
   try {
     let [serviceWorker] = context.serviceWorkers();

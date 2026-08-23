@@ -41,7 +41,7 @@ class YouTubeExportAccess:
     async def authorize(self, provided_token: str | None) -> None:
         if not self._token:
             raise YouTubeExportAccessConfigurationError(
-                "YOUTUBE_EXPORT_TOKEN is not configured"
+                "SIDE_B_ACCESS_TOKEN is not configured"
             )
         candidate = str(provided_token or "").strip()
         if not candidate or not secrets.compare_digest(candidate, self._token):

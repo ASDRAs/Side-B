@@ -10,6 +10,7 @@
     "test:e2e": "playwright test --config=playwright.config.cjs",
     "test:e2e:recommend": "playwright test --config=playwright.config.cjs e2e/recommend.e2e.cjs",
     "test:e2e:export": "playwright test --config=playwright.config.cjs e2e/youtube-export.e2e.cjs",
+    "test:e2e:deployed": "playwright test --config=playwright.live.config.cjs",
     "test:e2e:headed": "playwright test --config=playwright.config.cjs --headed"
   },
   "devDependencies": {

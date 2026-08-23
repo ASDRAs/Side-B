@@ -6,83 +6,59 @@ const {
   launchExtensionPage,
 } = require("./extension.cjs");
 
-const apiBaseUrl = (
-  process.env.SIDE_B_API_BASE_URL ||
-  "https://side-b-backend-7hmhv6htsa-du.a.run.app"
-).replace(/\/+$/, "");
-const query = process.env.SIDE_B_E2E_QUERY || "Radiohead - Creep";
+const accessToken = "side-b-e2e-token";
+const query = "Radiohead - Creep";
+const recommendationPayload = {
+  track_name: "Creep",
+  artist: "Radiohead",
+  top_n: 10,
+  result: {
+    similar: [{ name: "Karma Police", artist: "Radiohead" }],
+    reverse: [],
+    hidden: [{ name: "Lucky", artist: "Radiohead" }],
+  },
+};
 
-test("popup requests recommendations from the deployed backend", async ({}, testInfo) => {
-  assertApiOriginIsAllowed(apiBaseUrl);
+test("popup sends an authenticated recommendation and renders it", async ({}, testInfo) => {
   const { context, page } = await launchExtensionPage(testInfo);
+  let capturedRequest = null;
+
   try {
     const apiBaseUrlInput = page.locator("#apiBaseUrl");
-    if (process.env.SIDE_B_API_BASE_URL) {
-      await apiBaseUrlInput.fill(apiBaseUrl);
-    } else {
-      await expect(apiBaseUrlInput).toHaveValue(apiBaseUrl);
-    }
+    await expect(apiBaseUrlInput).not.toHaveValue("");
+    const apiBaseUrl = (await apiBaseUrlInput.inputValue()).replace(/\/+$/, "");
+    assertApiOriginIsAllowed(apiBaseUrl);
+
+    await page.route(`${apiBaseUrl}/recommend`, async (route) => {
+      capturedRequest = {
+        payload: route.request().postDataJSON(),
+        token: route.request().headers()["x-side-b-access-token"],
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(recommendationPayload),
+      });
+    });
+
+    await page.locator("#youtubeExportToken").fill(accessToken);
     await page.locator("#query").fill(query);
-
-    const responsePromise = page.waitForResponse(
-      (response) =>
-        response.url() === `${apiBaseUrl}/recommend` &&
-        response.request().method() === "POST",
-      { timeout: 95_000 },
-    );
-
+    const responsePromise = page.waitForResponse(`${apiBaseUrl}/recommend`);
     await page.locator("#submitButton").click();
-    const response = await responsePromise;
-    const requestPayload = response.request().postDataJSON();
-    const responsePayload = await response.json();
+    await responsePromise;
 
-    expect(response.status()).toBe(200);
-    expect(requestPayload).toEqual({ query, top_n: 10 });
-    expect(responsePayload.top_n).toBe(10);
-
-    const buckets = Object.entries(responsePayload.result || {}).filter(
-      ([, tracks]) => Array.isArray(tracks),
-    );
-    expect(buckets).toHaveLength(3);
-    expect(buckets.map(([bucketName]) => bucketName)).toContain("similar");
-    expect(buckets.map(([bucketName]) => bucketName)).toContain("hidden");
-    expect(
-      buckets.some(([bucketName]) =>
-        ["reverse", "opposite"].includes(bucketName),
-      ),
-    ).toBe(true);
-
-    const totalTracks = buckets.reduce(
-      (sum, [, tracks]) => sum + tracks.length,
-      0,
-    );
-    expect(totalTracks).toBeGreaterThan(0);
-    expect(totalTracks).toBeLessThanOrEqual(30);
-
+    expect(capturedRequest).toEqual({
+      payload: { query, top_n: 10 },
+      token: accessToken,
+    });
     await expect(page.locator("#connectionBadge")).toHaveText("연결됨");
-    await expect(page.locator("#statusMessage")).toContainText(
-      `추천 결과 ${totalTracks}곡`,
-    );
-
-    for (const [bucketName, tracks] of buckets) {
-      expect(tracks.length).toBeLessThanOrEqual(10);
-      if (tracks.length === 0) {
-        continue;
-      }
-      const bucket = page.locator(`.bucket[data-bucket="${bucketName}"]`);
-      await expect(bucket).toBeVisible();
-      await expect(bucket.locator(".track-item")).toHaveCount(tracks.length);
-    }
+    await expect(page.locator("#statusMessage")).toContainText("추천 결과 2곡");
+    await expect(page.locator(".track-item")).toHaveCount(2);
 
     const renderedPayload = JSON.parse(
       (await page.locator("#rawResponse").textContent()) || "null",
     );
-    expect(renderedPayload).toEqual(responsePayload);
-
-    await testInfo.attach("recommend-response.json", {
-      body: Buffer.from(JSON.stringify(responsePayload, null, 2)),
-      contentType: "application/json",
-    });
+    expect(renderedPayload).toEqual(recommendationPayload);
   } catch (error) {
     await captureFailure(page, testInfo);
     throw error;

@@ -51,8 +51,17 @@ async def lifespan(app: FastAPI):
         concurrency=settings.youtube_search_concurrency,
     )
     app.state.youtube_export_access = YouTubeExportAccess(
-        settings.youtube_export_token,
+        settings.backend_access_token,
         requests_per_minute=settings.youtube_export_requests_per_minute,
+    )
+    app.state.recommend_access = (
+        None
+        if settings.allow_unauthenticated_recommend
+        and not settings.backend_access_token
+        else YouTubeExportAccess(
+            settings.backend_access_token,
+            requests_per_minute=settings.recommend_requests_per_minute,
+        )
     )
     app.state.lastfm_pylast = pylast.LastFMNetwork(
         api_key=settings.lastfm_api_key or "",
@@ -65,9 +74,13 @@ async def lifespan(app: FastAPI):
         logger.warning("GEMINI_API_KEY not set — LLM scoring disabled.")
     if not settings.youtube_api_key:
         logger.warning("YOUTUBE_API_KEY not set — YouTube playlist matching disabled.")
-    if not settings.youtube_export_token:
+    if settings.allow_unauthenticated_recommend and not settings.backend_access_token:
         logger.warning(
-            "YOUTUBE_EXPORT_TOKEN not set — YouTube export endpoint disabled."
+            "ALLOW_UNAUTHENTICATED_RECOMMEND enabled — use local development only."
+        )
+    if not settings.backend_access_token:
+        logger.warning(
+            "SIDE_B_ACCESS_TOKEN not set — protected endpoints are disabled."
         )
 
     logger.info("Startup complete (model=%s)", settings.gemini_model)
@@ -81,9 +94,13 @@ app = FastAPI(title="Music Discovery API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=get_settings().cors_origin_allowlist,
+    allow_methods=["GET", "POST"],
+    allow_headers=[
+        "Content-Type",
+        "X-Side-B-Access-Token",
+        "X-Side-B-Export-Token",
+    ],
 )
 
 # router 설정 fetch하면 아래의 기능들 불러옴. 실제 기능들이 수행되는 곳

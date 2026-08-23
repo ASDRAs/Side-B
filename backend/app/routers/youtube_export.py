@@ -53,7 +53,7 @@ async def match_youtube_tracks(
     except YouTubeExportAccessConfigurationError:
         _service_unavailable(
             "youtube_export_configuration_error",
-            "백엔드에 YOUTUBE_EXPORT_TOKEN이 설정되지 않았습니다.",
+            "백엔드에 SIDE_B_ACCESS_TOKEN이 설정되지 않았습니다.",
         )
     except YouTubeExportUnauthorizedError as exc:
         raise HTTPException(

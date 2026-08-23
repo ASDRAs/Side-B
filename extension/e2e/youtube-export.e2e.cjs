@@ -6,11 +6,11 @@ const {
   launchExtensionPage,
 } = require("./extension.cjs");
 
-const apiBaseUrl = (
-  process.env.SIDE_B_API_BASE_URL ||
-  "https://side-b-backend-7hmhv6htsa-du.a.run.app"
-).replace(/\/+$/, "");
-const liveExportToken = process.env.SIDE_B_E2E_EXPORT_TOKEN?.trim() || "";
+const configuredApiBaseUrl = process.env.SIDE_B_API_BASE_URL?.replace(/\/+$/, "");
+const liveExportToken =
+  process.env.SIDE_B_E2E_ACCESS_TOKEN?.trim() ||
+  process.env.SIDE_B_E2E_EXPORT_TOKEN?.trim() ||
+  "";
 const exportToken = liveExportToken || "side-b-e2e-token";
 const seedTrack = { name: "Blinding Lights", artist: "The Weeknd" };
 const recommendationPayload = {
@@ -41,18 +41,30 @@ const mockedMatchesPayload = {
 };
 
 test("popup reaches YouTube match review before OAuth", async ({}, testInfo) => {
-  assertApiOriginIsAllowed(apiBaseUrl);
   const { context, page } = await launchExtensionPage(testInfo);
   let capturedMatchRequest = null;
+  let capturedRecommendRequest = null;
 
   try {
-    await page.route(`${apiBaseUrl}/recommend`, (route) =>
-      route.fulfill({
+    const apiBaseUrlInput = page.locator("#apiBaseUrl");
+    if (configuredApiBaseUrl) {
+      await apiBaseUrlInput.fill(configuredApiBaseUrl);
+    } else {
+      await expect(apiBaseUrlInput).not.toHaveValue("");
+    }
+    const apiBaseUrl = (await apiBaseUrlInput.inputValue()).replace(/\/+$/, "");
+    assertApiOriginIsAllowed(apiBaseUrl);
+
+    await page.route(`${apiBaseUrl}/recommend`, (route) => {
+      capturedRecommendRequest = {
+        token: route.request().headers()["x-side-b-access-token"],
+      };
+      return route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify(recommendationPayload),
-      }),
-    );
+      });
+    });
 
     if (!liveExportToken) {
       await page.route(`${apiBaseUrl}/exports/youtube/matches`, async (route) => {
@@ -68,12 +80,6 @@ test("popup reaches YouTube match review before OAuth", async ({}, testInfo) => 
       });
     }
 
-    const apiBaseUrlInput = page.locator("#apiBaseUrl");
-    if (process.env.SIDE_B_API_BASE_URL) {
-      await apiBaseUrlInput.fill(apiBaseUrl);
-    } else {
-      await expect(apiBaseUrlInput).toHaveValue(apiBaseUrl);
-    }
     await page.locator("#youtubeExportToken").fill(exportToken);
     await page.locator("#query").fill(`${seedTrack.artist} - ${seedTrack.name}`);
 
@@ -82,6 +88,7 @@ test("popup reaches YouTube match review before OAuth", async ({}, testInfo) => 
     );
     await page.locator("#submitButton").click();
     await recommendResponsePromise;
+    expect(capturedRecommendRequest).toEqual({ token: exportToken });
 
     const matchResponsePromise = page.waitForResponse(
       (response) =>

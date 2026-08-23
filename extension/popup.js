@@ -1,6 +1,13 @@
 import { readCurrentTrack } from "./scripts/tab.js";
 import { startEq, stopEq } from "./scripts/eq.js";
 import {
+  API_BASE_URL_STORAGE_VERSION,
+  DEFAULT_API_BASE_URL,
+  recommendationHeaders,
+  requiresBackendAccessToken,
+  resolveApiBaseUrlSetting,
+} from "./scripts/apiConfig.js";
+import {
   createYouTubePlaylist,
   getYouTubeExportState,
 } from "./scripts/youtubeExport.js";
@@ -14,8 +21,6 @@ import {
   unmatchedReasonLabel,
 } from "./scripts/youtubeExportView.js";
 
-const DEFAULT_API_BASE_URL =
-  "https://side-b-backend-7hmhv6htsa-du.a.run.app";
 const REQUEST_TIMEOUT_MS = 90_000;
 const BUCKET_LABELS = {
   similar: "유사한 곡",
@@ -461,18 +466,27 @@ async function exportBucket(bucketName, tracks) {
 
 async function readStoredApiBaseUrl() {
   if (globalThis.chrome?.storage?.local) {
-    const stored = await chrome.storage.local.get("apiBaseUrl");
-    return stored.apiBaseUrl;
+    return chrome.storage.local.get(["apiBaseUrl", "apiBaseUrlStorageVersion"]);
   }
-  return localStorage.getItem("apiBaseUrl");
+  return {
+    apiBaseUrl: localStorage.getItem("apiBaseUrl"),
+    apiBaseUrlStorageVersion: localStorage.getItem("apiBaseUrlStorageVersion"),
+  };
 }
 
 async function storeApiBaseUrl(apiBaseUrl) {
   if (globalThis.chrome?.storage?.local) {
-    await chrome.storage.local.set({ apiBaseUrl });
+    await chrome.storage.local.set({
+      apiBaseUrl,
+      apiBaseUrlStorageVersion: API_BASE_URL_STORAGE_VERSION,
+    });
     return;
   }
   localStorage.setItem("apiBaseUrl", apiBaseUrl);
+  localStorage.setItem(
+    "apiBaseUrlStorageVersion",
+    String(API_BASE_URL_STORAGE_VERSION),
+  );
 }
 
 async function readStoredYouTubeExportToken() {
@@ -491,14 +505,14 @@ async function storeYouTubeExportToken(exportToken) {
   sessionStorage.setItem("youtubeExportToken", exportToken);
 }
 
-async function requestRecommendations(apiBaseUrl, query) {
+async function requestRecommendations(apiBaseUrl, query, accessToken) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
     const response = await fetch(`${apiBaseUrl}/recommend`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: recommendationHeaders(accessToken),
       body: JSON.stringify({ query, top_n: 10 }),
       signal: controller.signal,
     });
@@ -520,14 +534,22 @@ form.addEventListener("submit", async (event) => {
 
   try {
     const apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput.value);
+    const accessToken = youtubeExportTokenInput.value.trim();
     const query = queryInput.value.trim();
     if (!query) {
       throw new Error("검색어를 입력하세요.");
     }
 
-    await storeApiBaseUrl(apiBaseUrl);
+    if (requiresBackendAccessToken(apiBaseUrl) && !accessToken) {
+      throw new Error("배포 백엔드 사용에는 팀 백엔드 토큰이 필요합니다.");
+    }
+
+    await Promise.all([
+      storeApiBaseUrl(apiBaseUrl),
+      accessToken ? storeYouTubeExportToken(accessToken) : Promise.resolve(),
+    ]);
     setState("loading", "백엔드에서 추천 결과를 가져오는 중입니다.");
-    const payload = await requestRecommendations(apiBaseUrl, query);
+    const payload = await requestRecommendations(apiBaseUrl, query, accessToken);
     renderResponse(payload);
 
     const resultCount = Object.values(payload.result || {}).reduce(
@@ -572,8 +594,15 @@ currentTrackButton.addEventListener("click", async () => {
 });
 
 readStoredApiBaseUrl()
-  .then((storedApiBaseUrl) => {
-    apiBaseUrlInput.value = storedApiBaseUrl || DEFAULT_API_BASE_URL;
+  .then(async ({ apiBaseUrl, apiBaseUrlStorageVersion }) => {
+    const resolved = resolveApiBaseUrlSetting(
+      apiBaseUrl,
+      apiBaseUrlStorageVersion,
+    );
+    apiBaseUrlInput.value = resolved.apiBaseUrl;
+    if (resolved.shouldPersist) {
+      await storeApiBaseUrl(resolved.apiBaseUrl);
+    }
     queryInput.focus();
   })
   .catch(() => {

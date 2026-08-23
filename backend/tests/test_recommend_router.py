@@ -2,16 +2,18 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.llm.llm_response import DirectSearchAnalysis, MusicQueryAnalysis
-from app.routers.recommend import RecommendRequest, RecommendResponse
+from app.routers.recommend import RecommendRequest, RecommendResponse, recommend
 from app.services.recommend_service import (
     _pick_representative_track,
     _run_direct_recommendations,
     _serialize_tracks,
     run_recommend,
 )
+from app.services.youtube.access import YouTubeExportAccess
 from main import app
 from recommend_algo import TrackInfo, binding_from_source_id
 from recommend_algo.common import scoring
@@ -27,6 +29,75 @@ def test_public_api_surface_is_recommend_only():
 
 def test_http_client_request_urls_are_not_logged_at_info_level():
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+
+
+def _recommend_request(access):
+    return SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                recommend_access=access,
+                http=None,
+                lastfm_pylast=None,
+            )
+        )
+    )
+
+
+async def test_recommend_requires_valid_team_token(monkeypatch):
+    monkeypatch.setattr("app.routers.recommend.get_settings", lambda: SimpleNamespace())
+    request = _recommend_request(YouTubeExportAccess("team-token"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await recommend(RecommendRequest(query="Radiohead Creep"), request, None)
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail["code"] == "recommend_unauthorized"
+
+
+async def test_recommend_uses_separate_request_limit(monkeypatch):
+    async def fake_run_recommend(*args, **kwargs):
+        return {
+            "track_name": "Creep",
+            "artist": "Radiohead",
+            "top_n": 10,
+            "result": {"similar": [], "reverse": [], "hidden": []},
+        }
+
+    monkeypatch.setattr("app.routers.recommend.run_recommend", fake_run_recommend)
+    monkeypatch.setattr("app.routers.recommend.get_settings", lambda: SimpleNamespace())
+    request = _recommend_request(
+        YouTubeExportAccess("team-token", requests_per_minute=1)
+    )
+
+    await recommend(RecommendRequest(query="Radiohead Creep"), request, "team-token")
+    with pytest.raises(HTTPException) as exc_info:
+        await recommend(
+            RecommendRequest(query="Radiohead Creep"), request, "team-token"
+        )
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.headers == {"Retry-After": "60"}
+
+
+async def test_local_recommend_can_explicitly_bypass_access_gate(monkeypatch):
+    async def fake_run_recommend(*args, **kwargs):
+        return {
+            "track_name": "Creep",
+            "artist": "Radiohead",
+            "top_n": 10,
+            "result": {"similar": [], "reverse": [], "hidden": []},
+        }
+
+    monkeypatch.setattr("app.routers.recommend.run_recommend", fake_run_recommend)
+    monkeypatch.setattr("app.routers.recommend.get_settings", lambda: SimpleNamespace())
+
+    response = await recommend(
+        RecommendRequest(query="Radiohead Creep"),
+        _recommend_request(None),
+        None,
+    )
+
+    assert response.track_name == "Creep"
 
 
 def test_recommend_contract_uses_query_source_and_hidden_bucket():

@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,8 +22,22 @@ class Settings(BaseSettings):
     youtube_api_key: str | None = Field(
         default=None, validation_alias="YOUTUBE_API_KEY"
     )
-    youtube_export_token: str | None = Field(
-        default=None, validation_alias="YOUTUBE_EXPORT_TOKEN"
+    backend_access_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "SIDE_B_ACCESS_TOKEN",
+            "YOUTUBE_EXPORT_TOKEN",
+        ),
+    )
+    recommend_requests_per_minute: int = Field(
+        default=6,
+        ge=1,
+        le=60,
+        validation_alias="RECOMMEND_REQUESTS_PER_MINUTE",
+    )
+    allow_unauthenticated_recommend: bool = Field(
+        default=False,
+        validation_alias="ALLOW_UNAUTHENTICATED_RECOMMEND",
     )
     youtube_export_requests_per_minute: int = Field(
         default=6,
@@ -58,6 +72,27 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = Field(
         default=6.0, validation_alias="HTTP_TIMEOUT_SECONDS"
     )
+    cors_allowed_origins: str = Field(
+        default=(
+            "chrome-extension://hfcclomfoickmehgmdgjdjmiiekaciam,"
+            "http://127.0.0.1:3000,http://localhost:3000"
+        ),
+        validation_alias="CORS_ALLOWED_ORIGINS",
+    )
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def reject_wildcard_cors_origin(cls, value: str) -> str:
+        origins = [origin.strip() for origin in value.split(",") if origin.strip()]
+        if not origins:
+            raise ValueError("CORS_ALLOWED_ORIGINS must contain at least one origin")
+        if "*" in origins:
+            raise ValueError("CORS_ALLOWED_ORIGINS must not contain '*'")
+        return ",".join(origins)
+
+    @property
+    def cors_origin_allowlist(self) -> list[str]:
+        return self.cors_allowed_origins.split(",")
 
 
 @lru_cache
