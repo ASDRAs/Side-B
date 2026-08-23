@@ -5,6 +5,8 @@ import pytest
 from app.services.youtube.client import YouTubeAPIUnavailableError
 from app.services.youtube.matcher import (
     YouTubeMatcher,
+    _text_variants,
+    _title_score,
     score_candidate,
     select_best_candidate,
 )
@@ -71,6 +73,43 @@ def test_japanese_title_matches_hepburn_romanization():
 
     assert candidate is not None
     assert candidate.confidence >= 0.85
+
+
+def test_korean_text_is_not_transliterated():
+    values = (
+        "아이유",
+        "뉴진스",
+        "소녀시대",
+        "블랙핑크",
+        "방탄소년단",
+        "밤편지",
+        "윤하",
+        "악뮤",
+        "좋은 날",
+    )
+
+    for value in values:
+        assert _text_variants(value) == (value,)
+
+
+def test_korean_transliteration_artifacts_do_not_create_automatic_matches():
+    cases = (
+        ("아이유 - 밤지", "아이유 - Topic", "밤편지", "아이유"),
+        ("아유 - 밤편지", "아유 - Topic", "밤편지", "아이유"),
+        ("아유 - 밤지", "아유 - Topic", "밤편지", "아이유"),
+        ("뉴스 - Super Shy", "뉴스 - Topic", "Super Shy", "뉴진스"),
+    )
+
+    assert _title_score("오늘의 뉴스", "뉴진스") < 0.85
+    assert _title_score("밤지", "밤편지") < 0.85
+    for title, channel, expected_title, expected_artist in cases:
+        candidate = score_candidate(
+            _item("artifact", title, channel),
+            expected_title,
+            expected_artist,
+        )
+        assert candidate is not None
+        assert candidate.confidence < 0.85
 
 
 @pytest.mark.parametrize(
@@ -366,7 +405,7 @@ async def test_matcher_caches_empty_search_as_not_found():
     assert len(client.calls) == 1
 
 
-async def test_matcher_marks_existing_but_weak_candidates_low_confidence():
+async def test_matcher_rejects_candidates_below_review_threshold():
     client = _FakeSearchClient(
         [_item("wrong", "Another Song", "Another Artist - Topic")]
     )
@@ -374,8 +413,28 @@ async def test_matcher_marks_existing_but_weak_candidates_low_confidence():
 
     outcome = await matcher.match_track("Hello", "Adele")
 
+    assert outcome.match is None
+    assert outcome.reason == "low_confidence"
+
+
+async def test_matcher_returns_candidates_above_review_threshold_for_review():
+    client = _FakeSearchClient(
+        [
+            _item(
+                "translated-topic",
+                "If I could be a constellation",
+                "kessoku band - Topic",
+            )
+        ]
+    )
+
+    outcome = await YouTubeMatcher(client).match_track(
+        "星座になれたら", "kessoku band"
+    )
+
     assert outcome.match is not None
-    assert outcome.match.video_id == "wrong"
+    assert outcome.match.video_id == "translated-topic"
+    assert 0.40 <= outcome.match.confidence < 0.85
     assert outcome.reason == "low_confidence"
 
 
@@ -449,7 +508,13 @@ async def test_matcher_expires_positive_cache_entries_with_injected_clock():
 async def test_matcher_expires_manual_review_candidates_with_negative_ttl():
     now = [100.0]
     client = _FakeSearchClient(
-        [_item("weak", "Another Song", "Another Artist - Topic")]
+        [
+            _item(
+                "translated-topic",
+                "If I could be a constellation",
+                "kessoku band - Topic",
+            )
+        ]
     )
     matcher = YouTubeMatcher(
         client,
@@ -458,11 +523,12 @@ async def test_matcher_expires_manual_review_candidates_with_negative_ttl():
         clock=lambda: now[0],
     )
 
-    first = await matcher.match_track("Hello", "Adele")
+    first = await matcher.match_track("星座になれたら", "kessoku band")
     now[0] += 11
-    second = await matcher.match_track("Hello", "Adele")
+    second = await matcher.match_track("星座になれたら", "kessoku band")
 
     assert first.reason == second.reason == "low_confidence"
+    assert first.match is not None
     assert len(client.calls) == 2
 
 

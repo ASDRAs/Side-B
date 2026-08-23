@@ -18,6 +18,7 @@ from app.utils.track_matching import (
     contains_bad_version_marker,
     identity_qualifiers_match,
     looks_like_bad_version,
+    strict_title_ratio,
     version_markers,
 )
 
@@ -53,6 +54,8 @@ _COVER_BRACKET_PATTERN = re.compile(
     r"[\[(【][^)\]】]*(?<!\w)cover(?!\w)[^)\]】]*[)\]】]",
     re.IGNORECASE,
 )
+_HANGUL_PATTERN = re.compile(r"[\uac00-\ud7a3]")
+_JAPANESE_PATTERN = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 _JAPANESE_ROMANIZER = kakasi()
 
 
@@ -103,6 +106,9 @@ def _text_variants(value: str) -> tuple[str, ...]:
     evidence that those spellings identify the same name without weakening the
     confidence threshold for unrelated artists.
     """
+    if not _JAPANESE_PATTERN.search(value):
+        return (value,)
+
     romanized = "".join(
         str(part.get("hepburn") or part.get("orig") or "")
         for part in _JAPANESE_ROMANIZER.convert(value)
@@ -111,6 +117,12 @@ def _text_variants(value: str) -> tuple[str, ...]:
     if romanized and compact_text(romanized) != compact_text(value):
         values.append(romanized)
     return tuple(values)
+
+
+def _variant_text_ratio(candidate: str, expected: str) -> float:
+    if _HANGUL_PATTERN.search(candidate) and _HANGUL_PATTERN.search(expected):
+        return strict_title_ratio(candidate, expected)
+    return text_ratio(candidate, expected)
 
 
 def _title_score(candidate_title: str, expected_title: str) -> float:
@@ -125,14 +137,18 @@ def _title_score(candidate_title: str, expected_title: str) -> float:
         for match in re.findall(r"['\"‘’“”]([^'\"‘’“”]+)['\"‘’“”]", candidate_title)
         if match.strip()
     )
+    expected_variants = _text_variants(expected_title)
     return max(
         (
-            text_ratio(clean_title(fragment_variant), clean_title(expected_variant))
+            _variant_text_ratio(
+                clean_title(fragment_variant),
+                clean_title(expected_variant),
+            )
             if identity_qualifiers_match(fragment_variant, expected_variant)
             else 0.0
             for fragment in fragments
             for fragment_variant in _text_variants(fragment)
-            for expected_variant in _text_variants(expected_title)
+            for expected_variant in expected_variants
         ),
         default=0.0,
     )
@@ -205,21 +221,26 @@ def _artist_score(candidate_title: str, channel_title: str, artist: str) -> floa
         *_title_artist_candidates(candidate_title),
     ]
     expected_variants = _text_variants(artist)
+
+    def variant_score(candidate: str, expected: str) -> float:
+        if _starts_with_artist(candidate, expected):
+            return 1.0
+        score = artist_score(candidate, (expected,), candidate_title)
+        if (
+            score < 1.0
+            and _HANGUL_PATTERN.search(candidate)
+            and _HANGUL_PATTERN.search(expected)
+        ):
+            return strict_title_ratio(candidate, expected)
+        return score
+
     return max(
         (
-            1.0
-            if any(
-                _starts_with_artist(candidate_variant, expected)
-                for expected in expected_variants
-            )
-            else artist_score(
-                candidate_variant,
-                expected_variants,
-                candidate_title,
-            )
+            variant_score(candidate_variant, expected)
             for candidate in candidates
             if candidate
             for candidate_variant in _text_variants(candidate)
+            for expected in expected_variants
         ),
         default=0.0,
     )
@@ -339,6 +360,7 @@ class YouTubeMatcher:
         client: YouTubeSearchClient,
         *,
         threshold: float = 0.85,
+        review_threshold: float = 0.40,
         concurrency: int = 3,
         positive_ttl_seconds: float = 3600.0,
         negative_ttl_seconds: float = 600.0,
@@ -347,6 +369,7 @@ class YouTubeMatcher:
     ) -> None:
         self.client = client
         self.threshold = threshold
+        self.review_threshold = min(threshold, max(0.0, review_threshold))
         self.positive_ttl_seconds = positive_ttl_seconds
         self.negative_ttl_seconds = negative_ttl_seconds
         self.max_cache_size = max_cache_size
@@ -393,11 +416,13 @@ class YouTubeMatcher:
                 outcome = MatchOutcome(match=None, reason="unusable_result")
             elif best.confidence >= self.threshold:
                 outcome = MatchOutcome(match=best)
-            else:
+            elif best.confidence >= self.review_threshold:
                 # Keep the best candidate visible for explicit user review. The
-                # API marks it as not auto-selected, so a low score never silently
-                # enters a playlist but can still be accepted by a human.
+                # API marks it as not auto-selected, so it never silently enters
+                # a playlist but can still be accepted by a human.
                 outcome = MatchOutcome(match=best, reason="low_confidence")
+            else:
+                outcome = MatchOutcome(match=None, reason="low_confidence")
         self._store(key, outcome)
         return outcome
 
