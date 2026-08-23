@@ -4,12 +4,12 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.config import get_settings
 from app.schemas.recommend import RecommendRequest, RecommendResponse
-from app.services.recommend_service import run_recommend
-from app.services.youtube import (
-    YouTubeExportAccessConfigurationError,
-    YouTubeExportRateLimitError,
-    YouTubeExportUnauthorizedError,
+from app.services.access import (
+    BackendAccessConfigurationError,
+    BackendAccessRateLimitError,
+    BackendAccessUnauthorizedError,
 )
+from app.services.recommend_service import run_recommend
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,7 +32,7 @@ async def recommend(
     if access is not None:
         try:
             await access.authorize(access_token)
-        except YouTubeExportAccessConfigurationError as exc:
+        except BackendAccessConfigurationError as exc:
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -40,7 +40,7 @@ async def recommend(
                     "message": "백엔드에 SIDE_B_ACCESS_TOKEN이 설정되지 않았습니다.",
                 },
             ) from exc
-        except YouTubeExportUnauthorizedError as exc:
+        except BackendAccessUnauthorizedError as exc:
             raise HTTPException(
                 status_code=401,
                 detail={
@@ -48,7 +48,7 @@ async def recommend(
                     "message": "팀 백엔드 토큰이 올바르지 않습니다.",
                 },
             ) from exc
-        except YouTubeExportRateLimitError as exc:
+        except BackendAccessRateLimitError as exc:
             raise HTTPException(
                 status_code=429,
                 detail={

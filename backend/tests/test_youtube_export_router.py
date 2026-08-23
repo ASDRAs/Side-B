@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from app.routers.youtube_export import match_youtube_tracks
 from app.schemas.youtube_export import YouTubeMatchRequest
-from app.services.youtube.access import YouTubeExportAccess
+from app.services.access import BackendAccess
 from app.services.youtube.client import (
     YouTubeConfigurationError,
     YouTubeQuotaExceededError,
@@ -34,7 +34,7 @@ def _request(matcher):
         app=SimpleNamespace(
             state=SimpleNamespace(
                 youtube_matcher=matcher,
-                youtube_export_access=YouTubeExportAccess("test-token"),
+                youtube_export_access=BackendAccess("test-token"),
             )
         )
     )
@@ -187,7 +187,7 @@ async def test_router_rejects_missing_or_invalid_export_token():
 
 
 async def test_router_rate_limits_authenticated_export_requests():
-    access = YouTubeExportAccess("test-token", requests_per_minute=1)
+    access = BackendAccess("test-token", requests_per_minute=1)
     matcher = _Matcher(
         {("Hello", "Adele"): MatchOutcome(match=None, reason="not_found")}
     )

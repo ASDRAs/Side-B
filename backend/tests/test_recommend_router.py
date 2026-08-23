@@ -7,13 +7,13 @@ from pydantic import ValidationError
 
 from app.llm.llm_response import DirectSearchAnalysis, MusicQueryAnalysis
 from app.routers.recommend import RecommendRequest, RecommendResponse, recommend
+from app.services.access import BackendAccess
 from app.services.recommend_service import (
     _pick_representative_track,
     _run_direct_recommendations,
     _serialize_tracks,
     run_recommend,
 )
-from app.services.youtube.access import YouTubeExportAccess
 from main import app
 from recommend_algo import TrackInfo, binding_from_source_id
 from recommend_algo.common import scoring
@@ -45,7 +45,7 @@ def _recommend_request(access):
 
 async def test_recommend_requires_valid_team_token(monkeypatch):
     monkeypatch.setattr("app.routers.recommend.get_settings", lambda: SimpleNamespace())
-    request = _recommend_request(YouTubeExportAccess("team-token"))
+    request = _recommend_request(BackendAccess("team-token"))
 
     with pytest.raises(HTTPException) as exc_info:
         await recommend(RecommendRequest(query="Radiohead Creep"), request, None)
@@ -65,9 +65,7 @@ async def test_recommend_uses_separate_request_limit(monkeypatch):
 
     monkeypatch.setattr("app.routers.recommend.run_recommend", fake_run_recommend)
     monkeypatch.setattr("app.routers.recommend.get_settings", lambda: SimpleNamespace())
-    request = _recommend_request(
-        YouTubeExportAccess("team-token", requests_per_minute=1)
-    )
+    request = _recommend_request(BackendAccess("team-token", requests_per_minute=1))
 
     await recommend(RecommendRequest(query="Radiohead Creep"), request, "team-token")
     with pytest.raises(HTTPException) as exc_info:

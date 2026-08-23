@@ -13,11 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.routers.recommend import router as recommend_router
 from app.routers.youtube_export import router as youtube_export_router
-from app.services.youtube import (
-    YouTubeExportAccess,
-    YouTubeMatcher,
-    YouTubeSearchClient,
-)
+from app.services.access import BackendAccess
+from app.services.youtube import YouTubeMatcher, YouTubeSearchClient
 from preview import router as preview_router
 
 logging.basicConfig(
@@ -50,7 +47,7 @@ async def lifespan(app: FastAPI):
         threshold=settings.youtube_match_threshold,
         concurrency=settings.youtube_search_concurrency,
     )
-    app.state.youtube_export_access = YouTubeExportAccess(
+    app.state.youtube_export_access = BackendAccess(
         settings.backend_access_token,
         requests_per_minute=settings.youtube_export_requests_per_minute,
     )
@@ -58,7 +55,7 @@ async def lifespan(app: FastAPI):
         None
         if settings.allow_unauthenticated_recommend
         and not settings.backend_access_token
-        else YouTubeExportAccess(
+        else BackendAccess(
             settings.backend_access_token,
             requests_per_minute=settings.recommend_requests_per_minute,
         )

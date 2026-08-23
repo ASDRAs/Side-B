@@ -6,22 +6,22 @@ from collections import deque
 from collections.abc import Callable
 
 
-class YouTubeExportAccessConfigurationError(Exception):
+class BackendAccessConfigurationError(Exception):
     pass
 
 
-class YouTubeExportUnauthorizedError(Exception):
+class BackendAccessUnauthorizedError(Exception):
     pass
 
 
-class YouTubeExportRateLimitError(Exception):
+class BackendAccessRateLimitError(Exception):
     def __init__(self, retry_after: int) -> None:
-        super().__init__("YouTube export request rate exceeded")
+        super().__init__("Backend request rate exceeded")
         self.retry_after = max(1, retry_after)
 
 
-class YouTubeExportAccess:
-    """Authenticate export requests and bound use of the shared server key."""
+class BackendAccess:
+    """Authenticate protected backend requests and apply an instance-local limit."""
 
     def __init__(
         self,
@@ -40,12 +40,12 @@ class YouTubeExportAccess:
 
     async def authorize(self, provided_token: str | None) -> None:
         if not self._token:
-            raise YouTubeExportAccessConfigurationError(
+            raise BackendAccessConfigurationError(
                 "SIDE_B_ACCESS_TOKEN is not configured"
             )
         candidate = str(provided_token or "").strip()
         if not candidate or not secrets.compare_digest(candidate, self._token):
-            raise YouTubeExportUnauthorizedError("Invalid YouTube export token")
+            raise BackendAccessUnauthorizedError("Invalid backend access token")
 
         async with self._lock:
             now = self._clock()
@@ -56,5 +56,5 @@ class YouTubeExportAccess:
                 retry_after = math.ceil(
                     self._window_seconds - (now - self._requests[0])
                 )
-                raise YouTubeExportRateLimitError(retry_after)
+                raise BackendAccessRateLimitError(retry_after)
             self._requests.append(now)
