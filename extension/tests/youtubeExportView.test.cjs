@@ -49,6 +49,14 @@ test("orders matched and unmatched review rows by backend position", async () =>
   );
 });
 
+test("leaves low-confidence candidates unchecked for manual review", async () => {
+  const { shouldAutoSelectMatch } = await loadModule();
+
+  assert.equal(shouldAutoSelectMatch({ auto_selected: false }), false);
+  assert.equal(shouldAutoSelectMatch({ auto_selected: true }), true);
+  assert.equal(shouldAutoSelectMatch({}), true);
+});
+
 test("matches stored state to the current operation only", async () => {
   const { isStateForOperation } = await loadModule();
 

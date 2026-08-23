@@ -30,6 +30,7 @@ class YouTubeMatchedTrack(BaseModel):
     youtube_title: str
     channel_title: str
     confidence: float = Field(ge=0.0, le=1.0)
+    auto_selected: bool = True
     position: int = Field(ge=0)
 
 

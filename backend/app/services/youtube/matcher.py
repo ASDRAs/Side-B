@@ -8,6 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from pykakasi import kakasi
+
 from app.services.youtube.client import YouTubeSearchClient
 from app.utils.text import compact_text, text_ratio
 from app.utils.track_matching import (
@@ -42,6 +44,16 @@ _BAD_DERIVATIVE_MARKERS = (
     "반주",
 )
 _ALTERED_SPEED_MARKERS = ("nightcore", "sped up", "slowed")
+_COVER_SUFFIX_PATTERN = re.compile(
+    r"(?<!\w)(?:(?:piano|guitar|band|vocal|drum|bass|acoustic)\s+)?"
+    r"cover(?:\s+by\b.*)?\s*$",
+    re.IGNORECASE,
+)
+_COVER_BRACKET_PATTERN = re.compile(
+    r"[\[(【][^)\]】]*(?<!\w)cover(?!\w)[^)\]】]*[)\]】]",
+    re.IGNORECASE,
+)
+_JAPANESE_ROMANIZER = kakasi()
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +95,24 @@ def _candidate_fields(item: dict[str, Any]) -> tuple[str, str, str] | None:
     return str(video_id), title, channel
 
 
+def _text_variants(value: str) -> tuple[str, ...]:
+    """Return the original spelling and a Japanese Hepburn transliteration.
+
+    YouTube commonly exposes Japanese official channel names while Last.fm and
+    iTunes return the same artist in Latin characters. Transliteration gives us
+    evidence that those spellings identify the same name without weakening the
+    confidence threshold for unrelated artists.
+    """
+    romanized = "".join(
+        str(part.get("hepburn") or part.get("orig") or "")
+        for part in _JAPANESE_ROMANIZER.convert(value)
+    ).strip()
+    values = [value]
+    if romanized and compact_text(romanized) != compact_text(value):
+        values.append(romanized)
+    return tuple(values)
+
+
 def _title_score(candidate_title: str, expected_title: str) -> float:
     fragments = [candidate_title]
     fragments.extend(
@@ -97,12 +127,12 @@ def _title_score(candidate_title: str, expected_title: str) -> float:
     )
     return max(
         (
-            (
-                text_ratio(clean_title(fragment), clean_title(expected_title))
-                if identity_qualifiers_match(fragment, expected_title)
-                else 0.0
-            )
+            text_ratio(clean_title(fragment_variant), clean_title(expected_variant))
+            if identity_qualifiers_match(fragment_variant, expected_variant)
+            else 0.0
             for fragment in fragments
+            for fragment_variant in _text_variants(fragment)
+            for expected_variant in _text_variants(expected_title)
         ),
         default=0.0,
     )
@@ -174,15 +204,50 @@ def _artist_score(candidate_title: str, channel_title: str, artist: str) -> floa
         _channel_artist(channel_title),
         *_title_artist_candidates(candidate_title),
     ]
+    expected_variants = _text_variants(artist)
     return max(
         (
             1.0
-            if _starts_with_artist(candidate, artist)
-            else artist_score(candidate, (artist,), candidate_title)
+            if any(
+                _starts_with_artist(candidate_variant, expected)
+                for expected in expected_variants
+            )
+            else artist_score(
+                candidate_variant,
+                expected_variants,
+                candidate_title,
+            )
             for candidate in candidates
             if candidate
+            for candidate_variant in _text_variants(candidate)
         ),
         default=0.0,
+    )
+
+
+def _contains_derivative_marker(
+    value: str,
+    marker: str,
+    *,
+    title_context: bool = True,
+) -> bool:
+    if contains_bad_version_marker(value, marker, title_context=title_context):
+        return True
+    return bool(
+        title_context
+        and marker.casefold() == "cover"
+        and (
+            _COVER_SUFFIX_PATTERN.search(value) or _COVER_BRACKET_PATTERN.search(value)
+        )
+    )
+
+
+def _looks_like_derivative(value: str, *, title_context: bool = True) -> bool:
+    return looks_like_bad_version(value, title_context=title_context) or bool(
+        title_context
+        and (
+            _COVER_SUFFIX_PATTERN.search(value) or _COVER_BRACKET_PATTERN.search(value)
+        )
     )
 
 
@@ -215,11 +280,11 @@ def score_candidate(
 
     if any(
         (
-            contains_bad_version_marker(title, marker)
-            or contains_bad_version_marker(channel, marker, title_context=False)
+            _contains_derivative_marker(title, marker)
+            or _contains_derivative_marker(channel, marker, title_context=False)
         )
-        and not contains_bad_version_marker(expected_title, marker)
-        and not contains_bad_version_marker(
+        and not _contains_derivative_marker(expected_title, marker)
+        and not _contains_derivative_marker(
             expected_artist, marker, title_context=False
         )
         for marker in _BAD_DERIVATIVE_MARKERS
@@ -233,15 +298,19 @@ def score_candidate(
         score -= 0.30
     if version_markers(title) != version_markers(expected_title):
         score -= 0.20
-    candidate_has_bad_version = looks_like_bad_version(title) or looks_like_bad_version(
-        channel, title_context=False
+    candidate_has_bad_version = _looks_like_derivative(title) or _looks_like_derivative(
+        channel,
+        title_context=False,
     )
     if (
         candidate_has_bad_version
-        and not looks_like_bad_version(expected_title)
-        and not looks_like_bad_version(expected_artist, title_context=False)
+        and not _looks_like_derivative(expected_title)
+        and not _looks_like_derivative(expected_artist, title_context=False)
     ):
-        score = min(score, 0.64)
+        # A translated Topic title with an exact artist bottoms out at 0.47.
+        # Keep unrequested covers below that so the official upload remains the
+        # review candidate even when only the cover repeats the source title.
+        score = min(score, 0.44)
 
     return YouTubeMatch(
         video_id=video_id,
@@ -301,7 +370,11 @@ class YouTubeMatcher:
         return entry.outcome
 
     def _store(self, key: tuple[str, str], outcome: MatchOutcome) -> None:
-        ttl = self.positive_ttl_seconds if outcome.match else self.negative_ttl_seconds
+        ttl = (
+            self.positive_ttl_seconds
+            if outcome.match and outcome.reason is None
+            else self.negative_ttl_seconds
+        )
         self._cache[key] = _CacheEntry(self._clock() + ttl, outcome)
         self._cache.move_to_end(key)
         while len(self._cache) > self.max_cache_size:
@@ -321,7 +394,10 @@ class YouTubeMatcher:
             elif best.confidence >= self.threshold:
                 outcome = MatchOutcome(match=best)
             else:
-                outcome = MatchOutcome(match=None, reason="low_confidence")
+                # Keep the best candidate visible for explicit user review. The
+                # API marks it as not auto-selected, so a low score never silently
+                # enters a playlist but can still be accepted by a human.
+                outcome = MatchOutcome(match=best, reason="low_confidence")
         self._store(key, outcome)
         return outcome
 

@@ -35,6 +35,11 @@ export function orderedMatchReviewRows(matches = {}) {
   return rows.map(({ order: _order, ...row }) => row);
 }
 
+export function shouldAutoSelectMatch(track) {
+  // Older backends do not send this field, so preserve their previous default.
+  return track?.auto_selected !== false;
+}
+
 export function isStateForOperation(state, operationId) {
   return Boolean(operationId && state?.operationId === operationId);
 }

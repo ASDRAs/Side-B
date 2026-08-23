@@ -43,6 +43,36 @@ def test_official_video_can_take_artist_credit_from_title_prefix():
     assert candidate.confidence >= 0.85
 
 
+def test_japanese_official_artist_name_matches_romanized_artist():
+    candidate = score_candidate(
+        _item(
+            "yorushika-id",
+            "ヨルシカ - だから僕は音楽を辞めた (Music Video)",
+            "ヨルシカ / n-buna Official",
+        ),
+        "だから僕は音楽を辞めた",
+        "Yorushika",
+    )
+
+    assert candidate is not None
+    assert candidate.confidence >= 0.85
+
+
+def test_japanese_title_matches_hepburn_romanization():
+    candidate = score_candidate(
+        _item(
+            "romanized-id",
+            "ヨルシカ - 靴の花火 (Music Video)",
+            "ヨルシカ / n-buna Official",
+        ),
+        "Kutsu no Hanabi",
+        "Yorushika",
+    )
+
+    assert candidate is not None
+    assert candidate.confidence >= 0.85
+
+
 @pytest.mark.parametrize(
     ("title", "channel", "expected_title", "expected_artist"),
     [
@@ -84,6 +114,48 @@ def test_wrong_artist_and_derivative_versions_stay_below_threshold():
     assert wrong_artist.confidence < 0.85
     assert cover is not None
     assert cover.confidence < 0.85
+
+
+@pytest.mark.parametrize(
+    ("expected_title", "topic_title", "cover_title"),
+    [
+        (
+            "ギターと孤独と蒼い惑星",
+            "Guitar, Loneliness and Blue Planet",
+            (
+                "Kessoku Band (結束バンド) - ギターと孤独と蒼い惑星 | "
+                "Bocchi the Rock! Insert Song | Piano Cover"
+            ),
+        ),
+        (
+            "星座になれたら",
+            "If I could be a constellation",
+            (
+                "【Guitar Cover】ぼっち・ざ・ろっく!「星座になれたら "
+                "Full+秀華祭Gtソロ/結束バンド」If I could be a constellation/Kessoku Band"
+            ),
+        ),
+    ],
+)
+def test_instrument_cover_stays_below_translated_topic_candidate(
+    expected_title, topic_title, cover_title
+):
+    translated_topic = _item(
+        "topic",
+        topic_title,
+        "kessoku band - Topic",
+    )
+    cover = _item("cover", cover_title, "Project Piano")
+
+    selected = select_best_candidate(
+        [translated_topic, cover],
+        expected_title,
+        "kessoku band",
+    )
+
+    assert selected is not None
+    assert selected.video_id == "topic"
+    assert 0.47 <= selected.confidence < 0.85
 
 
 def test_same_script_artist_prefix_does_not_count_as_an_alias():
@@ -302,7 +374,8 @@ async def test_matcher_marks_existing_but_weak_candidates_low_confidence():
 
     outcome = await matcher.match_track("Hello", "Adele")
 
-    assert outcome.match is None
+    assert outcome.match is not None
+    assert outcome.match.video_id == "wrong"
     assert outcome.reason == "low_confidence"
 
 
@@ -370,6 +443,26 @@ async def test_matcher_expires_positive_cache_entries_with_injected_clock():
     now[0] += 11
     await matcher.match_track("Hello", "Adele")
 
+    assert len(client.calls) == 2
+
+
+async def test_matcher_expires_manual_review_candidates_with_negative_ttl():
+    now = [100.0]
+    client = _FakeSearchClient(
+        [_item("weak", "Another Song", "Another Artist - Topic")]
+    )
+    matcher = YouTubeMatcher(
+        client,
+        positive_ttl_seconds=100,
+        negative_ttl_seconds=10,
+        clock=lambda: now[0],
+    )
+
+    first = await matcher.match_track("Hello", "Adele")
+    now[0] += 11
+    second = await matcher.match_track("Hello", "Adele")
+
+    assert first.reason == second.reason == "low_confidence"
     assert len(client.calls) == 2
 
 

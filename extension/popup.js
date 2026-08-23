@@ -18,6 +18,7 @@ import {
   isStateForOperation,
   orderedMatchReviewRows,
   partitionExportableTracks,
+  shouldAutoSelectMatch,
   unmatchedReasonLabel,
 } from "./scripts/youtubeExportView.js";
 
@@ -259,7 +260,7 @@ function reviewYouTubeMatches(matches) {
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = row.kind === "matched";
+    checkbox.checked = row.kind === "matched" && shouldAutoSelectMatch(track);
     checkbox.disabled = row.kind === "unmatched";
     if (row.kind === "matched") {
       checkbox.dataset.index = String(row.index);
@@ -277,7 +278,9 @@ function reviewYouTubeMatches(matches) {
       const match = document.createElement("span");
       match.textContent = `${track.youtube_title} · ${track.channel_title}`;
       const confidence = document.createElement("span");
-      confidence.textContent = `확신도 ${Math.round(track.confidence * 100)}%`;
+      confidence.textContent = `확신도 ${Math.round(track.confidence * 100)}%${
+        track.auto_selected === false ? " · 직접 확인 필요" : ""
+      }`;
       copy.append(title, match, confidence);
     } else {
       const reason = document.createElement("span");
@@ -380,7 +383,7 @@ async function exportBucket(bucketName, tracks) {
       return;
     }
     if (!matches.matched?.length) {
-      throw new Error("YouTube에서 확실하게 매칭된 곡이 없습니다.");
+      throw new Error("YouTube에서 확인할 수 있는 곡 후보가 없습니다.");
     }
 
     renderYouTubeExportState({
