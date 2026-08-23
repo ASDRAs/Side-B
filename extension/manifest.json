@@ -1,9 +1,16 @@
 {
   "manifest_version": 3,
   "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvY/4EaFFCMhMkroTccYVCaSHpqjZHhtCxGgqPURJRhd2z7OoTDUhDlMGPNWtV8m33qfwn7uqY7ojU33t3UVPWX2CpyHJujhjkmiDlf0XVwfJgUQMXIRF98/Wz9O/IV4uWsT0akpHEGc5hnd8/kuHmP4NSw5QYhA6zDnuMzoxneuWnHlrwdvKy55oESOtaNLFTaYdrw4Cr3XaQENANs4Y6xvIvldQgl7PD7cyjdLUSd87IR7kF0RDiQTTHvhgbsO11Sexq2XYcnE3ujQFEtY/MjceifeAYISEa0cTDahM8yQoyjBMqSmbeS6uKJtbHe4V826GPoNoH6S5f5Iq+4c+3wIDAQAB",
   "name": "Side-B Recommendation Client",
   "version": "0.1.0",
   "description": "Side-B 백엔드 추천 응답을 확인하는 개발용 익스텐션",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "permissions": [
     "storage",
     "activeTab",
@@ -15,10 +22,11 @@
   "host_permissions": [
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*",
+    "https://side-b-backend-7hmhv6htsa-du.a.run.app/*",
     "https://www.googleapis.com/*"
   ],
   "oauth2": {
-    "client_id": "REPLACE_WITH_CHROME_EXTENSION_OAUTH_CLIENT_ID",
+    "client_id": "1073342688292-vrnnhbs5vhi6llpbhpd4174pedcsp7ld.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/youtube.force-ssl"
     ]
@@ -27,6 +35,12 @@
     "service_worker": "background.js"
   },
   "action": {
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    },
     "default_title": "Side-B",
     "default_popup": "popup.html"
   }

@@ -25,6 +25,12 @@ cp .env.example .env
 `.env`는 Git과 Docker 이미지에 포함되지 않습니다. Gemini 관련 변수는 로컬 태그
 분류 모델로 교체하기 전까지만 사용합니다.
 
+예시의 `ALLOW_UNAUTHENTICATED_RECOMMEND`는 안전하게 `false`로 설정돼 있습니다.
+로컬에서 팀 토큰 없이 브라우저 요청을 테스트할 때만 복사한 `.env`에서 이 값을
+`true`로 변경합니다. 공개 환경에서는 항상 `false`로 유지하고, 임의의 긴
+`SIDE_B_ACCESS_TOKEN`을 Secret으로 설정해야 합니다. 이 토큰은 비용과 외부 API
+쿼터를 사용하는 `/recommend`와 YouTube 검색 API를 함께 보호합니다.
+
 ### 실행
 
 프로젝트 루트에서 다음 명령을 실행합니다.
@@ -44,6 +50,17 @@ docker compose up -d --build
 ```text
 http://127.0.0.1:8000/api/health
 ```
+
+Chrome Extension은 기본적으로 배포된 Cloud Run 백엔드를 사용합니다. 로컬 백엔드와
+연결해 개발하려면 Extension 팝업의 `백엔드 주소`를
+`http://127.0.0.1:8000` 또는 `http://localhost:8000`으로 변경합니다.
+
+배포 URL은 브라우저가 호출해야 하는 공개 식별자이므로 비밀로 취급하지 않습니다.
+대신 배포에서는 토큰 인증을 fail-closed로 적용하고, 추천과 YouTube 검색에 각각
+독립적인 분당 요청 제한을 둡니다. CORS 기본값도 고정 Extension ID와 로컬 프론트엔드
+origin만 허용합니다. 다른 웹 프론트엔드를 배포한다면 그 정확한 origin을
+`CORS_ALLOWED_ORIGINS`에 추가합니다. 애플리케이션 제한은 Cloud Run 인스턴스별이므로,
+공개 서비스로 확장할 때는 API Gateway나 공유 저장소 기반 제한을 추가해야 합니다.
 
 8000 포트를 다른 프로그램이 사용 중이면 호스트 포트만 변경할 수 있습니다.
 
