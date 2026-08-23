@@ -16,7 +16,9 @@ from app.utils.track_matching import (
     artist_score,
     clean_title,
     contains_bad_version_marker,
+    identity_qualifiers,
     identity_qualifiers_match,
+    is_decorative_remainder,
     looks_like_bad_version,
     strict_title_ratio,
     version_markers,
@@ -43,6 +45,10 @@ _BAD_DERIVATIVE_MARKERS = (
     "뮤직마루",
     "노래방",
     "반주",
+    "커버",
+    "불러봄",
+    "불러봤다",
+    "리메이크",
 )
 _ALTERED_SPEED_MARKERS = ("nightcore", "sped up", "slowed")
 _COVER_SUFFIX_PATTERN = re.compile(
@@ -56,6 +62,11 @@ _COVER_BRACKET_PATTERN = re.compile(
 )
 _HANGUL_PATTERN = re.compile(r"[\uac00-\ud7a3]")
 _JAPANESE_PATTERN = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+_PARENTHESIZED_ALIAS_PATTERN = re.compile(r"^\s*\(([^()]*)\)\s*")
+_COLLABORATION_ALIAS_PATTERN = re.compile(
+    r"(?<!\w)(?:feat(?:uring)?|ft|with)(?!\w)|[&,/]",
+    re.IGNORECASE,
+)
 _JAPANESE_ROMANIZER = kakasi()
 
 
@@ -136,6 +147,61 @@ def _leading_text_match(candidate: str, expected: str) -> re.Match[str] | None:
     )
 
 
+def _consume_cross_script_artist_alias(
+    value: str,
+    expected_artist: str,
+) -> str | None:
+    """Consume one cross-script artist alias, or reject an invalid alias.
+
+    Domain: immediately after an exact Hangul artist prefix in the candidate
+    title. The alias must use a disjoint letter script and must not describe a
+    collaboration, identity qualifier, or derivative version.
+    """
+    match = _PARENTHESIZED_ALIAS_PATTERN.match(value)
+    if not match:
+        return value
+    alias = match.group(1).strip()
+    qualified_alias = f"({alias})"
+    if (
+        not alias
+        or _COLLABORATION_ALIAS_PATTERN.search(alias)
+        or identity_qualifiers(qualified_alias)
+        or version_markers(qualified_alias)
+        or looks_like_bad_version(qualified_alias)
+        or not _starts_with_artist(
+            f"{expected_artist}({alias})",
+            expected_artist,
+        )
+    ):
+        return None
+    return value[match.end() :]
+
+
+def _consume_cross_script_title_alias(
+    value: str,
+    expected_title: str,
+) -> str | None:
+    """Consume one non-identity alias after an exact Hangul title."""
+    match = _PARENTHESIZED_ALIAS_PATTERN.match(value)
+    if not match:
+        return None
+    alias = match.group(1).strip()
+    qualified_alias = f"({alias})"
+    expected_scripts = _letter_scripts(expected_title)
+    alias_scripts = _letter_scripts(alias)
+    if (
+        not alias
+        or identity_qualifiers(qualified_alias)
+        or version_markers(qualified_alias)
+        or looks_like_bad_version(qualified_alias)
+        or not expected_scripts
+        or not alias_scripts
+        or not expected_scripts.isdisjoint(alias_scripts)
+    ):
+        return None
+    return value[match.end() :]
+
+
 def _korean_artist_prefixed_title_fragment(
     candidate_title: str,
     expected_title: str,
@@ -160,10 +226,18 @@ def _korean_artist_prefixed_title_fragment(
         if not artist_match:
             continue
         remainder = candidate_title[artist_match.end() :]
-        remainder = re.sub(r"^\s*\([^)]*\)\s*", "", remainder, count=1)
+        remainder = _consume_cross_script_artist_alias(remainder, artist_variant)
+        if remainder is None:
+            continue
         for title_variant in expected_title_variants:
             title_match = _leading_text_match(remainder, title_variant)
-            if title_match:
+            if not title_match:
+                continue
+            suffix = remainder[title_match.end() :]
+            if is_decorative_remainder(suffix):
+                return remainder[title_match.start() : title_match.end()].strip()
+            suffix = _consume_cross_script_title_alias(suffix, title_variant)
+            if suffix is not None and is_decorative_remainder(suffix):
                 return remainder[title_match.start() : title_match.end()].strip()
     return None
 

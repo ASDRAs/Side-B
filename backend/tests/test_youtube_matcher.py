@@ -115,21 +115,20 @@ def test_korean_transliteration_artifacts_do_not_create_automatic_matches():
 
 def test_korean_prefix_rule_stays_within_its_declared_domain():
     assert (
-        _korean_artist_prefixed_title_fragment(
-            "오늘 아이유 밤편지", "밤편지", "아이유"
-        )
+        _korean_artist_prefixed_title_fragment("오늘 아이유 밤편지", "밤편지", "아이유")
         is None
     )
     assert (
-        _korean_artist_prefixed_title_fragment("Adele Hello", "Hello", "Adele")
-        is None
+        _korean_artist_prefixed_title_fragment("Adele Hello", "Hello", "Adele") is None
     )
     assert (
         _korean_artist_prefixed_title_fragment("ヨルシカ 晴る", "晴る", "ヨルシカ")
         is None
     )
     assert (
-        _korean_artist_prefixed_title_fragment("ＡＤＥＬＥ Hello", "Hello", "ＡＤＥＬＥ")
+        _korean_artist_prefixed_title_fragment(
+            "ＡＤＥＬＥ Hello", "Hello", "ＡＤＥＬＥ"
+        )
         is None
     )
     channel_only = score_candidate(
@@ -157,7 +156,26 @@ def test_korean_prefix_rule_stays_within_its_declared_domain():
             "밤편지",
             "아이유",
         ),
-        ("아이유 좋은 날 Live", "아이유 - Topic", "좋은 날", "아이유"),
+        ("아이유 좋은 날", "아이유 - Topic", "좋은 날", "아이유"),
+        (
+            "아이유(IU) 밤편지(Through the Night)",
+            "1theK (원더케이)",
+            "밤편지",
+            "아이유",
+        ),
+        (
+            "아이유 밤편지 (Live)",
+            "아이유 - Topic",
+            "밤편지 (Live)",
+            "아이유",
+        ),
+        ("아이유 커버", "아이유 - Topic", "커버", "아이유"),
+        (
+            "투모로우바이투게더(TOMORROW X TOGETHER) 어느날 머리에서 뿔이 자랐다",
+            "HYBE LABELS",
+            "어느날 머리에서 뿔이 자랐다",
+            "투모로우바이투게더",
+        ),
         (
             "볼빨간사춘기 나만 봄",
             "볼빨간사춘기 - Topic",
@@ -175,6 +193,44 @@ def test_korean_artist_prefixed_titles_without_delimiters_are_automatic_matches(
 
     assert candidate is not None
     assert candidate.confidence >= 0.85
+
+
+@pytest.mark.parametrize(
+    ("title", "channel", "expected_title", "expected_artist"),
+    [
+        # 한글로만 표기한 파생 업로드. 영어 대응어만 마커에 있으면 통과한다.
+        ("아이유 밤편지 커버", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 AI 커버", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 불러봄", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 불러봤다", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 리메이크", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 (커버)", "아무 채널", "밤편지", "아이유"),
+        ("아이유 - 밤편지 커버", "아무 채널", "밤편지", "아이유"),
+        # 구분자가 없으면 제목 뒤 표기가 통째로 무시되던 경로.
+        ("아이유 밤편지 어쿠스틱", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 Live", "아이유 - Topic", "밤편지", "아이유"),
+        ("아이유 좋은 날 Live", "아이유 - Topic", "좋은 날", "아이유"),
+        ("아이유 밤편지 (Part 2)", "아이유 - Topic", "밤편지", "아이유"),
+        ("아이유 밤편지 (Demo)", "아이유 - Topic", "밤편지", "아이유"),
+        (
+            "아이유 밤편지 (Japanese Version)",
+            "아이유 - Topic",
+            "밤편지",
+            "아이유",
+        ),
+        ("아이유(다른 가수) 밤편지", "아이유 - Topic", "밤편지", "아이유"),
+        ("아이유(IU & SUGA) 밤편지", "아이유 - Topic", "밤편지", "아이유"),
+    ],
+)
+def test_korean_prefix_identity_changes_are_not_automatic_matches(
+    title, channel, expected_title, expected_artist
+):
+    candidate = score_candidate(
+        _item("derivative", title, channel), expected_title, expected_artist
+    )
+
+    assert candidate is not None
+    assert candidate.confidence < 0.85
 
 
 @pytest.mark.parametrize(
@@ -493,9 +549,7 @@ async def test_matcher_returns_candidates_above_review_threshold_for_review():
         ]
     )
 
-    outcome = await YouTubeMatcher(client).match_track(
-        "星座になれたら", "kessoku band"
-    )
+    outcome = await YouTubeMatcher(client).match_track("星座になれたら", "kessoku band")
 
     assert outcome.match is not None
     assert outcome.match.video_id == "translated-topic"

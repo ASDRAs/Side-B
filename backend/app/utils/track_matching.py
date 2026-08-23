@@ -75,6 +75,12 @@ _UNDELIMITED_SUFFIX_MARKERS = {
     "karaoke",
     "노래방",
     "반주",
+    # YouTube 같은 개별 소비자가 이 마커를 명시적으로 넘길 때만 접미사 문법을
+    # 제공한다. 공용 BAD_VERSION_MARKERS에는 넣지 않아 카탈로그 범위를 넓히지 않는다.
+    "커버",
+    "불러봄",
+    "불러봤다",
+    "리메이크",
 }
 
 
@@ -156,6 +162,25 @@ def identity_qualifiers(value: str) -> tuple[str, ...]:
 
 def identity_qualifiers_match(candidate: str, expected: str) -> bool:
     return identity_qualifiers(candidate) == identity_qualifiers(expected)
+
+
+def is_decorative_remainder(value: str) -> bool:
+    """정확히 일치한 제목 뒤에 남은 텍스트가 곡 정체성을 바꾸지 않는지 본다.
+
+    적용 범위: 제목 필드에서 제목이 정확히 일치한 뒤의 꼬리 텍스트. 괄호 안팎을
+    모두 `Official MV` 같은 장식 표기로 확인한다. 현지화 제목 별칭은 기대 제목의
+    문자 체계를 알아야 하므로 이 함수가 아니라 호출자가 별도로 판정한다.
+    """
+    remainder = value.strip()
+    if not remainder:
+        return True
+    if any(
+        not _DECORATIVE_QUALIFIER_PATTERN.fullmatch(content)
+        for content in _bracket_contents(remainder)
+    ):
+        return False
+    bare = _BRACKET_CONTENT_PATTERN.sub(" ", remainder).strip(" -_|:")
+    return not bare or bool(_DECORATIVE_QUALIFIER_PATTERN.fullmatch(bare))
 
 
 def clean_title(value: str) -> str:
