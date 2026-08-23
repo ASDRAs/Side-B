@@ -25,10 +25,11 @@ cp .env.example .env
 `.env`는 Git과 Docker 이미지에 포함되지 않습니다. Gemini 관련 변수는 로컬 태그
 분류 모델로 교체하기 전까지만 사용합니다.
 
-예시의 `ALLOW_UNAUTHENTICATED_RECOMMEND=true`는 로컬 Docker 개발 전용입니다.
-공개 환경에서는 이 값을 설정하지 말고, 임의의 긴 `SIDE_B_ACCESS_TOKEN`을 Secret으로
-설정해야 합니다. 이 토큰은 비용과 외부 API 쿼터를 사용하는 `/recommend`와 YouTube
-검색 API를 함께 보호합니다.
+예시의 `ALLOW_UNAUTHENTICATED_RECOMMEND`는 안전하게 `false`로 설정돼 있습니다.
+로컬에서 팀 토큰 없이 브라우저 요청을 테스트할 때만 복사한 `.env`에서 이 값을
+`true`로 변경합니다. 공개 환경에서는 항상 `false`로 유지하고, 임의의 긴
+`SIDE_B_ACCESS_TOKEN`을 Secret으로 설정해야 합니다. 이 토큰은 비용과 외부 API
+쿼터를 사용하는 `/recommend`와 YouTube 검색 API를 함께 보호합니다.
 
 ### 실행
 

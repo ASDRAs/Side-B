@@ -26,9 +26,10 @@ Extension 패키지에 넣지 않습니다.
 프로젝트 루트에서 백엔드를 실행합니다.
 
 먼저 `.env.example`을 `.env`로 복사하고 Gemini·Last.fm·YouTube 키를 채웁니다.
-예시 파일의 `ALLOW_UNAUTHENTICATED_RECOMMEND=true`는 로컬 브라우저 개발용입니다.
-공개 배포에서는 이 값을 사용하지 말고 `SIDE_B_ACCESS_TOKEN`을 Secret으로 설정해야
-합니다.
+예시 파일은 `ALLOW_UNAUTHENTICATED_RECOMMEND=false`로 인증을 유지합니다. 로컬에서
+팀 토큰 없이 브라우저 요청을 테스트할 때만 복사한 `.env`에서 이 값을 `true`로
+변경합니다. 공개 배포에서는 항상 `false`로 유지하고 `SIDE_B_ACCESS_TOKEN`을
+Secret으로 설정해야 합니다.
 
 ```powershell
 docker compose up --build

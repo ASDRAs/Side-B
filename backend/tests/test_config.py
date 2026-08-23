@@ -1,9 +1,13 @@
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.config import Settings
 from main import app
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
 
 
 def test_backend_access_token_prefers_generic_name_and_supports_legacy_alias():
@@ -16,6 +20,14 @@ def test_backend_access_token_prefers_generic_name_and_supports_legacy_alias():
 
     assert current.backend_access_token == "current-token"
     assert legacy.backend_access_token == "legacy-token"
+
+
+def test_example_env_keeps_unauthenticated_recommend_disabled(monkeypatch):
+    monkeypatch.delenv("ALLOW_UNAUTHENTICATED_RECOMMEND", raising=False)
+
+    settings = Settings(_env_file=ROOT_DIR / ".env.example")
+
+    assert settings.allow_unauthenticated_recommend is False
 
 
 def test_default_cors_allowlist_is_explicit():
