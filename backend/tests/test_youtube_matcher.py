@@ -5,6 +5,7 @@ import pytest
 from app.services.youtube.client import YouTubeAPIUnavailableError
 from app.services.youtube.matcher import (
     YouTubeMatcher,
+    _korean_artist_prefixed_title_fragment,
     _text_variants,
     _title_score,
     score_candidate,
@@ -110,6 +111,70 @@ def test_korean_transliteration_artifacts_do_not_create_automatic_matches():
         )
         assert candidate is not None
         assert candidate.confidence < 0.85
+
+
+def test_korean_prefix_rule_stays_within_its_declared_domain():
+    assert (
+        _korean_artist_prefixed_title_fragment(
+            "오늘 아이유 밤편지", "밤편지", "아이유"
+        )
+        is None
+    )
+    assert (
+        _korean_artist_prefixed_title_fragment("Adele Hello", "Hello", "Adele")
+        is None
+    )
+    assert (
+        _korean_artist_prefixed_title_fragment("ヨルシカ 晴る", "晴る", "ヨルシカ")
+        is None
+    )
+    assert (
+        _korean_artist_prefixed_title_fragment("ＡＤＥＬＥ Hello", "Hello", "ＡＤＥＬＥ")
+        is None
+    )
+    channel_only = score_candidate(
+        _item("channel-only", "unrelated", "아이유 밤편지"),
+        "밤편지",
+        "아이유",
+    )
+    assert channel_only is not None
+    assert channel_only.confidence < 0.85
+
+
+@pytest.mark.parametrize(
+    ("title", "channel", "expected_title", "expected_artist"),
+    [
+        ("아이유 밤편지", "아이유 - Topic", "밤편지", "아이유"),
+        (
+            "아이유 밤편지 (Official Audio)",
+            "아이유 - Topic",
+            "밤편지",
+            "아이유",
+        ),
+        (
+            "아이유(IU) 밤편지 Official MV",
+            "1theK (원더케이)",
+            "밤편지",
+            "아이유",
+        ),
+        ("아이유 좋은 날 Live", "아이유 - Topic", "좋은 날", "아이유"),
+        (
+            "볼빨간사춘기 나만 봄",
+            "볼빨간사춘기 - Topic",
+            "나만 봄",
+            "볼빨간사춘기",
+        ),
+    ],
+)
+def test_korean_artist_prefixed_titles_without_delimiters_are_automatic_matches(
+    title, channel, expected_title, expected_artist
+):
+    candidate = score_candidate(
+        _item("video-id", title, channel), expected_title, expected_artist
+    )
+
+    assert candidate is not None
+    assert candidate.confidence >= 0.85
 
 
 @pytest.mark.parametrize(

@@ -125,7 +125,54 @@ def _variant_text_ratio(candidate: str, expected: str) -> float:
     return text_ratio(candidate, expected)
 
 
-def _title_score(candidate_title: str, expected_title: str) -> float:
+def _leading_text_match(candidate: str, expected: str) -> re.Match[str] | None:
+    value = expected.strip()
+    if not value:
+        return None
+    return re.match(
+        rf"^\s*{re.escape(value)}(?!\w)",
+        candidate,
+        re.IGNORECASE,
+    )
+
+
+def _korean_artist_prefixed_title_fragment(
+    candidate_title: str,
+    expected_title: str,
+    expected_artist: str,
+) -> str | None:
+    """Extract a delimiter-free Korean title from the candidate title field.
+
+    Domain: title field only; Hangul artist and title; exact string-prefix artist
+    and exact word-boundary title, separated by whitespace and an optional
+    parenthesized artist alias. Other scripts and title positions stay on the
+    existing matcher paths.
+    """
+    if not (
+        _HANGUL_PATTERN.search(expected_artist)
+        and _HANGUL_PATTERN.search(expected_title)
+    ):
+        return None
+
+    expected_title_variants = _text_variants(expected_title)
+    for artist_variant in _text_variants(expected_artist):
+        artist_match = _leading_text_match(candidate_title, artist_variant)
+        if not artist_match:
+            continue
+        remainder = candidate_title[artist_match.end() :]
+        remainder = re.sub(r"^\s*\([^)]*\)\s*", "", remainder, count=1)
+        for title_variant in expected_title_variants:
+            title_match = _leading_text_match(remainder, title_variant)
+            if title_match:
+                return remainder[title_match.start() : title_match.end()].strip()
+    return None
+
+
+def _title_score(
+    candidate_title: str,
+    expected_title: str,
+    artist_prefixed_fragment: str | None = None,
+) -> float:
     fragments = [candidate_title]
     fragments.extend(
         part.strip()
@@ -137,6 +184,8 @@ def _title_score(candidate_title: str, expected_title: str) -> float:
         for match in re.findall(r"['\"‘’“”]([^'\"‘’“”]+)['\"‘’“”]", candidate_title)
         if match.strip()
     )
+    if artist_prefixed_fragment:
+        fragments.append(artist_prefixed_fragment)
     expected_variants = _text_variants(expected_title)
     return max(
         (
@@ -176,13 +225,7 @@ def _title_artist_candidates(candidate_title: str) -> list[str]:
 
 def _starts_with_artist(candidate: str, artist: str) -> bool:
     expected = artist.strip()
-    if not expected:
-        return False
-    match = re.match(
-        rf"^\s*{re.escape(expected)}(?!\w)",
-        candidate,
-        re.IGNORECASE,
-    )
+    match = _leading_text_match(candidate, expected)
     if not match:
         return False
     remainder = candidate[match.end() :].strip(" -_()[]")
@@ -294,8 +337,22 @@ def score_candidate(
         for marker in _OFFICIAL_MARKERS
     )
 
-    score = _title_score(title, expected_title) * 0.53
-    score += _artist_score(title, channel, expected_artist) * 0.35
+    artist_prefixed_fragment = _korean_artist_prefixed_title_fragment(
+        title,
+        expected_title,
+        expected_artist,
+    )
+    title_match_score = _title_score(
+        title,
+        expected_title,
+        artist_prefixed_fragment,
+    )
+    artist_match_score = _artist_score(title, channel, expected_artist)
+    if artist_prefixed_fragment:
+        artist_match_score = 1.0
+
+    score = title_match_score * 0.53
+    score += artist_match_score * 0.35
     score += 0.07 if official_channel else 0.0
     score += 0.05 if official_marker else 0.0
 
