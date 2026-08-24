@@ -5,6 +5,9 @@ import pytest
 from app.services.youtube.client import YouTubeAPIUnavailableError
 from app.services.youtube.matcher import (
     YouTubeMatcher,
+    _korean_artist_prefixed_title_fragment,
+    _text_variants,
+    _title_score,
     score_candidate,
     select_best_candidate,
 )
@@ -41,6 +44,193 @@ def test_official_video_can_take_artist_credit_from_title_prefix():
 
     assert candidate is not None
     assert candidate.confidence >= 0.85
+
+
+def test_japanese_official_artist_name_matches_romanized_artist():
+    candidate = score_candidate(
+        _item(
+            "yorushika-id",
+            "ヨルシカ - だから僕は音楽を辞めた (Music Video)",
+            "ヨルシカ / n-buna Official",
+        ),
+        "だから僕は音楽を辞めた",
+        "Yorushika",
+    )
+
+    assert candidate is not None
+    assert candidate.confidence >= 0.85
+
+
+def test_japanese_title_matches_hepburn_romanization():
+    candidate = score_candidate(
+        _item(
+            "romanized-id",
+            "ヨルシカ - 靴の花火 (Music Video)",
+            "ヨルシカ / n-buna Official",
+        ),
+        "Kutsu no Hanabi",
+        "Yorushika",
+    )
+
+    assert candidate is not None
+    assert candidate.confidence >= 0.85
+
+
+def test_korean_text_is_not_transliterated():
+    values = (
+        "아이유",
+        "뉴진스",
+        "소녀시대",
+        "블랙핑크",
+        "방탄소년단",
+        "밤편지",
+        "윤하",
+        "악뮤",
+        "좋은 날",
+    )
+
+    for value in values:
+        assert _text_variants(value) == (value,)
+
+
+def test_korean_transliteration_artifacts_do_not_create_automatic_matches():
+    cases = (
+        ("아이유 - 밤지", "아이유 - Topic", "밤편지", "아이유"),
+        ("아유 - 밤편지", "아유 - Topic", "밤편지", "아이유"),
+        ("아유 - 밤지", "아유 - Topic", "밤편지", "아이유"),
+        ("뉴스 - Super Shy", "뉴스 - Topic", "Super Shy", "뉴진스"),
+    )
+
+    assert _title_score("오늘의 뉴스", "뉴진스") < 0.85
+    assert _title_score("밤지", "밤편지") < 0.85
+    for title, channel, expected_title, expected_artist in cases:
+        candidate = score_candidate(
+            _item("artifact", title, channel),
+            expected_title,
+            expected_artist,
+        )
+        assert candidate is not None
+        assert candidate.confidence < 0.85
+
+
+def test_korean_prefix_rule_stays_within_its_declared_domain():
+    assert (
+        _korean_artist_prefixed_title_fragment("오늘 아이유 밤편지", "밤편지", "아이유")
+        is None
+    )
+    assert (
+        _korean_artist_prefixed_title_fragment("Adele Hello", "Hello", "Adele") is None
+    )
+    assert (
+        _korean_artist_prefixed_title_fragment("ヨルシカ 晴る", "晴る", "ヨルシカ")
+        is None
+    )
+    assert (
+        _korean_artist_prefixed_title_fragment(
+            "ＡＤＥＬＥ Hello", "Hello", "ＡＤＥＬＥ"
+        )
+        is None
+    )
+    channel_only = score_candidate(
+        _item("channel-only", "unrelated", "아이유 밤편지"),
+        "밤편지",
+        "아이유",
+    )
+    assert channel_only is not None
+    assert channel_only.confidence < 0.85
+
+
+@pytest.mark.parametrize(
+    ("title", "channel", "expected_title", "expected_artist"),
+    [
+        ("아이유 밤편지", "아이유 - Topic", "밤편지", "아이유"),
+        (
+            "아이유 밤편지 (Official Audio)",
+            "아이유 - Topic",
+            "밤편지",
+            "아이유",
+        ),
+        (
+            "아이유(IU) 밤편지 Official MV",
+            "1theK (원더케이)",
+            "밤편지",
+            "아이유",
+        ),
+        ("아이유 좋은 날", "아이유 - Topic", "좋은 날", "아이유"),
+        (
+            "아이유(IU) 밤편지(Through the Night)",
+            "1theK (원더케이)",
+            "밤편지",
+            "아이유",
+        ),
+        (
+            "아이유 밤편지 (Live)",
+            "아이유 - Topic",
+            "밤편지 (Live)",
+            "아이유",
+        ),
+        ("아이유 커버", "아이유 - Topic", "커버", "아이유"),
+        (
+            "투모로우바이투게더(TOMORROW X TOGETHER) 어느날 머리에서 뿔이 자랐다",
+            "HYBE LABELS",
+            "어느날 머리에서 뿔이 자랐다",
+            "투모로우바이투게더",
+        ),
+        (
+            "볼빨간사춘기 나만 봄",
+            "볼빨간사춘기 - Topic",
+            "나만 봄",
+            "볼빨간사춘기",
+        ),
+    ],
+)
+def test_korean_artist_prefixed_titles_without_delimiters_are_automatic_matches(
+    title, channel, expected_title, expected_artist
+):
+    candidate = score_candidate(
+        _item("video-id", title, channel), expected_title, expected_artist
+    )
+
+    assert candidate is not None
+    assert candidate.confidence >= 0.85
+
+
+@pytest.mark.parametrize(
+    ("title", "channel", "expected_title", "expected_artist"),
+    [
+        # 한글로만 표기한 파생 업로드. 영어 대응어만 마커에 있으면 통과한다.
+        ("아이유 밤편지 커버", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 AI 커버", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 불러봄", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 불러봤다", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 리메이크", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 (커버)", "아무 채널", "밤편지", "아이유"),
+        ("아이유 - 밤편지 커버", "아무 채널", "밤편지", "아이유"),
+        # 구분자가 없으면 제목 뒤 표기가 통째로 무시되던 경로.
+        ("아이유 밤편지 어쿠스틱", "아무 채널", "밤편지", "아이유"),
+        ("아이유 밤편지 Live", "아이유 - Topic", "밤편지", "아이유"),
+        ("아이유 좋은 날 Live", "아이유 - Topic", "좋은 날", "아이유"),
+        ("아이유 밤편지 (Part 2)", "아이유 - Topic", "밤편지", "아이유"),
+        ("아이유 밤편지 (Demo)", "아이유 - Topic", "밤편지", "아이유"),
+        (
+            "아이유 밤편지 (Japanese Version)",
+            "아이유 - Topic",
+            "밤편지",
+            "아이유",
+        ),
+        ("아이유(다른 가수) 밤편지", "아이유 - Topic", "밤편지", "아이유"),
+        ("아이유(IU & SUGA) 밤편지", "아이유 - Topic", "밤편지", "아이유"),
+    ],
+)
+def test_korean_prefix_identity_changes_are_not_automatic_matches(
+    title, channel, expected_title, expected_artist
+):
+    candidate = score_candidate(
+        _item("derivative", title, channel), expected_title, expected_artist
+    )
+
+    assert candidate is not None
+    assert candidate.confidence < 0.85
 
 
 @pytest.mark.parametrize(
@@ -84,6 +274,48 @@ def test_wrong_artist_and_derivative_versions_stay_below_threshold():
     assert wrong_artist.confidence < 0.85
     assert cover is not None
     assert cover.confidence < 0.85
+
+
+@pytest.mark.parametrize(
+    ("expected_title", "topic_title", "cover_title"),
+    [
+        (
+            "ギターと孤独と蒼い惑星",
+            "Guitar, Loneliness and Blue Planet",
+            (
+                "Kessoku Band (結束バンド) - ギターと孤独と蒼い惑星 | "
+                "Bocchi the Rock! Insert Song | Piano Cover"
+            ),
+        ),
+        (
+            "星座になれたら",
+            "If I could be a constellation",
+            (
+                "【Guitar Cover】ぼっち・ざ・ろっく!「星座になれたら "
+                "Full+秀華祭Gtソロ/結束バンド」If I could be a constellation/Kessoku Band"
+            ),
+        ),
+    ],
+)
+def test_instrument_cover_stays_below_translated_topic_candidate(
+    expected_title, topic_title, cover_title
+):
+    translated_topic = _item(
+        "topic",
+        topic_title,
+        "kessoku band - Topic",
+    )
+    cover = _item("cover", cover_title, "Project Piano")
+
+    selected = select_best_candidate(
+        [translated_topic, cover],
+        expected_title,
+        "kessoku band",
+    )
+
+    assert selected is not None
+    assert selected.video_id == "topic"
+    assert 0.47 <= selected.confidence < 0.85
 
 
 def test_same_script_artist_prefix_does_not_count_as_an_alias():
@@ -294,7 +526,7 @@ async def test_matcher_caches_empty_search_as_not_found():
     assert len(client.calls) == 1
 
 
-async def test_matcher_marks_existing_but_weak_candidates_low_confidence():
+async def test_matcher_rejects_candidates_below_review_threshold():
     client = _FakeSearchClient(
         [_item("wrong", "Another Song", "Another Artist - Topic")]
     )
@@ -303,6 +535,25 @@ async def test_matcher_marks_existing_but_weak_candidates_low_confidence():
     outcome = await matcher.match_track("Hello", "Adele")
 
     assert outcome.match is None
+    assert outcome.reason == "low_confidence"
+
+
+async def test_matcher_returns_candidates_above_review_threshold_for_review():
+    client = _FakeSearchClient(
+        [
+            _item(
+                "translated-topic",
+                "If I could be a constellation",
+                "kessoku band - Topic",
+            )
+        ]
+    )
+
+    outcome = await YouTubeMatcher(client).match_track("星座になれたら", "kessoku band")
+
+    assert outcome.match is not None
+    assert outcome.match.video_id == "translated-topic"
+    assert 0.40 <= outcome.match.confidence < 0.85
     assert outcome.reason == "low_confidence"
 
 
@@ -370,6 +621,33 @@ async def test_matcher_expires_positive_cache_entries_with_injected_clock():
     now[0] += 11
     await matcher.match_track("Hello", "Adele")
 
+    assert len(client.calls) == 2
+
+
+async def test_matcher_expires_manual_review_candidates_with_negative_ttl():
+    now = [100.0]
+    client = _FakeSearchClient(
+        [
+            _item(
+                "translated-topic",
+                "If I could be a constellation",
+                "kessoku band - Topic",
+            )
+        ]
+    )
+    matcher = YouTubeMatcher(
+        client,
+        positive_ttl_seconds=100,
+        negative_ttl_seconds=10,
+        clock=lambda: now[0],
+    )
+
+    first = await matcher.match_track("星座になれたら", "kessoku band")
+    now[0] += 11
+    second = await matcher.match_track("星座になれたら", "kessoku band")
+
+    assert first.reason == second.reason == "low_confidence"
+    assert first.match is not None
     assert len(client.calls) == 2
 
 

@@ -119,6 +119,53 @@ async def test_router_deduplicates_matches_that_resolve_to_the_same_video():
     assert response.unmatched[0].position == 1
 
 
+async def test_router_returns_low_confidence_candidate_for_manual_review():
+    candidate = YouTubeMatch(
+        video_id="translated-topic",
+        youtube_title="If I could be a constellation",
+        channel_title="kessoku band - Topic",
+        confidence=0.47,
+    )
+    matcher = _Matcher(
+        {
+            ("星座になれたら", "kessoku band"): MatchOutcome(
+                match=candidate,
+                reason="low_confidence",
+            )
+        }
+    )
+    req = YouTubeMatchRequest(
+        bucket="similar",
+        tracks=[{"name": "星座になれたら", "artist": "kessoku band"}],
+    )
+
+    response = await match_youtube_tracks(req, _request(matcher), "test-token")
+
+    assert response.unmatched == []
+    assert response.matched[0].video_id == "translated-topic"
+    assert response.matched[0].auto_selected is False
+
+
+async def test_router_returns_below_review_threshold_as_unmatched():
+    matcher = _Matcher(
+        {
+            ("Hello", "Adele"): MatchOutcome(
+                match=None,
+                reason="low_confidence",
+            )
+        }
+    )
+    req = YouTubeMatchRequest(
+        bucket="similar",
+        tracks=[{"name": "Hello", "artist": "Adele"}],
+    )
+
+    response = await match_youtube_tracks(req, _request(matcher), "test-token")
+
+    assert response.matched == []
+    assert response.unmatched[0].reason == "low_confidence"
+
+
 async def test_router_cancels_sibling_searches_when_one_fails():
     class _FailingMatcher:
         def __init__(self):

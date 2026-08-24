@@ -126,6 +126,7 @@ async def match_youtube_tracks(
                     youtube_title=outcome.match.youtube_title,
                     channel_title=outcome.match.channel_title,
                     confidence=outcome.match.confidence,
+                    auto_selected=outcome.reason != "low_confidence",
                     position=position,
                 )
             )
