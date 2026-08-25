@@ -91,7 +91,12 @@ npm run test:e2e
 ```powershell
 npm run test:e2e:recommend
 npm run test:e2e:export
+npm run test:e2e:persistence
 ```
+
+영속화 시나리오는 토큰과 검색어가 패널을 다시 열어도 남는지, 삭제가 되돌아오지
+않는지, 여러 패널 사이에 삭제가 전파되는지를 확인합니다. 창마다 사이드 패널이
+따로 뜨므로 한쪽에 낡은 토큰이 남으면 그쪽 요청이 그 값을 다시 저장합니다.
 
 브라우저 화면을 보면서 실행하려면 다음 명령을 사용합니다.
 

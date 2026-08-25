@@ -530,6 +530,13 @@ async def get_tracks_metadata(
                     track.artist,
                     limit=8,
                     min_score=0.45,
+                    # 총점 문턱만으로는 제목이 정확한 오답을 막을 수 없다.
+                    # 가중치가 title 0.68 / artist 0.32라 아티스트가 전혀 달라도
+                    # 0.68이 나온다. 이 경로에만 하한이 빠져 있어서, 기준곡이
+                    # 동명이곡의 앨범아트와 source_id로 확정될 수 있었다.
+                    # source_id는 preview가 그대로 재생하므로 다른 곡이 나온다.
+                    # Deezer 폴백은 `_select_deezer_item`이 이미 걸러낸다.
+                    min_artist_score=_ARTIST_MIN_SCORE,
                 )
             )
 

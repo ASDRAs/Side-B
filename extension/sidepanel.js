@@ -30,6 +30,7 @@ const ACCESS_TOKEN_KEY = "backendAccessToken";
 const LAST_QUERY_KEY = "lastQuery";
 const RECENT_QUERIES_KEY = "recentQueries";
 const MAX_RECENT_QUERIES = 5;
+const TOKEN_SAVE_DEBOUNCE_MS = 250;
 const BUCKET_LABELS = {
   similar: "유사한 곡",
   reverse: "저노출 유사곡",
@@ -906,11 +907,16 @@ readLocal([
     settingsPanel.open = !backendAccessTokenInput.value;
   });
 
-// 입력을 마치는 즉시 저장한다. 추천 요청까지 기다릴 이유가 없다.
-backendAccessTokenInput.addEventListener("change", () => {
-  storeBackendAccessToken(backendAccessTokenInput.value).catch((error) => {
-    console.error("Failed to store the access token:", error);
-  });
+// change는 blur에서만 발생한다. 토큰을 붙여넣고 곧바로 패널을 닫으면 저장되지
+// 않아 다시 열었을 때 사라졌다. 입력 자체를 디바운스해 저장한다.
+let tokenSaveTimer = null;
+backendAccessTokenInput.addEventListener("input", () => {
+  clearTimeout(tokenSaveTimer);
+  tokenSaveTimer = setTimeout(() => {
+    storeBackendAccessToken(backendAccessTokenInput.value).catch((error) => {
+      console.error("Failed to store the access token:", error);
+    });
+  }, TOKEN_SAVE_DEBOUNCE_MS);
 });
 
 tokenRevealButton.addEventListener("click", () => {
@@ -938,6 +944,20 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   const state = changes.youtubeExport?.newValue;
   if (isStateForOperation(state, activeYouTubeOperationId)) {
     renderYouTubeExportState(state);
+  }
+
+  // 창마다 사이드 패널이 따로 뜬다. 다른 패널에서 지운 토큰이 이쪽에 남아 있으면
+  // 다음 추천 요청이 그 값을 그대로 다시 저장해 삭제가 되돌아간다.
+  if (changes[ACCESS_TOKEN_KEY]) {
+    const nextToken = changes[ACCESS_TOKEN_KEY].newValue || "";
+    // 입력 중인 값을 덮어쓰지 않는다.
+    if (document.activeElement !== backendAccessTokenInput) {
+      backendAccessTokenInput.value = nextToken;
+      renderTokenStatus(nextToken);
+    }
+  }
+  if (changes[RECENT_QUERIES_KEY]) {
+    renderQueryHistory(changes[RECENT_QUERIES_KEY].newValue);
   }
 });
 

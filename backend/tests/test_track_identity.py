@@ -281,3 +281,71 @@ async def test_metadata_leaves_no_binding_when_both_providers_miss(monkeypatch):
 
     assert track.bindings == {}
     assert track_to_api_dict(track)["source_id"] is None
+
+
+class _ScoringHttp:
+    """iTunes 응답만 대체하고 채점은 실제 코드를 그대로 태운다.
+
+    `_itunes_or_none`을 통째로 대체하면 점수 게이트를 건너뛰어 이 결함이
+    드러나지 않는다.
+    """
+
+    def __init__(self, results):
+        self.results = results
+
+    async def get(self, url, params=None, **kwargs):
+        return _ScoringResponse(self.results)
+
+
+class _ScoringResponse:
+    status_code = 200
+
+    def __init__(self, results):
+        self.results = results
+
+    def json(self):
+        return {"resultCount": len(self.results), "results": self.results}
+
+    def raise_for_status(self):
+        return None
+
+
+async def test_metadata_rejects_a_same_title_different_artist_match():
+    """제목만 같은 오답을 앨범아트·ID로 확정하면 안 된다.
+
+    가중치가 title 0.68 / artist 0.32라 아티스트가 전혀 달라도 총점이 0.68이
+    나온다. 총점 문턱(0.45)만으로는 막을 수 없어 아티스트 하한이 필요하다.
+    잘못된 source_id는 preview가 그대로 재생하므로 다른 곡이 들린다.
+    """
+    wrong = {
+        "trackId": 999,
+        "trackName": "Hello",
+        "artistName": "ZZZ",
+        "artworkUrl100": "https://example.com/wrong.jpg",
+    }
+    track = TrackInfo(name="Hello", artist="Adele")
+
+    await get_tracks_metadata(
+        _ScoringHttp([wrong]), [track], None, fields=["album_art", "source_id"]
+    )
+
+    assert track.album_art_url is None, "다른 아티스트의 앨범아트를 붙였다."
+    assert track.source_id is None, "다른 아티스트의 곡 ID로 확정했다."
+
+
+async def test_metadata_still_accepts_the_right_artist():
+    """하한이 정상 매칭까지 막으면 안 된다."""
+    right = {
+        "trackId": 1000,
+        "trackName": "Hello",
+        "artistName": "Adele",
+        "artworkUrl100": "https://example.com/right.jpg",
+    }
+    track = TrackInfo(name="Hello", artist="Adele")
+
+    await get_tracks_metadata(
+        _ScoringHttp([right]), [track], None, fields=["album_art", "source_id"]
+    )
+
+    assert track.album_art_url == "https://example.com/right.jpg"
+    assert track.source_id == "itunes:1000"
