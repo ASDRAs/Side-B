@@ -19,7 +19,7 @@ const recommendationPayload = {
   },
 };
 
-test("popup sends an authenticated recommendation and renders it", async ({}, testInfo) => {
+test("side panel sends an authenticated recommendation and renders it", async ({}, testInfo) => {
   const { context, page } = await launchExtensionPage(testInfo);
   let capturedRequest = null;
 

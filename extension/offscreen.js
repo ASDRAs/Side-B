@@ -91,6 +91,35 @@ async function startEq({ streamId, tabId, preset }) {
   };
 }
 
+function presetMatchesGraph(preset) {
+  const bands = preset.bands ?? [];
+  if (bands.length !== filterNodes.length) {
+    return false;
+  }
+  return bands.every((band, index) => filterNodes[index].frequency === band.frequency);
+}
+
+// 대역 구성이 그대로일 때만 값을 미끄러뜨린다. 구성이 바뀌면 필터를 다시
+// 만든다. 예전에는 일치하는 주파수만 갱신해서, 새 프리셋에 없는 필터가 그대로
+// 남고 새 주파수는 생기지 않았다. 곡별 EQ를 붙이면 이전 곡의 대역이 섞인다.
+function rebuildFilters(preset) {
+  for (const filter of filterNodes) {
+    filter.node.disconnect();
+  }
+  preampNode.disconnect();
+
+  filterNodes = (preset.bands ?? []).map((band) =>
+    createFilter(audioContext, band),
+  );
+
+  let currentNode = preampNode;
+  for (const filter of filterNodes) {
+    currentNode.connect(filter.node);
+    currentNode = filter.node;
+  }
+  currentNode.connect(audioContext.destination);
+}
+
 function updateEq(preset) {
   if (!audioContext || !preampNode) {
     throw new Error("현재 실행 중인 EQ가 없습니다.");
@@ -103,6 +132,16 @@ function updateEq(preset) {
     now,
     0.02,
   );
+
+  if (!presetMatchesGraph(preset)) {
+    rebuildFilters(preset);
+    console.log("EQ rebuilt:", preset);
+    return {
+      ok: true,
+      active: true,
+      tabId: currentTabId,
+    };
+  }
 
   for (const band of preset.bands ?? []) {
     const filter = filterNodes.find(

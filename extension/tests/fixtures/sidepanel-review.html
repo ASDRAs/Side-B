@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Side-B 매칭 검토 fixture</title>
+    <link rel="stylesheet" href="../../sidepanel.css" />
+  </head>
+  <body>
+<!--
+  sidepanel.js가 실제로 만든 DOM을 그대로 떠 온 시각 확인용 fixture다.
+  손으로 고치지 말고 아래 명령으로 다시 생성한다. 자동 테스트는 이 파일을
+  참조하지 않는다.
+    node tests/fixtures/generate-review-fixture.cjs
+-->
+    <div id="youtubeMatchReview" class="match-review" role="dialog" aria-modal="true" aria-labelledby="matchReviewTitle">
+          <div class="match-review-header">
+            <div>
+              <p id="matchReviewTitle" class="match-review-title">매칭 확인</p>
+              <p id="matchReviewSubtitle" class="match-review-subtitle">2/3곡 선택됨 · 1곡은 매칭 실패로 제외</p>
+            </div>
+            <label class="select-all">
+              <input id="youtubeMatchSelectAll" type="checkbox">
+              전체
+            </label>
+          </div>
+    
+          <div class="match-columns" aria-hidden="true">
+            <span></span>
+            <span>추천곡</span>
+            <span>YouTube 매칭</span>
+          </div>
+    
+          <ol id="youtubeMatchList" class="match-list"><li class="match-item" data-kind="matched"><input type="checkbox" data-index="0" aria-label="aespa - Whiplash"><div class="match-origin"><strong>Whiplash</strong><span class="match-sub">aespa</span></div><div class="match-target"><strong>aespa 에스파 'Whiplash' MV</strong><span class="match-sub">SMTOWN</span><div class="match-meta"><span class="confidence confidence-high">확신도 높음 93%</span></div></div></li><li class="match-item" data-kind="matched"><input type="checkbox" data-index="1" aria-label="NewJeans - Super Shy"><div class="match-origin"><strong>Super Shy</strong><span class="match-sub">NewJeans</span></div><div class="match-target"><strong>NewJeans (뉴진스) 'Super Shy' Official MV</strong><span class="match-sub">HYBE LABELS</span><div class="match-meta"><span class="confidence confidence-high">확신도 높음 90%</span></div></div></li><li class="match-item" data-kind="matched" data-review="needed"><input type="checkbox" data-index="2" aria-label="YOUNHA - Event Horizon"><div class="match-origin"><strong>Event Horizon</strong><span class="match-sub">YOUNHA</span></div><div class="match-target"><strong>YOUNHA - Event Horizon (Live)</strong><span class="match-sub">Random Uploader 1234</span><div class="match-meta"><span class="confidence confidence-low">확신도 낮음 51%</span><span class="match-note">직접 확인 필요</span></div></div></li><li class="match-item" data-kind="unmatched"><input type="checkbox" disabled="" aria-label="성시경 - 너의 모든 순간 제외"><div class="match-origin"><strong>너의 모든 순간</strong><span class="match-sub">성시경</span></div><div class="match-target"><div class="match-meta"><span class="confidence confidence-none">확신도 부족</span></div></div></li></ol>
+    
+          <div class="match-review-actions">
+            <button id="youtubeMatchCancel" class="secondary-button" type="button">
+              취소
+            </button>
+            <button id="youtubeMatchConfirm" type="button">플레이리스트 생성</button>
+          </div>
+        </div>
+  </body>
+</html>

@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Side-B</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+
+  <body>
+    <!-- 항상 보이는 상단 영역 -->
+    <div class="topbar">
+      <header class="header">
+        <h1>Side-B</h1>
+        <span id="connectionBadge" class="badge badge-idle">대기</span>
+      </header>
+
+      <form id="recommendForm" class="search-bar">
+        <div class="query-row">
+          <input
+            id="query"
+            name="query"
+            type="search"
+            maxlength="200"
+            placeholder="윤하 - 혜성"
+            autocomplete="off"
+            required
+          />
+
+          <button id="submitButton" type="submit">추천 요청</button>
+        </div>
+
+        <button id="currentTrackButton" class="ghost-button" type="button">
+          지금 재생 중인 곡 사용
+        </button>
+      </form>
+
+      <p id="statusMessage" class="status" role="status" aria-live="polite">
+        검색어를 입력하세요.
+      </p>
+    </div>
+
+    <!-- 스크롤 영역 -->
+    <main class="scroll-area">
+      <details id="settingsPanel" class="settings">
+        <summary>설정</summary>
+
+        <div class="settings-body">
+          <label for="apiBaseUrl">백엔드 주소</label>
+          <input
+            id="apiBaseUrl"
+            name="apiBaseUrl"
+            type="url"
+            placeholder="https://api.example.com"
+            autocomplete="url"
+            required
+          />
+
+          <label for="youtubeExportToken">팀 백엔드 토큰</label>
+          <input
+            id="youtubeExportToken"
+            name="youtubeExportToken"
+            type="password"
+            autocomplete="off"
+            aria-describedby="youtubeExportTokenHelp"
+            placeholder="운영자에게 받은 토큰"
+          />
+
+          <details id="youtubeExportTokenHelp" class="field-help">
+            <summary>이 토큰은 무엇인가요?</summary>
+            <p>
+              사용자별 Google 토큰이 아닙니다. Cloud Run의 SIDE_B_ACCESS_TOKEN과
+              같은 팀 공용 값을 입력하세요. 추천과 YouTube 검색을 함께
+              보호합니다.
+            </p>
+          </details>
+
+          <p class="settings-section-label">개발 도구</p>
+
+          <div class="eq-buttons">
+            <button id="eqTestButton" class="secondary-button" type="button">
+              EQ 테스트 적용
+            </button>
+            <button id="eqStopButton" class="secondary-button" type="button">
+              EQ 해제
+            </button>
+          </div>
+
+          <p id="eqTestStatus" class="eq-status" role="status" aria-live="polite">
+            EQ가 적용되지 않았습니다.
+          </p>
+        </div>
+      </details>
+
+      <!-- 현재 재생 중인 곡 -->
+      <section id="currentTrackResult" class="callout callout-info" hidden>
+        <p class="section-label">현재 재생 중</p>
+        <div class="track-line">
+          <strong id="currentTrackTitle"></strong>
+          <span id="currentTrackArtist"></span>
+        </div>
+      </section>
+
+      <!-- 추천 기준 음악 -->
+      <section id="seedSection" class="callout callout-seed" hidden>
+        <p class="section-label">기준 음악</p>
+
+        <div class="seed-main">
+          <img id="seedArt" class="seed-art" alt="" hidden />
+          <div class="seed-copy">
+            <strong id="seedTitle"></strong>
+            <span id="seedArtist"></span>
+          </div>
+        </div>
+
+        <audio
+          id="seedPreview"
+          class="seed-preview"
+          controls
+          preload="none"
+          hidden
+        ></audio>
+        <p id="seedPreviewNote" class="seed-preview-note" hidden></p>
+      </section>
+
+      <!-- 첫 진입 안내 -->
+      <section id="emptyState" class="empty-state">
+        <p class="empty-title">듣고 있는 곡의 다른 얼굴을 찾아보세요.</p>
+        <p class="empty-body">
+          곡을 검색하면 네 방향으로 추천을 나눠서 보여줍니다.
+        </p>
+        <dl class="bucket-legend">
+          <dt>유사한 곡</dt>
+          <dd>같은 결의 익숙한 선택</dd>
+          <dt>저노출 유사곡</dt>
+          <dd>비슷하지만 덜 알려진 곡</dd>
+          <dt>반대 무드</dt>
+          <dd>정반대 분위기로 전환</dd>
+          <dt>숨겨진 곡</dt>
+          <dd>취향 밖에서 건져 올린 곡</dd>
+        </dl>
+      </section>
+
+      <!-- 로딩 스켈레톤 -->
+      <div id="loadingSkeleton" class="skeleton" aria-hidden="true" hidden>
+        <div class="skeleton-heading"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+      </div>
+
+      <!-- 추천 결과 -->
+      <section id="results" class="results" aria-label="추천 결과"></section>
+
+      <!-- 내보내기 진행 상황 -->
+      <section
+        id="youtubeExportPanel"
+        class="export-panel"
+        role="status"
+        aria-live="polite"
+        hidden
+      >
+        <div class="export-panel-heading">
+          <p class="section-label">YouTube Music 내보내기</p>
+          <strong id="youtubeExportStatus"></strong>
+        </div>
+        <p id="youtubeExportTitle" class="export-title"></p>
+        <p id="youtubeExportDetail" class="export-detail"></p>
+        <ul id="youtubeExportFailures" class="export-failures" hidden></ul>
+        <div id="youtubeExportLinks" class="export-links" hidden>
+          <a id="youtubeLink" target="_blank" rel="noreferrer">YouTube에서 열기</a>
+          <a id="youtubeMusicLink" target="_blank" rel="noreferrer">
+            YouTube Music에서 열기
+          </a>
+        </div>
+      </section>
+
+      <!-- 원본 JSON -->
+      <details id="rawPanel" class="raw-panel" hidden>
+        <summary>원본 JSON</summary>
+        <pre id="rawResponse"></pre>
+      </details>
+    </main>
+
+    <!-- 매칭 검토: 결과 위를 덮는 오버레이 -->
+    <div
+      id="youtubeMatchReview"
+      class="match-review"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="matchReviewTitle"
+      hidden
+    >
+      <div class="match-review-header">
+        <div>
+          <p id="matchReviewTitle" class="match-review-title">매칭 확인</p>
+          <p id="matchReviewSubtitle" class="match-review-subtitle"></p>
+        </div>
+        <label class="select-all">
+          <input id="youtubeMatchSelectAll" type="checkbox" />
+          전체
+        </label>
+      </div>
+
+      <div class="match-columns" aria-hidden="true">
+        <span></span>
+        <span>추천곡</span>
+        <span>YouTube 매칭</span>
+      </div>
+
+      <ol id="youtubeMatchList" class="match-list"></ol>
+
+      <div class="match-review-actions">
+        <button id="youtubeMatchCancel" class="secondary-button" type="button">
+          취소
+        </button>
+        <button id="youtubeMatchConfirm" type="button">플레이리스트 생성</button>
+      </div>
+    </div>
+
+    <!-- 추천 bucket template -->
+    <template id="bucketTemplate">
+      <section class="bucket">
+        <div class="bucket-heading">
+          <div class="bucket-title">
+            <h2></h2>
+            <span class="count"></span>
+          </div>
+          <button class="export-button secondary-button" type="button">
+            YouTube Music
+          </button>
+        </div>
+        <ol class="track-list"></ol>
+      </section>
+    </template>
+
+    <!-- 개별 track template -->
+    <template id="trackTemplate">
+      <li class="track-item">
+        <span class="rank"></span>
+        <div class="track-copy">
+          <strong class="track-title"></strong>
+          <span class="track-artist"></span>
+          <span class="track-label"></span>
+        </div>
+      </li>
+    </template>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

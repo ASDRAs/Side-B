@@ -16,7 +16,7 @@ if (!accessToken) {
   );
 }
 
-test("popup requests recommendations from the deployed backend", async ({}, testInfo) => {
+test("side panel requests recommendations from the deployed backend", async ({}, testInfo) => {
   const { context, page } = await launchExtensionPage(testInfo);
   try {
     const apiBaseUrlInput = page.locator("#apiBaseUrl");
