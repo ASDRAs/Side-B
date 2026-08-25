@@ -34,15 +34,10 @@ def _serialize_tracks(tracks: list[TrackInfo]) -> list[dict]:
 
 
 def _pick_representative_track(tag_results: dict):
+    # 앨범아트가 있는 후보를 먼저 고르던 분기가 있었지만, 822209f 이후 태그 경로는
+    # 후보를 enrich하지 않아 `album_art_url`이 언제나 None이라 죽은 코드였다.
+    # mood 경로 seed의 앨범아트는 클라이언트가 preview로 채운다.
     return next(
-        (
-            track
-            for tracks in tag_results.values()
-            for track in tracks
-            if _is_exportable_track(track) and track.album_art_url
-        ),
-        None,
-    ) or next(
         (
             track
             for tracks in tag_results.values()
