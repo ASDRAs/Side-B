@@ -158,13 +158,13 @@ function updateEq(preset) {
       0.02,
     );
 
-    if (band.q !== undefined) {
-      filter.node.Q.setTargetAtTime(
-        band.q,
-        now,
-        0.02,
-      );
-    }
+    // q를 생략한 대역은 기본값으로 되돌린다. 이전 프리셋이 남긴 Q가 그대로
+    // 유지되면 같은 preset을 보내도 소리가 달라진다.
+    filter.node.Q.setTargetAtTime(
+      band.q ?? DEFAULT_Q,
+      now,
+      0.02,
+    );
   }
 
   console.log("EQ updated:", preset);
