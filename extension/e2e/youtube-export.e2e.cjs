@@ -80,7 +80,7 @@ test("side panel reaches YouTube match review before OAuth", async ({}, testInfo
       });
     }
 
-    await page.locator("#youtubeExportToken").fill(exportToken);
+    await page.locator("#backendAccessToken").fill(exportToken);
     await page.locator("#query").fill(`${seedTrack.artist} - ${seedTrack.name}`);
 
     const recommendResponsePromise = page.waitForResponse(

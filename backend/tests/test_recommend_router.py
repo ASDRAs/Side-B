@@ -5,7 +5,11 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from app.llm.llm_response import DirectSearchAnalysis, MusicQueryAnalysis
+from app.llm.llm_response import (
+    DirectSearchAnalysis,
+    MoodAnalysis,
+    MusicQueryAnalysis,
+)
 from app.routers.recommend import RecommendRequest, RecommendResponse, recommend
 from app.services.access import BackendAccess
 from app.services.recommend_service import (
@@ -334,3 +338,60 @@ async def test_unresolved_direct_query_returns_empty_result_instead_of_raising(
     # 응답 스키마가 None을 거부하므로 계약 검증까지 통과해야 한다.
     response = RecommendResponse(**result)
     assert response.track_name == "존재하지 않는 곡 제목"
+
+
+async def test_mood_seed_is_enriched_once_for_the_representative(monkeypatch):
+    """mood 경로 기준곡도 앨범아트와 preview ID를 받되, 호출은 1회여야 한다.
+
+    후보 전부를 조회하면 822209f가 걷어낸 fan-out이 되살아난다.
+    """
+    candidates = [
+        TrackInfo(name="Blue Hour", artist="TOMORROW X TOGETHER"),
+        TrackInfo(name="Cheer Up", artist="TWICE"),
+        TrackInfo(name="Nocturne", artist="IU"),
+    ]
+    enrich_calls = []
+
+    async def counting_enrich(http, tracks, lastfm=None, fields="all"):
+        enrich_calls.append([track.name for track in tracks])
+        for track in tracks:
+            track.album_art_url = "https://example.com/blue-hour.jpg"
+            track.bind(binding_from_source_id("itunes:9001", track.name, track.artist))
+        return tracks
+
+    async def fake_tag_recommendations(*args, **kwargs):
+        return {
+            "similar": [candidates[0], candidates[1]],
+            "opposite": [candidates[2]],
+            "hidden": [],
+        }
+
+    monkeypatch.setattr(
+        "app.services.recommend_service.analyze_music_query",
+        lambda *args, **kwargs: MusicQueryAnalysis(
+            intent="mood",
+            mood=MoodAnalysis(tags=["calm"], opposite_tags=["bright"]),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.recommend_service.tag_based_recommendations",
+        fake_tag_recommendations,
+    )
+    monkeypatch.setattr(
+        "app.services.recommend_service.get_tracks_metadata", counting_enrich
+    )
+
+    result = await run_recommend(
+        "비 오는 날 듣기 좋은 노래",
+        10,
+        object(),
+        object(),
+        SimpleNamespace(gemini_api_key="k", gemini_model="m"),
+    )
+
+    assert enrich_calls == [["Blue Hour"]], (
+        f"대표곡 1곡만 조회해야 한다. 실제 호출: {enrich_calls}"
+    )
+    assert result["track_name"] == "Blue Hour"
+    assert result["album_art_url"] == "https://example.com/blue-hour.jpg"
+    assert result["source_id"] == "itunes:9001"

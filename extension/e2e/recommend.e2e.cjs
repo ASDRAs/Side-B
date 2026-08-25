@@ -41,7 +41,7 @@ test("side panel sends an authenticated recommendation and renders it", async ({
       });
     });
 
-    await page.locator("#youtubeExportToken").fill(accessToken);
+    await page.locator("#backendAccessToken").fill(accessToken);
     await page.locator("#query").fill(query);
     const responsePromise = page.waitForResponse(`${apiBaseUrl}/recommend`);
     await page.locator("#submitButton").click();

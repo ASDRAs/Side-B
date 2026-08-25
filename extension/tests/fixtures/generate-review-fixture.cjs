@@ -114,7 +114,7 @@ async function main() {
       }),
     );
 
-    await page.fill("#youtubeExportToken", "fixture-token");
+    await page.fill("#backendAccessToken", "fixture-token");
     await page.fill("#query", "aespa - Whiplash");
     await page.click("#submitButton");
     await page.waitForSelector(".bucket");

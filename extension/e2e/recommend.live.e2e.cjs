@@ -27,7 +27,7 @@ test("side panel requests recommendations from the deployed backend", async ({},
     }
     const apiBaseUrl = (await apiBaseUrlInput.inputValue()).replace(/\/+$/, "");
     assertApiOriginIsAllowed(apiBaseUrl);
-    await page.locator("#youtubeExportToken").fill(accessToken);
+    await page.locator("#backendAccessToken").fill(accessToken);
     await page.locator("#query").fill(query);
 
     const responsePromise = page.waitForResponse(

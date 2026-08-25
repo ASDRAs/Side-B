@@ -17,6 +17,9 @@ Side-B 백엔드의 `/recommend` 응답을 확인하는 개발용 Chrome MV3 익
 진행 중이던 추천 요청(최대 90초)이 함께 취소되기 때문입니다. 사이드 패널은 다른
 탭으로 이동해도 유지되므로 YouTube Music을 들으면서 결과를 볼 수 있습니다.
 
+검색어는 요청에 성공하면 저장되어 다음에 패널을 열 때 복원되고, 최근 5개가
+입력란의 자동완성 목록에 뜹니다. 설정의 `지우기`로 기록을 비웁니다.
+
 `지금 재생 중인 곡 사용`은 열려 있는 YouTube Music 탭에서 재생 중인 곡을 읽어
 검색어에 채웁니다. 사이드 패널은 특정 탭에 묶이지 않으므로, 어떤 탭이 활성인지와
 무관하게 서비스 워커가 YouTube Music 탭을 찾아 사용합니다.
@@ -28,8 +31,12 @@ Side-B 백엔드의 `/recommend` 응답을 확인하는 개발용 Chrome MV3 익
 
 배포 URL은 클라이언트에서 호출해야 하므로 비밀값이 아닙니다. 배포 백엔드는
 `SIDE_B_ACCESS_TOKEN`으로 `/recommend`와 `/exports/youtube/matches`를 보호하며,
-사이드 패널은 입력받은 토큰을 `chrome.storage.session`에만 보관합니다. 토큰은
-저장소나 Extension 패키지에 넣지 않습니다.
+사이드 패널은 입력받은 토큰을 `chrome.storage.local`에 보관합니다. 브라우저를
+다시 켜도 유지되므로 매번 다시 입력할 필요가 없습니다. 다만 이 저장소는
+암호화되지 않고 프로필 디렉터리에 평문으로 남습니다. 확장 프로그램에는 OS
+키체인에 접근하는 API가 없어 더 나은 저장소가 없으며, 팀 공용 개발 토큰이라
+이 거래를 택했습니다. 공용 PC에서는 설정의 `삭제`로 지우세요. 토큰은 저장소나
+Extension 패키지에 넣지 않습니다.
 
 ### 로컬 백엔드 연결
 
@@ -150,8 +157,9 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 5. 배포 백엔드에 서버 검색용 `YOUTUBE_API_KEY`를 설정합니다.
 6. 위 명령으로 만든 값을 Cloud Run의 `SIDE_B_ACCESS_TOKEN` Secret에 설정합니다.
 7. Chrome의 확장 프로그램 화면에서 Side-B를 다시 로드합니다.
-8. 사이드 패널 `설정`의 `팀 백엔드 토큰`에 같은 값을 입력합니다. 토큰은
-   `chrome.storage.session`에만 보관되어 브라우저 세션이 끝나면 사라집니다.
+8. 사이드 패널 `설정`의 `팀 백엔드 토큰`에 같은 값을 입력합니다. 입력란을
+   벗어나면 바로 저장되고, 아래에 `저장됨 · ••••3f2a`처럼 마지막 네 자리가
+   표시됩니다. `보기`로 붙여넣은 값을 확인하고 `삭제`로 지울 수 있습니다.
 
 OAuth scope는 `youtube.force-ssl` 하나만 사용합니다. access token은 백엔드나
 `chrome.storage`에 저장하지 않고 Chrome Identity API의 메모리 캐시에 맡깁니다.

@@ -24,8 +24,10 @@
             maxlength="200"
             placeholder="윤하 - 혜성"
             autocomplete="off"
+            list="queryHistory"
             required
           />
+          <datalist id="queryHistory"></datalist>
 
           <button id="submitButton" type="submit">추천 요청</button>
         </div>
@@ -56,17 +58,34 @@
             required
           />
 
-          <label for="youtubeExportToken">팀 백엔드 토큰</label>
-          <input
-            id="youtubeExportToken"
-            name="youtubeExportToken"
-            type="password"
-            autocomplete="off"
-            aria-describedby="youtubeExportTokenHelp"
-            placeholder="운영자에게 받은 토큰"
-          />
+          <label for="backendAccessToken">팀 백엔드 토큰</label>
+          <div class="token-row">
+            <input
+              id="backendAccessToken"
+              name="backendAccessToken"
+              type="password"
+              autocomplete="off"
+              aria-describedby="backendAccessTokenHelp"
+              placeholder="운영자에게 받은 토큰"
+            />
+            <button
+              id="tokenRevealButton"
+              class="secondary-button"
+              type="button"
+              aria-pressed="false"
+            >
+              보기
+            </button>
+          </div>
 
-          <details id="youtubeExportTokenHelp" class="field-help">
+          <p class="token-state">
+            <span id="tokenStatus">저장된 토큰 없음</span>
+            <button id="tokenClearButton" class="link-button" type="button" hidden>
+              삭제
+            </button>
+          </p>
+
+          <details id="backendAccessTokenHelp" class="field-help">
             <summary>이 토큰은 무엇인가요?</summary>
             <p>
               사용자별 Google 토큰이 아닙니다. Cloud Run의 SIDE_B_ACCESS_TOKEN과
@@ -74,6 +93,13 @@
               보호합니다.
             </p>
           </details>
+
+          <p class="token-state">
+            <span id="historyStatus">검색 기록 없음</span>
+            <button id="historyClearButton" class="link-button" type="button" hidden>
+              지우기
+            </button>
+          </p>
 
           <p class="settings-section-label">개발 도구</p>
 
