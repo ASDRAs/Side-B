@@ -397,11 +397,12 @@ async def test_metadata_accepts_catalog_notation_variants():
 
 
 async def test_resolver_does_not_overwrite_the_user_artist_with_a_near_name():
-    """resolver -> service -> metadata 경계를 통째로 지난다.
+    """iTunes resolver가 사용자 아티스트를 근접 이름으로 덮지 않는지만 본다.
 
-    메타데이터 게이트만으로는 이 결함을 못 잡는다. resolver가 사용자의 `TAEMIN`을
-    후보의 `TAEYEON`으로 덮어 버리면, 뒤의 게이트는 TAEYEON과 TAEYEON을 비교해
-    그대로 통과한다. 오염 지점은 resolver다.
+    경계 통합은 `test_recommend_router.py`가 맡는다. 여기서는 오염이 시작되는
+    지점 하나를 좁게 고정한다. 메타데이터 게이트만으로는 이 결함을 못 잡는데,
+    resolver가 사용자의 `TAEMIN`을 후보의 `TAEYEON`으로 덮고 나면 뒤의 게이트는
+    TAEYEON과 TAEYEON을 비교해 그대로 통과하기 때문이다.
     """
     candidate = {
         "trackId": 999,
@@ -433,3 +434,68 @@ async def test_resolver_still_accepts_a_catalog_notation_variant():
     assert resolved is not None, "aespa / aespa 에스파를 놓쳤다."
     assert resolved[1] == "aespa 에스파"
     assert resolved[2] == "itunes:1000"
+
+
+class _FakeLastFmTrack:
+    def __init__(self, name, artist):
+        self._name = name
+        self._artist = artist
+
+    def get_name(self):
+        return self._name
+
+    def get_artist(self):
+        return _FakeLastFmArtist(self._artist)
+
+
+class _FakeLastFmArtist:
+    def __init__(self, name):
+        self._name = name
+
+    def get_name(self):
+        return self._name
+
+
+class _FakeSearch:
+    def __init__(self, results):
+        self._results = results
+
+    def get_next_page(self):
+        return self._results
+
+
+class _FakeLastFm:
+    """검색이 근접 이름의 다른 아티스트만 돌려주는 Last.fm 대역."""
+
+    def __init__(self, results):
+        self._results = results
+
+    def search_for_track(self, artist, title):
+        return _FakeSearch(self._results)
+
+
+async def test_lastfm_fallback_does_not_adopt_a_near_name_artist():
+    """iTunes가 비어도 Last.fm 경로로 잘못된 아티스트가 들어오면 안 된다.
+
+    이 경로를 막지 않으면 우회로가 생긴다. iTunes에서 거른 `TAEYEON`을 Last.fm이
+    채택하면 `TrackInfo.artist`가 TAEYEON이 되고, 그 뒤 메타데이터 조회가
+    "Danger TAEYEON"으로 다시 검색해 결국 같은 잘못된 source_id를 확정한다.
+    """
+    lastfm = _FakeLastFm([_FakeLastFmTrack("Danger", "TAEYEON")])
+
+    resolved = await sources._lastfm_search(
+        "TAEMIN Danger", [("Danger", "TAEMIN")], lastfm
+    )
+
+    assert resolved is None, f"Last.fm 경로로 아티스트가 덮였다: {resolved}"
+
+
+async def test_lastfm_fallback_still_accepts_a_matching_artist():
+    """하한이 정상 Last.fm 결과까지 막으면 곡을 못 찾는다."""
+    lastfm = _FakeLastFm([_FakeLastFmTrack("Danger", "TAEMIN")])
+
+    resolved = await sources._lastfm_search(
+        "TAEMIN Danger", [("Danger", "TAEMIN")], lastfm
+    )
+
+    assert resolved == ("Danger", "TAEMIN", None)

@@ -395,3 +395,79 @@ async def test_mood_seed_is_enriched_once_for_the_representative(monkeypatch):
     assert result["track_name"] == "Blue Hour"
     assert result["album_art_url"] == "https://example.com/blue-hour.jpg"
     assert result["source_id"] == "itunes:9001"
+
+
+class _NearNameItunesHttp:
+    """iTunes가 근접 이름의 다른 아티스트만 돌려주는 http 대역.
+
+    `_itunes_or_none`을 대체하지 않고 HTTP 응답만 바꾼다. 채점 게이트를 실제로
+    태워야 이 경로의 결함이 드러난다.
+    """
+
+    def __init__(self, results):
+        self.results = results
+        self.calls = 0
+
+    async def get(self, url, params=None, **kwargs):
+        self.calls += 1
+        return _NearNameResponse(self.results)
+
+
+class _NearNameResponse:
+    status_code = 200
+
+    def __init__(self, results):
+        self.results = results
+
+    def json(self):
+        return {"resultCount": len(self.results), "results": self.results}
+
+    def raise_for_status(self):
+        return None
+
+
+async def test_direct_query_never_adopts_a_near_name_artist_end_to_end(monkeypatch):
+    """run_recommend -> preprocess_input -> get_tracks_metadata를 실제로 지난다.
+
+    단위 테스트는 `TrackInfo(artist="TAEMIN")`을 직접 만들어 메타데이터 함수만
+    부르므로 덮어쓰기가 일어나는 경계를 지나지 않는다. 여기서는 resolver부터
+    응답까지 한 번에 태워, 잘못된 아티스트와 ID가 응답에 새어 나가지 않는지를
+    본다.
+    """
+    taeyeon = {
+        "trackId": 999,
+        "trackName": "Danger",
+        "artistName": "TAEYEON",
+        "artworkUrl100": "https://example.com/taeyeon.jpg",
+    }
+    http = _NearNameItunesHttp([taeyeon])
+
+    class _EmptyLastFm:
+        def search_for_track(self, artist, title):
+            raise AssertionError("Last.fm까지 갈 필요가 없어야 한다.")
+
+    monkeypatch.setattr(
+        "app.services.recommend_service.analyze_music_query",
+        lambda *args, **kwargs: MusicQueryAnalysis(
+            intent="direct",
+            direct=DirectSearchAnalysis(
+                search_query="Danger TAEMIN",
+                track_title="Danger",
+                artist_name="TAEMIN",
+            ),
+        ),
+    )
+
+    result = await run_recommend(
+        "TAEMIN Danger",
+        10,
+        http,
+        _EmptyLastFm(),
+        SimpleNamespace(gemini_api_key="k", gemini_model="m"),
+    )
+
+    payload = str(result)
+    assert "TAEYEON" not in payload, f"다른 아티스트가 응답에 새어 나갔다: {result}"
+    assert "itunes:999" not in payload, f"잘못된 ID가 응답에 새어 나갔다: {result}"
+    assert result["source_id"] is None
+    assert result["album_art_url"] is None
