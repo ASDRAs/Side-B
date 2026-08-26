@@ -49,9 +49,12 @@ test("토큰과 검색어가 패널을 다시 열어도 남는다", async ({}, t
     await stubBackend(panel);
     await expect(panel.locator("#tokenStatus")).toHaveText("저장된 토큰 없음");
 
-    // blur 없이 입력만 하고 바로 패널을 닫는다. change 이벤트만으로 저장하면
-    // 여기서 유실된다.
+    // 폼 제출은 토큰을 따로 저장하므로 "입력 직후 닫기"를 가리지 못한다.
+    // 여기서는 입력만 하고 blur도 제출도 없이 곧바로 닫는다.
     await panel.locator("#backendAccessToken").fill(TOKEN);
+    panel = await reopenPanel(context, panel);
+    await expect(panel.locator("#backendAccessToken")).toHaveValue(TOKEN);
+
     await panel.locator("#query").fill("윤하 - 혜성");
     await panel.locator("#submitButton").click();
     await panel.waitForSelector(".bucket");
@@ -118,6 +121,50 @@ test("한 패널에서 지운 토큰이 다른 패널에도 반영된다", async
 
     await expect(panelB.locator("#backendAccessToken")).toHaveValue("");
     await expect(panelB.locator("#tokenStatus")).toHaveText("저장된 토큰 없음");
+  } catch (error) {
+    await captureFailure(panelA, testInfo);
+    throw error;
+  } finally {
+    await context.close();
+  }
+});
+
+
+test("다른 패널의 삭제는 입력 중이어도 반영된다", async ({}, testInfo) => {
+  // 활성 입력이라고 건너뛰면 그 패널의 다음 요청이 낡은 값을 다시 저장한다.
+  const { context, page: panelA } = await launchExtensionPage(testInfo);
+
+  try {
+    await panelA.waitForSelector("#apiBaseUrl", { state: "attached" });
+    await stubBackend(panelA);
+    await panelA.locator("#backendAccessToken").fill(TOKEN);
+
+    const panelB = await context.newPage();
+    await panelB.goto(panelA.url());
+    await panelB.waitForSelector("#apiBaseUrl", { state: "attached" });
+    await stubBackend(panelB);
+
+    // 토큰이 있으면 설정이 접힌 채로 열린다. 입력란을 드러내야 편집할 수 있다.
+    await panelB.locator("#settingsPanel").evaluate((element) => {
+      element.open = true;
+    });
+    // B에서 편집 중인 상태를 만든다. fill이 포커스까지 준다.
+    await panelB.locator("#backendAccessToken").fill("in-progress-replacement");
+    await expect(panelB.locator("#backendAccessToken")).toBeFocused();
+
+    await panelA.locator("#tokenClearButton").click();
+
+    await expect(panelB.locator("#backendAccessToken")).toHaveValue("");
+    await expect(panelB.locator("#tokenStatus")).toHaveText("저장된 토큰 없음");
+
+    // B가 추천을 요청해도 지워진 토큰이 되살아나지 않는다.
+    await panelB.locator("#query").fill("윤하 - 혜성");
+    await panelB.locator("#submitButton").click();
+    await panelB.waitForTimeout(500);
+    const stored = await panelB.evaluate(() =>
+      chrome.storage.local.get("backendAccessToken"),
+    );
+    expect(stored.backendAccessToken ?? "").toBe("");
   } catch (error) {
     await captureFailure(panelA, testInfo);
     throw error;

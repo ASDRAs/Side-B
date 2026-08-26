@@ -30,7 +30,6 @@ const ACCESS_TOKEN_KEY = "backendAccessToken";
 const LAST_QUERY_KEY = "lastQuery";
 const RECENT_QUERIES_KEY = "recentQueries";
 const MAX_RECENT_QUERIES = 5;
-const TOKEN_SAVE_DEBOUNCE_MS = 250;
 const BUCKET_LABELS = {
   similar: "유사한 곡",
   reverse: "저노출 유사곡",
@@ -907,16 +906,13 @@ readLocal([
     settingsPanel.open = !backendAccessTokenInput.value;
   });
 
-// change는 blur에서만 발생한다. 토큰을 붙여넣고 곧바로 패널을 닫으면 저장되지
-// 않아 다시 열었을 때 사라졌다. 입력 자체를 디바운스해 저장한다.
-let tokenSaveTimer = null;
+// 지연 없이 곧바로 저장한다. change는 blur에서만 발생하고, 디바운스 타이머는
+// 붙여넣고 바로 패널을 닫으면 실행되기 전에 문서가 사라진다. storage.set은
+// 호출 즉시 브라우저 프로세스로 넘어가므로 문서가 죽어도 기록이 남는다.
 backendAccessTokenInput.addEventListener("input", () => {
-  clearTimeout(tokenSaveTimer);
-  tokenSaveTimer = setTimeout(() => {
-    storeBackendAccessToken(backendAccessTokenInput.value).catch((error) => {
-      console.error("Failed to store the access token:", error);
-    });
-  }, TOKEN_SAVE_DEBOUNCE_MS);
+  storeBackendAccessToken(backendAccessTokenInput.value).catch((error) => {
+    console.error("Failed to store the access token:", error);
+  });
 });
 
 tokenRevealButton.addEventListener("click", () => {
@@ -950,11 +946,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   // 다음 추천 요청이 그 값을 그대로 다시 저장해 삭제가 되돌아간다.
   if (changes[ACCESS_TOKEN_KEY]) {
     const nextToken = changes[ACCESS_TOKEN_KEY].newValue || "";
-    // 입력 중인 값을 덮어쓰지 않는다.
-    if (document.activeElement !== backendAccessTokenInput) {
+    // 포커스 여부와 무관하게 반영한다. 입력 중이라고 건너뛰면 그 패널의 다음
+    // 추천 요청이 낡은 값을 다시 저장해 삭제가 되돌아간다. 값이 같을 때는
+    // 건드리지 않아 커서 위치를 지킨다(자기 자신이 만든 변경도 여기로 온다).
+    if (backendAccessTokenInput.value !== nextToken) {
       backendAccessTokenInput.value = nextToken;
-      renderTokenStatus(nextToken);
     }
+    renderTokenStatus(nextToken);
   }
   if (changes[RECENT_QUERIES_KEY]) {
     renderQueryHistory(changes[RECENT_QUERIES_KEY].newValue);

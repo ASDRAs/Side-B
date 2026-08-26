@@ -310,12 +310,12 @@ class _ScoringResponse:
         return None
 
 
-async def test_metadata_rejects_a_same_title_different_artist_match():
-    """제목만 같은 오답을 앨범아트·ID로 확정하면 안 된다.
+async def test_metadata_does_not_claim_identity_for_a_different_artist():
+    """제목만 같은 오답을 source_id로 확정하면 안 된다.
 
-    가중치가 title 0.68 / artist 0.32라 아티스트가 전혀 달라도 총점이 0.68이
-    나온다. 총점 문턱(0.45)만으로는 막을 수 없어 아티스트 하한이 필요하다.
-    잘못된 source_id는 preview가 그대로 재생하므로 다른 곡이 들린다.
+    채점 가중치가 title 0.68 / artist 0.32라 아티스트가 전혀 달라도 총점이
+    0.68이 나온다. 총점 문턱(0.45)만으로는 막을 수 없다. source_id는 preview가
+    검색 없이 그대로 재생하므로 틀리면 다른 곡이 들린다.
     """
     wrong = {
         "trackId": 999,
@@ -329,23 +329,68 @@ async def test_metadata_rejects_a_same_title_different_artist_match():
         _ScoringHttp([wrong]), [track], None, fields=["album_art", "source_id"]
     )
 
-    assert track.album_art_url is None, "다른 아티스트의 앨범아트를 붙였다."
     assert track.source_id is None, "다른 아티스트의 곡 ID로 확정했다."
 
 
-async def test_metadata_still_accepts_the_right_artist():
-    """하한이 정상 매칭까지 막으면 안 된다."""
-    right = {
-        "trackId": 1000,
-        "trackName": "Hello",
-        "artistName": "Adele",
-        "artworkUrl100": "https://example.com/right.jpg",
+async def test_metadata_does_not_confuse_near_identical_artist_names():
+    """TAEMIN과 TAEYEON은 0.615로 채점된다. 공용 하한 0.5로는 통과한다."""
+    wrong = {
+        "trackId": 999,
+        "trackName": "Danger",
+        "artistName": "TAEYEON",
+        "artworkUrl100": "https://example.com/wrong.jpg",
     }
-    track = TrackInfo(name="Hello", artist="Adele")
+    track = TrackInfo(name="Danger", artist="TAEMIN")
 
     await get_tracks_metadata(
-        _ScoringHttp([right]), [track], None, fields=["album_art", "source_id"]
+        _ScoringHttp([wrong]), [track], None, fields=["album_art", "source_id"]
     )
 
-    assert track.album_art_url == "https://example.com/right.jpg"
-    assert track.source_id == "itunes:1000"
+    assert track.source_id is None, "이름이 비슷한 다른 아티스트로 확정했다."
+
+
+async def test_metadata_keeps_album_art_when_identity_is_unconfirmed():
+    """아티스트를 확인하지 못해도 앨범아트까지 버리지는 않는다.
+
+    `artist_score`는 음역을 모르는 문자열 비교라 `아이유`/`IU`가 0.0이다.
+    검색 단계에 하한을 걸면 교차 표기 아티스트의 커버가 전부 사라진다. 틀린
+    커버는 겉모습 문제지만 틀린 ID는 다른 곡을 재생시킨다.
+    """
+    item = {
+        "trackId": 1001,
+        "trackName": "밤편지",
+        "artistName": "IU",
+        "artworkUrl100": "https://example.com/art.jpg",
+    }
+    track = TrackInfo(name="밤편지", artist="아이유")
+
+    await get_tracks_metadata(
+        _ScoringHttp([item]), [track], None, fields=["album_art", "source_id"]
+    )
+
+    assert track.album_art_url == "https://example.com/art.jpg"
+    assert track.source_id is None
+
+
+async def test_metadata_accepts_catalog_notation_variants():
+    """`aespa` / `aespa 에스파`는 0.769다. 하한을 0.8로 올리면 이게 막힌다."""
+    for expected, catalog in [
+        ("aespa", "aespa 에스파"),
+        ("IU", "IU feat. SUGA"),
+        ("TAEYEON", "TAEYEON (태연)"),
+        ("YOUNHA", "Younha"),
+    ]:
+        item = {
+            "trackId": 1000,
+            "trackName": "Song",
+            "artistName": catalog,
+            "artworkUrl100": "https://example.com/right.jpg",
+        }
+        track = TrackInfo(name="Song", artist=expected)
+
+        await get_tracks_metadata(
+            _ScoringHttp([item]), [track], None, fields=["album_art", "source_id"]
+        )
+
+        assert track.source_id == "itunes:1000", f"{expected} / {catalog} 매칭 실패"
+        assert track.album_art_url == "https://example.com/right.jpg"

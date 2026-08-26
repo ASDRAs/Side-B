@@ -489,6 +489,33 @@ async def _deezer_or_none(
         return None
 
 
+# source_id는 preview가 검색 없이 그대로 재생하는 값이다(`_lookup_media`는 ID
+# 조회에 제목·아티스트 게이트를 적용하지 않는다). 그래서 앨범아트와 달리 틀리면
+# 다른 곡이 들린다. 앨범아트는 제목이 맞으면 붙여도 손해가 작지만 ID는 아니다.
+#
+# 임계값은 실측으로 잡았다. 정상 표기 변형의 최저점은 `aespa`/`aespa 에스파`의
+# 0.769이고, 혼동 사례 최고점은 `TAEMIN`/`TAEYEON`의 0.615다. 그 사이를 잡는다.
+# 0.8로 올리면 `aespa 에스파`가 막히고, 0.62(_ITUNES_CONFIRM_SCORE)로 내리면
+# TAEMIN/TAEYEON이 통과한다.
+#
+# ponytail: fixture로 검증한 정책값이다. 실사용 로그가 쌓이면 다시 재야 한다.
+_METADATA_ID_ARTIST_SCORE = 0.7
+
+
+def _confirms_same_artist(item: dict[str, Any], expected_artist: str) -> bool:
+    """iTunes 후보가 요청한 아티스트의 곡이라고 볼 수 있는지 판정한다."""
+    expected = str(expected_artist or "").strip()
+    if not expected:
+        return False
+    candidate = str(item.get("artistName") or "").strip()
+    if not candidate:
+        return False
+    return (
+        _alias_artist_score(candidate, (expected,))
+        >= _METADATA_ID_ARTIST_SCORE
+    )
+
+
 async def get_tracks_metadata(
     http: httpx.AsyncClient,
     tracks: list[TrackInfo],
@@ -530,13 +557,10 @@ async def get_tracks_metadata(
                     track.artist,
                     limit=8,
                     min_score=0.45,
-                    # 총점 문턱만으로는 제목이 정확한 오답을 막을 수 없다.
-                    # 가중치가 title 0.68 / artist 0.32라 아티스트가 전혀 달라도
-                    # 0.68이 나온다. 이 경로에만 하한이 빠져 있어서, 기준곡이
-                    # 동명이곡의 앨범아트와 source_id로 확정될 수 있었다.
-                    # source_id는 preview가 그대로 재생하므로 다른 곡이 나온다.
-                    # Deezer 폴백은 `_select_deezer_item`이 이미 걸러낸다.
-                    min_artist_score=_ARTIST_MIN_SCORE,
+                    # 검색 자체에는 아티스트 하한을 걸지 않는다. `artist_score`는
+                    # 음역을 모르는 순수 문자열 비교라 `아이유`/`IU`가 0.0이다.
+                    # 하한을 걸면 교차 표기 아티스트의 앨범아트가 전부 사라진다.
+                    # 대신 아래에서 source_id에만 하한을 적용한다.
                 )
             )
 
@@ -555,7 +579,7 @@ async def get_tracks_metadata(
                     track.album_art_url = (
                         _itunes_artwork(itunes_item) or track.album_art_url
                     )
-                if req_id:
+                if req_id and _confirms_same_artist(itunes_item, track.artist):
                     track.bind(_itunes_binding(itunes_item))
 
             # 2. itune와 req field 확인 후 API return 값 확인
