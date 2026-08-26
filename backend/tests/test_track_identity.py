@@ -394,3 +394,42 @@ async def test_metadata_accepts_catalog_notation_variants():
 
         assert track.source_id == "itunes:1000", f"{expected} / {catalog} 매칭 실패"
         assert track.album_art_url == "https://example.com/right.jpg"
+
+
+async def test_resolver_does_not_overwrite_the_user_artist_with_a_near_name():
+    """resolver -> service -> metadata 경계를 통째로 지난다.
+
+    메타데이터 게이트만으로는 이 결함을 못 잡는다. resolver가 사용자의 `TAEMIN`을
+    후보의 `TAEYEON`으로 덮어 버리면, 뒤의 게이트는 TAEYEON과 TAEYEON을 비교해
+    그대로 통과한다. 오염 지점은 resolver다.
+    """
+    candidate = {
+        "trackId": 999,
+        "trackName": "Danger",
+        "artistName": "TAEYEON",
+        "artworkUrl100": "https://example.com/taeyeon.jpg",
+    }
+
+    resolved = await sources._itunes_structured(
+        [("Danger", "TAEMIN")], _ScoringHttp([candidate])
+    )
+
+    assert resolved is None, f"사용자 아티스트를 덮었다: {resolved}"
+
+
+async def test_resolver_still_accepts_a_catalog_notation_variant():
+    """하한이 정상 표기 변형까지 막으면 곡을 아예 못 찾는다."""
+    candidate = {
+        "trackId": 1000,
+        "trackName": "Whiplash",
+        "artistName": "aespa 에스파",
+        "artworkUrl100": "https://example.com/aespa.jpg",
+    }
+
+    resolved = await sources._itunes_structured(
+        [("Whiplash", "aespa")], _ScoringHttp([candidate])
+    )
+
+    assert resolved is not None, "aespa / aespa 에스파를 놓쳤다."
+    assert resolved[1] == "aespa 에스파"
+    assert resolved[2] == "itunes:1000"
