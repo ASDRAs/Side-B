@@ -99,3 +99,8 @@ class MusicQueryAnalysis(BaseModel):
 
 class OppositeTagAnalysis(BaseModel):
     opposite_tags: list[str] = Field(min_length=1, max_length=5)
+
+
+class TrackCountryAnalysis(BaseModel):
+    country: Literal["korea", "foreign"]
+    confidence: float = Field(ge=0.0, le=1.0)

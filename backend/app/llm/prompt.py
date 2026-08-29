@@ -74,3 +74,14 @@ OPPOSITE_TAG_PROMPT = textwrap.dedent("""
     - Use lowercase, common Last.fm-friendly tags only.
     - Do not return artist names, track titles, explanations, or duplicate tags.
 """).strip()
+
+TRACK_COUNTRY_PROMPT = """
+   Determine whether the given track belongs to the Korean or foreign music market.
+
+   Rules:
+   - Return "korea" if the original track is primarily released by a South Koreanartist or group as Korean music.
+   - Otherwise return "foreign".
+   - Do not judge only by the language or writing system of the title.
+   - A Korean artist with an English track title is still "korea".
+   - A Japanese or Western artist with a Korean-translated title is still "foreign".
+""".strip()
