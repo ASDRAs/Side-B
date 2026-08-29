@@ -75,13 +75,76 @@ OPPOSITE_TAG_PROMPT = textwrap.dedent("""
    - Do not return artist names, track titles, explanations, or duplicate tags.
 """).strip()
 
-TRACK_COUNTRY_PROMPT = textwrap.dedent("""
-   Determine whether the given track belongs to the Korean or foreign music market.
+TRACK_SEARCH_ANALYSIS_PROMPT = textwrap.dedent(
+   """
+   Analyze the given track title and artist, then return JSON matching
+   the response schema.
 
-   Rules:
-   - Return "korea" if the original track is primarily released by a South Koreanartist or group as Korean music.
+   Country:
+   - Return "korea" if the original track is primarily released by a
+   South Korean artist or group.
    - Otherwise return "foreign".
-   - Do not judge only by the language or writing system of the title.
-   - A Korean artist with an English track title is still "korea".
-   - A Japanese or Western artist with a Korean-translated title is still "foreign".
-""").strip()
+   - Do not determine country only from the input language.
+
+   Search queries:
+   - Return 1-3 distinct search queries in priority order.
+   - Each query must contain track_title and artist_name separately.
+   - The first query should use the most likely official title and
+   official artist name.
+   - Additional queries may use an English title, romanized spelling,
+   original-language spelling, stage name, or commonly used catalog spelling.
+   - Use the same language or writing system for the title and artist
+   in each alternative whenever possible.
+   - Keep the original release language when confidently known.
+   - Include an English or romanized query for non-English releases
+   when a commonly used spelling exists.
+
+   Cleaning:
+   - Remove non-identifying text such as:
+   official video, official audio, music video, mv, m/v, lyrics,
+   lyric video, audio, visualizer, teaser, topic, hd, 4k, reaction,
+   full version, 노래, 음악, 뮤직비디오, 가사, 공식 영상.
+   - Remove channel names, uploader text, unnecessary punctuation,
+   hashtags, emojis, quotation marks, and duplicated artist names.
+   - Remove album names and release years when they are not part of
+   the official track title.
+   - Preserve meaningful version information such as live, remix,
+   acoustic, instrumental, or remastered only when the input
+   explicitly requests that specific version.
+   - Preserve featured artists only when they are part of the actual release.
+   - Do not change the track to another song.
+   - Do not invent titles, translations, or artist names when uncertain.
+
+   Examples:
+
+   Input:
+   track_title="[Official MV] 아이유(IU) - 밤편지 가사"
+   artist="IU Official"
+   Output:
+   country="korea"
+   search_queries=[
+   {"track_title": "밤편지", "artist_name": "아이유"},
+   {"track_title": "Through the Night", "artist_name": "IU"}
+   ]
+
+   Input:
+   track_title="YOASOBI「アイドル」Official Music Video"
+   artist="Ayase / YOASOBI"
+   Output:
+   country="foreign"
+   search_queries=[
+   {"track_title": "アイドル", "artist_name": "YOASOBI"},
+   {"track_title": "Idol", "artist_name": "YOASOBI"}
+   ]
+
+   Input:
+   track_title="NewJeans (뉴진스) 'Hype Boy' Official MV"
+   artist="HYBE LABELS"
+   Output:
+   country="korea"
+   search_queries=[
+   {"track_title": "Hype Boy", "artist_name": "NewJeans"},
+   {"track_title": "Hype Boy", "artist_name": "뉴진스"}
+   ]
+   """
+).strip()

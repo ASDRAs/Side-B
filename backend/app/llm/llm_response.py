@@ -101,6 +101,57 @@ class OppositeTagAnalysis(BaseModel):
     opposite_tags: list[str] = Field(min_length=1, max_length=5)
 
 
-class TrackCountryAnalysis(BaseModel):
-    country: Literal["korea", "foreign"]
+class TrackSearchQuery(BaseModel):
+    track_title: str = Field(
+        min_length=1,
+        max_length=200,
+        description="검색에 사용할 정제된 곡 제목",
+    )
+    artist_name: str = Field(
+        min_length=1,
+        max_length=200,
+        description="검색에 사용할 정제된 아티스트 이름",
+    )
+
+
+class TrackSearchAnalysis(BaseModel):
+    country: Literal["korea", "foreign"] = Field(
+        description="한국 가수의 곡이면 korea, 그 외에는 foreign"
+    )
     confidence: float = Field(ge=0.0, le=1.0)
+    search_queries: list[TrackSearchQuery] = Field(
+        min_length=1,
+        max_length=3,
+        description="iTunes와 Deezer에서 순차적으로 사용할 검색 후보",
+    )
+
+    @model_validator(mode="after")
+    def remove_duplicate_queries(self) -> "TrackSearchAnalysis":
+        unique_queries: list[TrackSearchQuery] = []
+        seen: set[tuple[str, str]] = set()
+
+        for query in self.search_queries:
+            track_title = query.track_title.strip()
+            artist_name = query.artist_name.strip()
+
+            key = (
+                track_title.casefold(),
+                artist_name.casefold(),
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            unique_queries.append(
+                TrackSearchQuery(
+                    track_title=track_title,
+                    artist_name=artist_name,
+                )
+            )
+
+        if not unique_queries:
+            raise ValueError("at least one valid search query is required")
+
+        self.search_queries = unique_queries[:3]
+        return self
