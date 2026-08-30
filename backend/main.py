@@ -4,6 +4,7 @@ FastAPI entrypoint — recommendation pipeline (iTunes + Deezer + Last.fm + Gemi
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 import pylast
@@ -11,11 +12,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.genre_classification.model_loader import load_genre_models
 from app.routers.recommend import router as recommend_router
 from app.routers.youtube_export import router as youtube_export_router
 from app.services.access import BackendAccess
 from app.services.youtube import YouTubeMatcher, YouTubeSearchClient
 from preview import router as preview_router
+
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_DIR = BASE_DIR / "models"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +70,12 @@ async def lifespan(app: FastAPI):
         api_secret=settings.lastfm_api_secret or "",
     )
 
+    app.state.genre_models = load_genre_models(
+        clap_model_path=MODEL_DIR / "clap",
+        svm_model_path=MODEL_DIR / "svm" / "svm_classifier.pkl",
+        label_encoder_path=MODEL_DIR / "svm" / "label_encoder.pkl",
+    )
+
     if not settings.lastfm_api_key:
         logger.warning("LASTFM_API_KEY not set — Last.fm calls will fail.")
     if not settings.gemini_api_key:
@@ -104,7 +115,8 @@ app.add_middleware(
 app.include_router(preview_router)
 app.include_router(recommend_router)
 app.include_router(youtube_export_router)
-
+# model router 추가 예정
+# app.include_router(genre_classfication_router)
 
 @app.get("/health")
 async def health():

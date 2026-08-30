@@ -24,3 +24,5 @@ Thumbs.db
 backend/.venv/
 .vscode
 sample.py
+model_test.py
+*.npy
