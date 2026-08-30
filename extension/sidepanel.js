@@ -26,6 +26,10 @@ import {
 } from "./scripts/youtubeExportView.js";
 
 const REQUEST_TIMEOUT_MS = 90_000;
+const ACCESS_TOKEN_KEY = "backendAccessToken";
+const LAST_QUERY_KEY = "lastQuery";
+const RECENT_QUERIES_KEY = "recentQueries";
+const MAX_RECENT_QUERIES = 5;
 const BUCKET_LABELS = {
   similar: "유사한 곡",
   reverse: "저노출 유사곡",
@@ -60,7 +64,13 @@ const EXPORT_TONES = {
 
 const form = document.querySelector("#recommendForm");
 const apiBaseUrlInput = document.querySelector("#apiBaseUrl");
-const backendAccessTokenInput = document.querySelector("#youtubeExportToken");
+const backendAccessTokenInput = document.querySelector("#backendAccessToken");
+const tokenRevealButton = document.querySelector("#tokenRevealButton");
+const tokenClearButton = document.querySelector("#tokenClearButton");
+const tokenStatus = document.querySelector("#tokenStatus");
+const historyClearButton = document.querySelector("#historyClearButton");
+const historyStatus = document.querySelector("#historyStatus");
+const queryHistory = document.querySelector("#queryHistory");
 const settingsPanel = document.querySelector("#settingsPanel");
 const queryInput = document.querySelector("#query");
 const submitButton = document.querySelector("#submitButton");
@@ -105,6 +115,7 @@ let currentRecommendation = null;
 let pendingMatchReview = null;
 let youtubeExportGeneration = 0;
 let activeYouTubeOperationId = null;
+let recentQueries = [];
 
 // EQ 테스트용. 백엔드가 곡별 프리셋을 보내기 전까지 쓰는 고정값이다.
 // preamp는 필터단 최대 이득(+16.18 dB @ 61 Hz)을 상쇄하도록 잡는다. -6이면
@@ -151,6 +162,39 @@ function setState(state, message) {
   connectionBadge.textContent = badgeText;
   setStatus(message, state === "error");
   submitButton.disabled = state === "loading";
+}
+
+function renderTokenStatus(token) {
+  const value = String(token || "").trim();
+  // 마지막 4자리만 보여 어떤 토큰이 들어 있는지 식별할 수 있게 한다.
+  tokenStatus.textContent = value
+    ? `저장됨 · ${"•".repeat(4)}${value.slice(-4)}`
+    : "저장된 토큰 없음";
+  tokenClearButton.hidden = !value;
+}
+
+function renderQueryHistory(queries) {
+  recentQueries = Array.isArray(queries) ? queries : [];
+  queryHistory.replaceChildren(
+    ...recentQueries.map((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      return option;
+    }),
+  );
+  historyStatus.textContent = recentQueries.length
+    ? `검색 기록 ${recentQueries.length}개`
+    : "검색 기록 없음";
+  historyClearButton.hidden = recentQueries.length === 0;
+}
+
+async function rememberQuery(query) {
+  const next = [query, ...recentQueries.filter((item) => item !== query)].slice(
+    0,
+    MAX_RECENT_QUERIES,
+  );
+  renderQueryHistory(next);
+  await writeLocal({ [LAST_QUERY_KEY]: query, [RECENT_QUERIES_KEY]: next });
 }
 
 function openSettings() {
@@ -653,45 +697,60 @@ async function exportBucket(bucketName, tracks) {
   }
 }
 
-async function readStoredApiBaseUrl() {
+// chrome.storage.local은 암호화되지 않는다. 확장 프로그램에는 OS 키체인에
+// 접근하는 API가 없어 더 나은 저장소가 없다. 팀 공용 개발 토큰이고 매번
+// 재입력을 강제하면 메모장에 붙여넣는 더 나쁜 길로 가므로 이 거래를 택한다.
+// 대신 설정에 삭제 버튼을 둔다.
+async function readLocal(keys) {
   if (globalThis.chrome?.storage?.local) {
-    return chrome.storage.local.get(["apiBaseUrl", "apiBaseUrlStorageVersion"]);
+    return chrome.storage.local.get(keys);
   }
-  return {
-    apiBaseUrl: localStorage.getItem("apiBaseUrl"),
-    apiBaseUrlStorageVersion: localStorage.getItem("apiBaseUrlStorageVersion"),
-  };
+  const stored = {};
+  for (const key of keys) {
+    const raw = localStorage.getItem(key);
+    if (raw !== null) {
+      stored[key] = key === RECENT_QUERIES_KEY ? JSON.parse(raw) : raw;
+    }
+  }
+  return stored;
+}
+
+async function writeLocal(values) {
+  if (globalThis.chrome?.storage?.local) {
+    await chrome.storage.local.set(values);
+    return;
+  }
+  for (const [key, value] of Object.entries(values)) {
+    localStorage.setItem(
+      key,
+      typeof value === "string" ? value : JSON.stringify(value),
+    );
+  }
+}
+
+async function removeLocal(keys) {
+  if (globalThis.chrome?.storage?.local) {
+    await chrome.storage.local.remove(keys);
+    return;
+  }
+  keys.forEach((key) => localStorage.removeItem(key));
 }
 
 async function storeApiBaseUrl(apiBaseUrl) {
-  if (globalThis.chrome?.storage?.local) {
-    await chrome.storage.local.set({
-      apiBaseUrl,
-      apiBaseUrlStorageVersion: API_BASE_URL_STORAGE_VERSION,
-    });
-    return;
-  }
-  localStorage.setItem("apiBaseUrl", apiBaseUrl);
-  localStorage.setItem(
-    "apiBaseUrlStorageVersion",
-    String(API_BASE_URL_STORAGE_VERSION),
-  );
-}
-
-async function readStoredBackendAccessToken() {
-  if (globalThis.chrome?.storage?.session) {
-    const stored = await chrome.storage.session.get("youtubeExportToken");
-    return stored.youtubeExportToken;
-  }
-  return sessionStorage.getItem("youtubeExportToken");
+  await writeLocal({
+    apiBaseUrl,
+    apiBaseUrlStorageVersion: API_BASE_URL_STORAGE_VERSION,
+  });
 }
 
 async function storeBackendAccessToken(accessToken) {
-  if (globalThis.chrome?.storage?.session) {
-    await chrome.storage.session.set({ youtubeExportToken: accessToken });
-    return;
+  const token = String(accessToken || "").trim();
+  if (!token) {
+    await removeLocal([ACCESS_TOKEN_KEY]);
+  } else {
+    await writeLocal({ [ACCESS_TOKEN_KEY]: token });
   }
-  sessionStorage.setItem("youtubeExportToken", accessToken);
+  renderTokenStatus(token);
 }
 
 async function requestRecommendations(apiBaseUrl, query, accessToken) {
@@ -754,6 +813,7 @@ form.addEventListener("submit", async (event) => {
     const payload = await requestRecommendations(apiBaseUrl, query, accessToken);
     const resultCount = renderResponse(payload, apiBaseUrl);
     showView(resultCount === 0 ? "empty" : "none");
+    await rememberQuery(query);
 
     if (resultCount === 0) {
       setState("success", "추천 결과가 없습니다. 다른 검색어를 시도해 보세요.");
@@ -807,36 +867,71 @@ currentTrackButton.addEventListener("click", async () => {
   }
 });
 
-readStoredApiBaseUrl()
-  .then(async ({ apiBaseUrl, apiBaseUrlStorageVersion }) => {
+readLocal([
+  "apiBaseUrl",
+  "apiBaseUrlStorageVersion",
+  ACCESS_TOKEN_KEY,
+  LAST_QUERY_KEY,
+  RECENT_QUERIES_KEY,
+])
+  .then(async (stored) => {
     const resolved = resolveApiBaseUrlSetting(
-      apiBaseUrl,
-      apiBaseUrlStorageVersion,
+      stored.apiBaseUrl,
+      stored.apiBaseUrlStorageVersion,
     );
     // 저장소 읽기는 비동기라, 그 사이 사용자가 입력했다면 덮어쓰지 않는다.
     if (!apiBaseUrlInput.value) {
       apiBaseUrlInput.value = resolved.apiBaseUrl;
     }
+    if (!backendAccessTokenInput.value) {
+      backendAccessTokenInput.value = stored[ACCESS_TOKEN_KEY] || "";
+    }
+    renderTokenStatus(backendAccessTokenInput.value);
+    renderQueryHistory(stored[RECENT_QUERIES_KEY]);
+    if (!queryInput.value) {
+      queryInput.value = stored[LAST_QUERY_KEY] || "";
+    }
+    // 토큰이 없으면 설정을 펼쳐 첫 사용자가 헤매지 않게 한다.
+    settingsPanel.open = !backendAccessTokenInput.value;
+
     if (resolved.shouldPersist) {
       await storeApiBaseUrl(resolved.apiBaseUrl);
     }
     queryInput.focus();
+    // 복원한 검색어는 전체 선택해 바로 덮어쓸 수 있게 한다.
+    queryInput.select();
   })
   .catch(() => {
     apiBaseUrlInput.value = DEFAULT_API_BASE_URL;
+    settingsPanel.open = !backendAccessTokenInput.value;
   });
 
-readStoredBackendAccessToken()
-  .then((storedToken) => {
-    if (!backendAccessTokenInput.value) {
-      backendAccessTokenInput.value = storedToken || "";
-    }
-    // 토큰이 없으면 설정을 펼쳐 첫 사용자가 헤매지 않게 한다.
-    settingsPanel.open = !backendAccessTokenInput.value;
-  })
-  .catch(() => {
-    settingsPanel.open = !backendAccessTokenInput.value;
+// 지연 없이 곧바로 저장한다. change는 blur에서만 발생하고, 디바운스 타이머는
+// 붙여넣고 바로 패널을 닫으면 실행되기 전에 문서가 사라진다. storage.set은
+// 호출 즉시 브라우저 프로세스로 넘어가므로 문서가 죽어도 기록이 남는다.
+backendAccessTokenInput.addEventListener("input", () => {
+  storeBackendAccessToken(backendAccessTokenInput.value).catch((error) => {
+    console.error("Failed to store the access token:", error);
   });
+});
+
+tokenRevealButton.addEventListener("click", () => {
+  const reveal = backendAccessTokenInput.type === "password";
+  backendAccessTokenInput.type = reveal ? "text" : "password";
+  tokenRevealButton.textContent = reveal ? "숨기기" : "보기";
+  tokenRevealButton.setAttribute("aria-pressed", String(reveal));
+});
+
+tokenClearButton.addEventListener("click", async () => {
+  backendAccessTokenInput.value = "";
+  await storeBackendAccessToken("");
+  backendAccessTokenInput.focus();
+});
+
+historyClearButton.addEventListener("click", async () => {
+  renderQueryHistory([]);
+  await removeLocal([LAST_QUERY_KEY, RECENT_QUERIES_KEY]);
+});
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") {
@@ -845,6 +940,22 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   const state = changes.youtubeExport?.newValue;
   if (isStateForOperation(state, activeYouTubeOperationId)) {
     renderYouTubeExportState(state);
+  }
+
+  // 창마다 사이드 패널이 따로 뜬다. 다른 패널에서 지운 토큰이 이쪽에 남아 있으면
+  // 다음 추천 요청이 그 값을 그대로 다시 저장해 삭제가 되돌아간다.
+  if (changes[ACCESS_TOKEN_KEY]) {
+    const nextToken = changes[ACCESS_TOKEN_KEY].newValue || "";
+    // 포커스 여부와 무관하게 반영한다. 입력 중이라고 건너뛰면 그 패널의 다음
+    // 추천 요청이 낡은 값을 다시 저장해 삭제가 되돌아간다. 값이 같을 때는
+    // 건드리지 않아 커서 위치를 지킨다(자기 자신이 만든 변경도 여기로 온다).
+    if (backendAccessTokenInput.value !== nextToken) {
+      backendAccessTokenInput.value = nextToken;
+    }
+    renderTokenStatus(nextToken);
+  }
+  if (changes[RECENT_QUERIES_KEY]) {
+    renderQueryHistory(changes[RECENT_QUERIES_KEY].newValue);
   }
 });
 

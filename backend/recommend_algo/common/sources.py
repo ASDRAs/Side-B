@@ -67,10 +67,22 @@ _ITUNES_CONFIRM_SCORE = 0.62
 _LASTFM_CONFIRM_SCORE = 0.5
 # 총점과 별개로 요구하는 아티스트 일치 하한. 제목만 정확한 오답은 총점이 0.68까지
 # 나오므로 총점 문턱만으로는 막을 수 없다.
-# ponytail: fixture로 검증한 정책값이지 증명된 상수가 아니다. 이 하한은 원어 표기
-# 시도를 통째로 탈락시키므로("밤편지/아이유" 대 iTunes의 "IU") 영문 대체 표기가
-# 반드시 함께 와야 한다. alias가 늘면 test_recommend_algo.py 회귀 케이스로 재보정한다.
-_ARTIST_MIN_SCORE = 0.5
+#
+# "이 후보가 사용자가 말한 아티스트인가"를 묻는 곳은 세 군데다. 곡을 확정하는
+# `_itunes_structured`, Last.fm 결과를 받는 `_matches_lookups`, 그리고 ID를
+# 확정하는 `_confirms_same_artist`. 앞의 둘이 느슨하면 뒤의 하나를 조여도
+# 소용없다. 잘못 확정된 아티스트가 이미 사용자 입력을 덮은 뒤라 마지막 게이트는
+# 자기 자신과 비교하게 된다. 그래서 하나의 값을 함께 쓴다.
+#
+# 0.5는 `TAEMIN`/`TAEYEON`(0.615)과 `BTS`/`BTOB`(0.571)를 통과시켰다. 실측한
+# 표본에서 정상 표기 변형의 최저점은 `aespa`/`aespa 에스파`의 0.769이고 혼동
+# 사례 최고점은 0.615다. 0.8로 올리면 `aespa 에스파`가 막힌다.
+#
+# ponytail: fixture로 검증한 정책값이지 증명된 상수가 아니다. 위 숫자는 몇 개
+# 표본 사이의 관측 구간일 뿐이므로 실사용 로그가 쌓이면 다시 재야 한다. 이 하한은
+# 원어 표기 시도를 통째로 탈락시키므로("밤편지/아이유" 대 iTunes의 "IU") 영문
+# 대체 표기가 반드시 함께 와야 한다. alias가 늘면 회귀 케이스로 재보정한다.
+_ARTIST_MIN_SCORE = 0.7
 # 제목·아티스트가 모두 완전 일치. 더 나은 후보가 있을 수 없으므로 즉시 종료한다.
 _PERFECT_MATCH_SCORE = 1.0
 
@@ -489,6 +501,32 @@ async def _deezer_or_none(
         return None
 
 
+# source_id는 preview가 검색 없이 그대로 재생하는 값이다(`_lookup_media`는 ID
+# 조회에 제목·아티스트 게이트를 적용하지 않는다). 그래서 앨범아트와 달리 틀리면
+# 다른 곡이 들린다. 앨범아트는 제목이 맞으면 붙여도 손해가 작지만 ID는 아니다.
+#
+# ID를 포기하면 preview는 곡명 검색으로 내려가는데, 그쪽은 `preview.py`의 별도
+# 상수(0.8)를 요구한다. 즉 `아이유`/`IU`처럼 점수가 0.0인 교차 표기는 ID도 잃고
+# 곡명 검색에서도 탈락해 404가 될 수 있다. 추천 목록 생성은 Last.fm 기반이라
+# 영향이 없지만 미리 듣기 성공률은 교차 표기에서 떨어진다. 잘못된 곡을 재생하는
+# 것보다 낫다고 보고 받아들이는 trade-off다. 대체 표기(alias)가 함께 오면
+# 해소되므로, 재현되면 alias 확보 쪽을 먼저 본다.
+
+
+def _confirms_same_artist(item: dict[str, Any], expected_artist: str) -> bool:
+    """iTunes 후보가 요청한 아티스트의 곡이라고 볼 수 있는지 판정한다."""
+    expected = str(expected_artist or "").strip()
+    if not expected:
+        return False
+    candidate = str(item.get("artistName") or "").strip()
+    if not candidate:
+        return False
+    return (
+        _alias_artist_score(candidate, (expected,))
+        >= _ARTIST_MIN_SCORE
+    )
+
+
 async def get_tracks_metadata(
     http: httpx.AsyncClient,
     tracks: list[TrackInfo],
@@ -530,6 +568,10 @@ async def get_tracks_metadata(
                     track.artist,
                     limit=8,
                     min_score=0.45,
+                    # 검색 자체에는 아티스트 하한을 걸지 않는다. `artist_score`는
+                    # 음역을 모르는 순수 문자열 비교라 `아이유`/`IU`가 0.0이다.
+                    # 하한을 걸면 교차 표기 아티스트의 앨범아트가 전부 사라진다.
+                    # 대신 아래에서 source_id에만 하한을 적용한다.
                 )
             )
 
@@ -548,7 +590,7 @@ async def get_tracks_metadata(
                     track.album_art_url = (
                         _itunes_artwork(itunes_item) or track.album_art_url
                     )
-                if req_id:
+                if req_id and _confirms_same_artist(itunes_item, track.artist):
                     track.bind(_itunes_binding(itunes_item))
 
             # 2. itune와 req field 확인 후 API return 값 확인

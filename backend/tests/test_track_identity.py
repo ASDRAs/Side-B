@@ -281,3 +281,221 @@ async def test_metadata_leaves_no_binding_when_both_providers_miss(monkeypatch):
 
     assert track.bindings == {}
     assert track_to_api_dict(track)["source_id"] is None
+
+
+class _ScoringHttp:
+    """iTunes 응답만 대체하고 채점은 실제 코드를 그대로 태운다.
+
+    `_itunes_or_none`을 통째로 대체하면 점수 게이트를 건너뛰어 이 결함이
+    드러나지 않는다.
+    """
+
+    def __init__(self, results):
+        self.results = results
+
+    async def get(self, url, params=None, **kwargs):
+        return _ScoringResponse(self.results)
+
+
+class _ScoringResponse:
+    status_code = 200
+
+    def __init__(self, results):
+        self.results = results
+
+    def json(self):
+        return {"resultCount": len(self.results), "results": self.results}
+
+    def raise_for_status(self):
+        return None
+
+
+async def test_metadata_does_not_claim_identity_for_a_different_artist():
+    """제목만 같은 오답을 source_id로 확정하면 안 된다.
+
+    채점 가중치가 title 0.68 / artist 0.32라 아티스트가 전혀 달라도 총점이
+    0.68이 나온다. 총점 문턱(0.45)만으로는 막을 수 없다. source_id는 preview가
+    검색 없이 그대로 재생하므로 틀리면 다른 곡이 들린다.
+    """
+    wrong = {
+        "trackId": 999,
+        "trackName": "Hello",
+        "artistName": "ZZZ",
+        "artworkUrl100": "https://example.com/wrong.jpg",
+    }
+    track = TrackInfo(name="Hello", artist="Adele")
+
+    await get_tracks_metadata(
+        _ScoringHttp([wrong]), [track], None, fields=["album_art", "source_id"]
+    )
+
+    assert track.source_id is None, "다른 아티스트의 곡 ID로 확정했다."
+
+
+async def test_metadata_does_not_confuse_near_identical_artist_names():
+    """TAEMIN과 TAEYEON은 0.615로 채점된다. 공용 하한 0.5로는 통과한다."""
+    wrong = {
+        "trackId": 999,
+        "trackName": "Danger",
+        "artistName": "TAEYEON",
+        "artworkUrl100": "https://example.com/wrong.jpg",
+    }
+    track = TrackInfo(name="Danger", artist="TAEMIN")
+
+    await get_tracks_metadata(
+        _ScoringHttp([wrong]), [track], None, fields=["album_art", "source_id"]
+    )
+
+    assert track.source_id is None, "이름이 비슷한 다른 아티스트로 확정했다."
+
+
+async def test_metadata_keeps_album_art_when_identity_is_unconfirmed():
+    """아티스트를 확인하지 못해도 앨범아트까지 버리지는 않는다.
+
+    `artist_score`는 음역을 모르는 문자열 비교라 `아이유`/`IU`가 0.0이다.
+    검색 단계에 하한을 걸면 교차 표기 아티스트의 커버가 전부 사라진다. 틀린
+    커버는 겉모습 문제지만 틀린 ID는 다른 곡을 재생시킨다.
+    """
+    item = {
+        "trackId": 1001,
+        "trackName": "밤편지",
+        "artistName": "IU",
+        "artworkUrl100": "https://example.com/art.jpg",
+    }
+    track = TrackInfo(name="밤편지", artist="아이유")
+
+    await get_tracks_metadata(
+        _ScoringHttp([item]), [track], None, fields=["album_art", "source_id"]
+    )
+
+    assert track.album_art_url == "https://example.com/art.jpg"
+    assert track.source_id is None
+
+
+async def test_metadata_accepts_catalog_notation_variants():
+    """`aespa` / `aespa 에스파`는 0.769다. 하한을 0.8로 올리면 이게 막힌다."""
+    for expected, catalog in [
+        ("aespa", "aespa 에스파"),
+        ("IU", "IU feat. SUGA"),
+        ("TAEYEON", "TAEYEON (태연)"),
+        ("YOUNHA", "Younha"),
+    ]:
+        item = {
+            "trackId": 1000,
+            "trackName": "Song",
+            "artistName": catalog,
+            "artworkUrl100": "https://example.com/right.jpg",
+        }
+        track = TrackInfo(name="Song", artist=expected)
+
+        await get_tracks_metadata(
+            _ScoringHttp([item]), [track], None, fields=["album_art", "source_id"]
+        )
+
+        assert track.source_id == "itunes:1000", f"{expected} / {catalog} 매칭 실패"
+        assert track.album_art_url == "https://example.com/right.jpg"
+
+
+async def test_resolver_does_not_overwrite_the_user_artist_with_a_near_name():
+    """iTunes resolver가 사용자 아티스트를 근접 이름으로 덮지 않는지만 본다.
+
+    경계 통합은 `test_recommend_router.py`가 맡는다. 여기서는 오염이 시작되는
+    지점 하나를 좁게 고정한다. 메타데이터 게이트만으로는 이 결함을 못 잡는데,
+    resolver가 사용자의 `TAEMIN`을 후보의 `TAEYEON`으로 덮고 나면 뒤의 게이트는
+    TAEYEON과 TAEYEON을 비교해 그대로 통과하기 때문이다.
+    """
+    candidate = {
+        "trackId": 999,
+        "trackName": "Danger",
+        "artistName": "TAEYEON",
+        "artworkUrl100": "https://example.com/taeyeon.jpg",
+    }
+
+    resolved = await sources._itunes_structured(
+        [("Danger", "TAEMIN")], _ScoringHttp([candidate])
+    )
+
+    assert resolved is None, f"사용자 아티스트를 덮었다: {resolved}"
+
+
+async def test_resolver_still_accepts_a_catalog_notation_variant():
+    """하한이 정상 표기 변형까지 막으면 곡을 아예 못 찾는다."""
+    candidate = {
+        "trackId": 1000,
+        "trackName": "Whiplash",
+        "artistName": "aespa 에스파",
+        "artworkUrl100": "https://example.com/aespa.jpg",
+    }
+
+    resolved = await sources._itunes_structured(
+        [("Whiplash", "aespa")], _ScoringHttp([candidate])
+    )
+
+    assert resolved is not None, "aespa / aespa 에스파를 놓쳤다."
+    assert resolved[1] == "aespa 에스파"
+    assert resolved[2] == "itunes:1000"
+
+
+class _FakeLastFmTrack:
+    def __init__(self, name, artist):
+        self._name = name
+        self._artist = artist
+
+    def get_name(self):
+        return self._name
+
+    def get_artist(self):
+        return _FakeLastFmArtist(self._artist)
+
+
+class _FakeLastFmArtist:
+    def __init__(self, name):
+        self._name = name
+
+    def get_name(self):
+        return self._name
+
+
+class _FakeSearch:
+    def __init__(self, results):
+        self._results = results
+
+    def get_next_page(self):
+        return self._results
+
+
+class _FakeLastFm:
+    """검색이 근접 이름의 다른 아티스트만 돌려주는 Last.fm 대역."""
+
+    def __init__(self, results):
+        self._results = results
+
+    def search_for_track(self, artist, title):
+        return _FakeSearch(self._results)
+
+
+async def test_lastfm_fallback_does_not_adopt_a_near_name_artist():
+    """iTunes가 비어도 Last.fm 경로로 잘못된 아티스트가 들어오면 안 된다.
+
+    이 경로를 막지 않으면 우회로가 생긴다. iTunes에서 거른 `TAEYEON`을 Last.fm이
+    채택하면 `TrackInfo.artist`가 TAEYEON이 되고, 그 뒤 메타데이터 조회가
+    "Danger TAEYEON"으로 다시 검색해 결국 같은 잘못된 source_id를 확정한다.
+    """
+    lastfm = _FakeLastFm([_FakeLastFmTrack("Danger", "TAEYEON")])
+
+    resolved = await sources._lastfm_search(
+        "TAEMIN Danger", [("Danger", "TAEMIN")], lastfm
+    )
+
+    assert resolved is None, f"Last.fm 경로로 아티스트가 덮였다: {resolved}"
+
+
+async def test_lastfm_fallback_still_accepts_a_matching_artist():
+    """하한이 정상 Last.fm 결과까지 막으면 곡을 못 찾는다."""
+    lastfm = _FakeLastFm([_FakeLastFmTrack("Danger", "TAEMIN")])
+
+    resolved = await sources._lastfm_search(
+        "TAEMIN Danger", [("Danger", "TAEMIN")], lastfm
+    )
+
+    assert resolved == ("Danger", "TAEMIN", None)

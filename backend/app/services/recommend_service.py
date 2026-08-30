@@ -215,6 +215,18 @@ async def run_recommend(
             _log_signal_coverage("mood", tag_results)
             processed = {k: _serialize_tracks(v) for k, v in tag_results.items()}
             representative = _pick_representative_track(tag_results)
+            # mood 쿼리에는 사용자가 지목한 곡이 없어 태그 결과의 대표곡이 화면
+            # 상단의 기준곡이 된다. direct 경로와 똑같이 그 1곡만 조회해 앨범아트와
+            # preview용 ID를 채운다. 후보 fan-out과 달리 호출은 1회다.
+            if representative is not None:
+                representative = (
+                    await get_tracks_metadata(
+                        http,
+                        [representative],
+                        lastfm,
+                        fields=["album_art", "source_id"],
+                    )
+                )[0]
             logger.info("Tag fallback used for query: %s", query)
             return dict(
                 track_name=representative.name if representative else query,
