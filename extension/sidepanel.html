@@ -101,11 +101,17 @@
             </button>
           </p>
 
-          <p class="settings-section-label">개발 도구</p>
+          <p class="settings-section-label">이퀄라이저</p>
+
+          <fieldset class="eq-modes">
+            <legend>EQ 모드</legend>
+            <label><input type="radio" name="eqMode" value="auto" checked />곡별 EQ</label>
+            <label><input type="radio" name="eqMode" value="test" />테스트 EQ</label>
+          </fieldset>
 
           <div class="eq-buttons">
             <button id="eqTestButton" class="secondary-button" type="button">
-              EQ 테스트 적용
+              EQ 적용
             </button>
             <button id="eqStopButton" class="secondary-button" type="button">
               EQ 해제
@@ -115,6 +121,7 @@
           <p id="eqTestStatus" class="eq-status" role="status" aria-live="polite">
             EQ가 적용되지 않았습니다.
           </p>
+          <p id="eqTrack" class="eq-status" hidden></p>
         </div>
       </details>
 

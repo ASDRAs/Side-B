@@ -1,9 +1,25 @@
 console.log("Background service worker loaded.");
+importScripts("scripts/musicTrack.js", "scripts/eqCoordinator.js");
 
-// The toolbar icon opens the side panel; there is no popup document any more.
+// Use the actual action event so the tab that grants activeTab is also the
+// capture target. Opening a global panel is not itself a capture permission.
 chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
+  .setPanelBehavior({ openPanelOnActionClick: false })
   .catch((error) => console.error("Failed to set side panel behavior:", error));
+chrome.action.onClicked.addListener((tab) => {
+  // Call synchronously in the user gesture, before any storage/network await.
+  chrome.sidePanel.open({ windowId: tab.windowId })
+    .catch((error) => console.error("Failed to open side panel:", error));
+  SideBEq.onAction(tab).catch((error) => console.error("Failed to start pending EQ:", error));
+});
+chrome.tabs.onRemoved.addListener((tabId) => {
+  SideBEq.releaseTab(tabId).catch((error) => console.error("Failed to release closed EQ tab:", error));
+});
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+  if ((change.url || change.status) && !SideBEq.isMusicTab(tab)) {
+    SideBEq.releaseTab(tabId).catch((error) => console.error("Failed to release navigated EQ tab:", error));
+  }
+});
 
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 const MUSIC_TAB_URL_PATTERN = "https://music.youtube.com/*";
@@ -28,7 +44,7 @@ let youtubeExportInProgress = false;
 
 // The side panel outlives the tab it was opened from, so it cannot ask
 // "which tab is active?" and get a useful answer. The service worker resolves
-// the YouTube Music tab instead, and both the track reader and the EQ use it.
+// the YouTube Music tab for the track reader. EQ separately pins a permitted tab.
 async function resolveMusicTab() {
   const tabs = await chrome.tabs.query({ url: MUSIC_TAB_URL_PATTERN });
   if (tabs.length === 0) {
@@ -88,74 +104,6 @@ async function sendToOffscreen(message) {
   }
 
   return response;
-}
-
-async function startEq(requestedTabId, preset) {
-  const tabId = requestedTabId ?? (await resolveMusicTab())?.id;
-  if (!Number.isInteger(tabId)) {
-    throw new Error("YouTube Music 탭을 찾을 수 없습니다.");
-  }
-
-  await ensureOffscreenDocument();
-
-  const state = await sendToOffscreen({
-    type: "GET_STATE",
-  });
-
-  if (state.active && state.tabId === tabId) {
-    return sendToOffscreen({
-      type: "UPDATE_EQ",
-      preset,
-    });
-  }
-
-  if (state.active) {
-    await sendToOffscreen({
-      type: "STOP_EQ",
-    });
-  }
-
-  const streamId = await chrome.tabCapture.getMediaStreamId({
-    targetTabId: tabId,
-  });
-
-  return sendToOffscreen({
-    type: "START_EQ",
-    tabId,
-    streamId,
-    preset,
-  });
-}
-
-async function stopEq() {
-  if (!(await hasOffscreenDocument())) {
-    return {
-      ok: true,
-      active: false,
-    };
-  }
-
-  const response = await sendToOffscreen({
-    type: "STOP_EQ",
-  });
-
-  await chrome.offscreen.closeDocument();
-
-  return response;
-}
-
-async function getEqState() {
-  if (!(await hasOffscreenDocument())) {
-    return {
-      ok: true,
-      active: false,
-      tabId: null,
-    };
-  }
-
-  return sendToOffscreen({
-    type: "GET_STATE",
-  });
 }
 
 class YouTubeApiError extends Error {
@@ -517,7 +465,7 @@ async function createYouTubePlaylist(payload) {
 async function handleMessage(message) {
   switch (message.type) {
     case "START_EQ":
-      return startEq(message.tabId, message.preset);
+      return SideBEq.start(message);
 
     case "UPDATE_EQ":
       return sendToOffscreen({
@@ -526,10 +474,13 @@ async function handleMessage(message) {
       });
 
     case "STOP_EQ":
-      return stopEq();
+      return SideBEq.stop();
 
     case "GET_EQ_STATE":
-      return getEqState();
+      return SideBEq.getState();
+
+    case "READ_EQ_TRACK":
+      return { ok: true, track: await SideBEq.readTrack(message.tabId) };
 
     case "GET_MUSIC_TAB":
       return getMusicTab();
@@ -549,11 +500,10 @@ async function handleMessage(message) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  console.log("Background received:", message);
-
   if (message.target !== "background") {
     return false;
   }
+  if (message.type !== "READ_EQ_TRACK") console.log("Background received:", message);
 
   handleMessage(message)
     .then(sendResponse)
