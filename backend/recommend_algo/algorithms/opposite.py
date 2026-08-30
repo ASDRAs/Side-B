@@ -104,11 +104,13 @@ async def opposite_emotion(
         )
     collected = collected[:top_n]
     scoring.assign_exposure(collected)
-    opp_emotion_tracks = await sources.get_tracks_metadata(http, collected, lastfm)
-    for track in opp_emotion_tracks:
+    # 후보 metadata fan-out 없음. 822209f가 다른 알고리즘에서 걷어낸 호출이고
+    # (후보 1곡당 iTunes 1회, 상한 분당 약 20회) 여기만 남아 있었다. 앨범아트는
+    # preview 시점에 채운다.
+    for track in collected:
         track.algo = track.algo or "opposite_emotion"
         track.label = track.label or "반전 무드 추천"
-    return opp_emotion_tracks
+    return collected
 
 
 async def _seed_tags(

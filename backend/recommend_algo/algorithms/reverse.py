@@ -178,7 +178,7 @@ async def reverse_top100(
         )
         ranked = scoring._fill_from_ranked_pool(ranked, sorted_pool, top_n)
         for track in ranked:
-            track.algo, track.label = "reverse_top100", "당신만 모르는 숨겨진 명곡"
+            track.algo, track.label = "reverse_top100", "덜 알려진 명곡"
         logger.info("[Reverse] 최종 선정 %d개", len(ranked))
         # 후보 metadata fan-out 없음. 앨범아트는 preview 클릭 시점에 채운다.
         return ranked

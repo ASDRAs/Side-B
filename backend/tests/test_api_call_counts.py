@@ -9,8 +9,10 @@ API 호출 계측 테스트.
 것이다.
 """
 
+from app.llm.llm_response import OppositeTagAnalysis
 from recommend_algo import (
     hidden_discovery_by_artist,
+    opposite_emotion,
     reverse_top100,
     similar_listening_pattern,
 )
@@ -199,5 +201,95 @@ async def test_hidden_makes_no_candidate_metadata_fanout(monkeypatch):
     assert metadata_calls == [], (
         f"hidden_discovery가 후보 {sum(count for _, count in metadata_calls)}개를 "
         "enrich함. popularity fan-out도 최종 metadata fan-out도 0이어야 한다."
+    )
+    assert http.calls == [], f"공급자 직접 호출이 남아 있다: {http.calls}"
+
+
+# ── opposite ────────────────────────────────────────────────────
+#
+# 822209f가 나머지 알고리즘에서 fan-out을 걷어낼 때 opposite만 빠졌고, 이 파일에
+# opposite 케이스가 없어서 회귀가 드러나지 않았다. 규칙에 적용 범위가 없으면
+# 테스트가 잡아주지 못한다.
+
+
+class _FakeTopTrack:
+    def __init__(self, artist, title):
+        self.item = _FakeTrackItem(artist, title)
+
+
+class _FakeTrackItem:
+    def __init__(self, artist, title):
+        self._artist = artist
+        self._title = title
+
+    def get_name(self):
+        return self._title
+
+    def get_artist(self):
+        return _FakeArtist(self._artist)
+
+
+class _FakeArtist:
+    def __init__(self, name):
+        self._name = name
+
+    def get_name(self):
+        return self._name
+
+
+class _FakeTag:
+    def __init__(self, tracks):
+        self.tracks = tracks
+
+    def get_top_tracks(self, limit=10):
+        return [_FakeTopTrack(artist, title) for artist, title in self.tracks[:limit]]
+
+
+class _TagFakeLastFm:
+    def __init__(self, tracks_by_tag):
+        self.tracks_by_tag = tracks_by_tag
+
+    def get_tag(self, tag):
+        return _FakeTag(self.tracks_by_tag.get(tag, []))
+
+
+class _FakeGemini:
+    def request(self, **kwargs):
+        return OppositeTagAnalysis(opposite_tags=["bright"])
+
+
+async def test_opposite_makes_no_candidate_metadata_fanout(monkeypatch):
+    """opposite_emotion도 후보 metadata를 조회하지 않는다."""
+    lastfm = _TagFakeLastFm(
+        {"bright": [(f"Artist{i}", f"Track{i}") for i in range(50)]}
+    )
+    metadata_calls = []
+
+    async def counting_enrich(http, tracks, *args, **kwargs):
+        metadata_calls.append(len(tracks))
+        return tracks
+
+    async def fake_seed_tags(*args, **kwargs):
+        return ["calm"]
+
+    monkeypatch.setattr("recommend_algo.algorithms.opposite._seed_tags", fake_seed_tags)
+    monkeypatch.setattr(
+        "recommend_algo.common.sources.get_tracks_metadata", counting_enrich
+    )
+
+    http = EmptyHttp()
+    result = await opposite_emotion(
+        "Seed",
+        "Seed Artist",
+        http,
+        lastfm,
+        gemini_wrapper=_FakeGemini(),
+        top_n=TOP_N,
+    )
+
+    assert result, "후보가 비면 fan-out 0을 확인할 수 없다."
+    assert metadata_calls == [], (
+        f"opposite_emotion이 후보 {sum(metadata_calls)}개를 enrich함. "
+        "후보 fan-out은 0이어야 한다."
     )
     assert http.calls == [], f"공급자 직접 호출이 남아 있다: {http.calls}"
