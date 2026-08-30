@@ -1,8 +1,10 @@
-import { readCurrentTrack } from "./scripts/tab.js";
-import { startEq, stopEq } from "./scripts/eq.js";
+import { NoMusicTabError, readCurrentTrack } from "./scripts/tab.js";
+import { getEqState, startEq, stopEq } from "./scripts/eq.js";
 import {
   API_BASE_URL_STORAGE_VERSION,
   DEFAULT_API_BASE_URL,
+  backendErrorMessage,
+  previewQueryParams,
   recommendationHeaders,
   requiresBackendAccessToken,
   resolveApiBaseUrlSetting,
@@ -12,6 +14,7 @@ import {
   getYouTubeExportState,
 } from "./scripts/youtubeExport.js";
 import {
+  apiErrorMessage,
   exportExclusionCounts,
   failedTrackLabel,
   fetchYouTubeMatches,
@@ -29,10 +32,36 @@ const BUCKET_LABELS = {
   opposite: "반대 무드",
   hidden: "숨겨진 곡",
 };
+const EXPORT_STATUS_LABELS = {
+  matching: "곡 매칭 중",
+  awaiting_auth: "Google 인증 대기",
+  creating_playlist: "플레이리스트 생성 중",
+  adding_items: "곡 추가 중",
+  reviewing: "매칭 확인",
+  cancelled: "취소됨",
+  interrupted: "중단됨",
+  completed: "완료",
+  partial: "일부 완료",
+  error: "실패",
+};
+const ACTIVE_EXPORT_STATUSES = new Set([
+  "matching",
+  "awaiting_auth",
+  "creating_playlist",
+  "adding_items",
+  "reviewing",
+]);
+const EXPORT_TONES = {
+  completed: "success",
+  partial: "success",
+  error: "error",
+  interrupted: "error",
+};
 
 const form = document.querySelector("#recommendForm");
 const apiBaseUrlInput = document.querySelector("#apiBaseUrl");
-const youtubeExportTokenInput = document.querySelector("#youtubeExportToken");
+const backendAccessTokenInput = document.querySelector("#youtubeExportToken");
+const settingsPanel = document.querySelector("#settingsPanel");
 const queryInput = document.querySelector("#query");
 const submitButton = document.querySelector("#submitButton");
 const connectionBadge = document.querySelector("#connectionBadge");
@@ -40,6 +69,11 @@ const statusMessage = document.querySelector("#statusMessage");
 const seedSection = document.querySelector("#seedSection");
 const seedTitle = document.querySelector("#seedTitle");
 const seedArtist = document.querySelector("#seedArtist");
+const seedArt = document.querySelector("#seedArt");
+const seedPreview = document.querySelector("#seedPreview");
+const seedPreviewNote = document.querySelector("#seedPreviewNote");
+const emptyState = document.querySelector("#emptyState");
+const loadingSkeleton = document.querySelector("#loadingSkeleton");
 const results = document.querySelector("#results");
 const rawPanel = document.querySelector("#rawPanel");
 const rawResponse = document.querySelector("#rawResponse");
@@ -64,15 +98,19 @@ const youtubeMatchReview = document.querySelector("#youtubeMatchReview");
 const youtubeMatchList = document.querySelector("#youtubeMatchList");
 const youtubeMatchConfirm = document.querySelector("#youtubeMatchConfirm");
 const youtubeMatchCancel = document.querySelector("#youtubeMatchCancel");
+const youtubeMatchSelectAll = document.querySelector("#youtubeMatchSelectAll");
+const matchReviewSubtitle = document.querySelector("#matchReviewSubtitle");
 
 let currentRecommendation = null;
 let pendingMatchReview = null;
 let youtubeExportGeneration = 0;
 let activeYouTubeOperationId = null;
 
-// EQ 테스트용
+// EQ 테스트용. 백엔드가 곡별 프리셋을 보내기 전까지 쓰는 고정값이다.
+// preamp는 필터단 최대 이득(+16.18 dB @ 61 Hz)을 상쇄하도록 잡는다. -6이면
+// 최종 +10.2 dB라 0 dBFS 근처 음원에서 클리핑한다.
 const TEST_EQ_PRESET = {
-  preamp: -6,
+  preamp: -17,
   bands: [
     { frequency: 31, gain: 12 },
     { frequency: 62, gain: 12 },
@@ -95,6 +133,12 @@ function normalizeApiBaseUrl(value) {
   return url.toString().replace(/\/$/, "");
 }
 
+function setStatus(message, isError = false) {
+  statusMessage.className = isError ? "status status-error" : "status";
+  statusMessage.textContent = message;
+}
+
+// 배지는 백엔드 연결 상태만 나타낸다. EQ와 현재 곡은 각자 자리에서 알린다.
 function setState(state, message) {
   const badgeText = {
     idle: "대기",
@@ -105,9 +149,18 @@ function setState(state, message) {
 
   connectionBadge.className = `badge badge-${state}`;
   connectionBadge.textContent = badgeText;
-  statusMessage.className = state === "error" ? "status status-error" : "status";
-  statusMessage.textContent = message;
+  setStatus(message, state === "error");
   submitButton.disabled = state === "loading";
+}
+
+function openSettings() {
+  settingsPanel.open = true;
+  settingsPanel.scrollIntoView({ block: "nearest" });
+}
+
+function showView(view) {
+  emptyState.hidden = view !== "empty";
+  loadingSkeleton.hidden = view !== "loading";
 }
 
 function clearResults() {
@@ -119,11 +172,13 @@ function clearResults() {
   currentRecommendation = null;
   activeYouTubeOperationId = null;
   results.replaceChildren();
+  resetSeedMedia();
   seedSection.hidden = true;
   rawPanel.hidden = true;
   rawPanel.open = false;
   rawResponse.textContent = "";
   youtubeExportPanel.hidden = true;
+  youtubeExportPanel.removeAttribute("data-tone");
   youtubeExportLinks.hidden = true;
   youtubeLink.removeAttribute("href");
   youtubeMusicLink.removeAttribute("href");
@@ -141,7 +196,8 @@ function renderTrack(track, index) {
   const fragment = trackTemplate.content.cloneNode(true);
   fragment.querySelector(".rank").textContent = String(index + 1);
   fragment.querySelector(".track-title").textContent = track.name || "제목 없음";
-  fragment.querySelector(".track-artist").textContent = track.artist || "아티스트 없음";
+  fragment.querySelector(".track-artist").textContent =
+    track.artist || "아티스트 없음";
 
   const label = fragment.querySelector(".track-label");
   const labelText = track.label || (track.reason_tags || []).join(", ");
@@ -152,13 +208,14 @@ function renderTrack(track, index) {
 
 function renderBucket(bucketName, tracks) {
   if (!Array.isArray(tracks) || tracks.length === 0) {
-    return;
+    return 0;
   }
 
   const fragment = bucketTemplate.content.cloneNode(true);
   const bucket = fragment.querySelector(".bucket");
   bucket.dataset.bucket = bucketName;
-  fragment.querySelector("h2").textContent = BUCKET_LABELS[bucketName] || bucketName;
+  fragment.querySelector("h2").textContent =
+    BUCKET_LABELS[bucketName] || bucketName;
   fragment.querySelector(".count").textContent = `${tracks.length}곡`;
   const exportButton = fragment.querySelector(".export-button");
   exportButton.addEventListener("click", () => exportBucket(bucketName, tracks));
@@ -166,19 +223,61 @@ function renderBucket(bucketName, tracks) {
   const list = fragment.querySelector(".track-list");
   tracks.forEach((track, index) => list.append(renderTrack(track, index)));
   results.append(fragment);
+  return tracks.length;
 }
 
-function renderResponse(payload) {
+function renderSeedArtwork(payload) {
+  const artworkUrl = String(payload.album_art_url || "").trim();
+  seedArt.hidden = !artworkUrl;
+  if (artworkUrl) {
+    seedArt.src = artworkUrl;
+  } else {
+    seedArt.removeAttribute("src");
+  }
+}
+
+function renderSeedPreview(payload, apiBaseUrl) {
+  const params = previewQueryParams(payload);
+  seedPreviewNote.hidden = true;
+  seedPreviewNote.textContent = "";
+
+  if (!params) {
+    seedPreview.hidden = true;
+    return;
+  }
+
+  // preload="none"이라 재생을 누를 때만 공급자 API를 호출한다.
+  seedPreview.src = `${apiBaseUrl}/preview/stream?${params}`;
+  seedPreview.hidden = false;
+}
+
+function resetSeedMedia() {
+  seedPreview.pause();
+  seedPreview.removeAttribute("src");
+  seedPreview.load();
+  seedPreview.hidden = true;
+  seedPreviewNote.hidden = true;
+  seedArt.removeAttribute("src");
+  seedArt.hidden = true;
+}
+
+function renderResponse(payload, apiBaseUrl) {
   currentRecommendation = payload;
   seedTitle.textContent = payload.track_name || "기준 곡 없음";
   seedArtist.textContent = payload.artist || "";
+  renderSeedArtwork(payload);
+  renderSeedPreview(payload, apiBaseUrl);
   seedSection.hidden = false;
 
   const buckets = payload.result || {};
-  Object.keys(BUCKET_LABELS).forEach((name) => renderBucket(name, buckets[name]));
+  const rendered = Object.keys(BUCKET_LABELS).reduce(
+    (sum, name) => sum + renderBucket(name, buckets[name]),
+    0,
+  );
 
   rawResponse.textContent = JSON.stringify(payload, null, 2);
   rawPanel.hidden = false;
+  return rendered;
 }
 
 function setExportButtonsDisabled(disabled) {
@@ -193,25 +292,7 @@ function renderYouTubeExportState(state) {
     return;
   }
 
-  const labels = {
-    matching: "곡 매칭 중",
-    awaiting_auth: "Google 인증 대기",
-    creating_playlist: "플레이리스트 생성 중",
-    adding_items: "곡 추가 중",
-    reviewing: "매칭 확인",
-    cancelled: "취소됨",
-    interrupted: "중단됨",
-    completed: "완료",
-    partial: "일부 완료",
-    error: "실패",
-  };
-  const active = [
-    "matching",
-    "awaiting_auth",
-    "creating_playlist",
-    "adding_items",
-    "reviewing",
-  ].includes(state.status);
+  const active = ACTIVE_EXPORT_STATUSES.has(state.status);
   const counts = [];
   if (Number.isFinite(state.added) && Number.isFinite(state.toAdd)) {
     counts.push(`${state.added}/${state.toAdd}곡 추가`);
@@ -230,10 +311,13 @@ function renderYouTubeExportState(state) {
   }
 
   youtubeExportPanel.hidden = false;
+  youtubeExportPanel.dataset.tone =
+    EXPORT_TONES[state.status] || (active ? "active" : "neutral");
   if (state.status !== "reviewing") {
     youtubeMatchReview.hidden = true;
   }
-  youtubeExportStatus.textContent = labels[state.status] || state.status;
+  youtubeExportStatus.textContent =
+    EXPORT_STATUS_LABELS[state.status] || state.status;
   youtubeExportTitle.textContent = state.title || "Side-B 플레이리스트";
   youtubeExportDetail.textContent = state.error || counts.join(" · ");
   youtubeExportFailures.replaceChildren();
@@ -251,12 +335,54 @@ function renderYouTubeExportState(state) {
   setExportButtonsDisabled(active);
 }
 
+function confidenceTier(confidence) {
+  if (!Number.isFinite(confidence)) {
+    return { className: "confidence-none", text: "확신도 없음" };
+  }
+  const percent = Math.round(confidence * 100);
+  if (confidence >= 0.85) {
+    return { className: "confidence-high", text: `확신도 높음 ${percent}%` };
+  }
+  if (confidence >= 0.6) {
+    return { className: "confidence-medium", text: `확신도 보통 ${percent}%` };
+  }
+  return { className: "confidence-low", text: `확신도 낮음 ${percent}%` };
+}
+
+function matchSelectionCheckboxes() {
+  return [...youtubeMatchList.querySelectorAll("input[type=checkbox]")].filter(
+    (checkbox) => !checkbox.disabled,
+  );
+}
+
+function updateMatchSelectionSummary() {
+  const checkboxes = matchSelectionCheckboxes();
+  const selected = checkboxes.filter((checkbox) => checkbox.checked).length;
+  const excluded = youtubeMatchList.querySelectorAll(
+    '.match-item[data-kind="unmatched"]',
+  ).length;
+
+  const parts = [`${selected}/${checkboxes.length}곡 선택됨`];
+  if (excluded) {
+    parts.push(`${excluded}곡은 매칭 실패로 제외`);
+  }
+  matchReviewSubtitle.textContent = parts.join(" · ");
+
+  youtubeMatchSelectAll.checked =
+    checkboxes.length > 0 && selected === checkboxes.length;
+  youtubeMatchSelectAll.indeterminate =
+    selected > 0 && selected < checkboxes.length;
+  youtubeMatchSelectAll.disabled = checkboxes.length === 0;
+  youtubeMatchConfirm.disabled = selected === 0;
+}
+
 function reviewYouTubeMatches(matches) {
   youtubeMatchList.replaceChildren();
   for (const row of orderedMatchReviewRows(matches)) {
     const { track } = row;
     const item = document.createElement("li");
     item.className = "match-item";
+    item.dataset.kind = row.kind;
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
@@ -269,55 +395,114 @@ function reviewYouTubeMatches(matches) {
       "aria-label",
       `${track.artist} - ${track.name}${row.kind === "unmatched" ? " 제외" : ""}`,
     );
+    checkbox.addEventListener("change", updateMatchSelectionSummary);
 
-    const copy = document.createElement("div");
-    copy.className = "match-copy";
-    const title = document.createElement("strong");
-    title.textContent = `${track.artist} - ${track.name}`;
+    // 왼쪽은 추천된 원본, 오른쪽은 YouTube가 고른 영상. 같은 줄에서 대조한다.
+    const origin = document.createElement("div");
+    origin.className = "match-origin";
+    const originName = document.createElement("strong");
+    originName.textContent = track.name;
+    const originArtist = document.createElement("span");
+    originArtist.className = "match-sub";
+    originArtist.textContent = track.artist;
+    origin.append(originName, originArtist);
+
+    const target = document.createElement("div");
+    target.className = "match-target";
+    const meta = document.createElement("div");
+    meta.className = "match-meta";
+
     if (row.kind === "matched") {
-      const match = document.createElement("span");
-      match.textContent = `${track.youtube_title} · ${track.channel_title}`;
+      const targetTitle = document.createElement("strong");
+      targetTitle.textContent = track.youtube_title;
+      const targetChannel = document.createElement("span");
+      targetChannel.className = "match-sub";
+      targetChannel.textContent = track.channel_title;
+
+      const tier = confidenceTier(track.confidence);
       const confidence = document.createElement("span");
-      confidence.textContent = `확신도 ${Math.round(track.confidence * 100)}%${
-        track.auto_selected === false ? " · 직접 확인 필요" : ""
-      }`;
-      copy.append(title, match, confidence);
+      confidence.className = `confidence ${tier.className}`;
+      confidence.textContent = tier.text;
+      meta.append(confidence);
+
+      if (track.auto_selected === false) {
+        item.dataset.review = "needed";
+        const note = document.createElement("span");
+        note.className = "match-note";
+        note.textContent = "직접 확인 필요";
+        meta.append(note);
+      }
+
+      target.append(targetTitle, targetChannel, meta);
     } else {
       const reason = document.createElement("span");
+      reason.className = "confidence confidence-none";
       reason.textContent = unmatchedReasonLabel(track.reason);
-      copy.append(title, reason);
+      meta.append(reason);
+      target.append(meta);
     }
-    item.append(checkbox, copy);
+
+    item.append(checkbox, origin, target);
     youtubeMatchList.append(item);
   }
 
+  updateMatchSelectionSummary();
   youtubeMatchReview.hidden = false;
+  youtubeMatchConfirm.focus();
   return new Promise((resolve) => {
     pendingMatchReview = resolve;
   });
 }
 
-youtubeMatchConfirm.addEventListener("click", () => {
+function resolveMatchReview(value) {
   if (!pendingMatchReview) {
     return;
   }
-  const selected = [...youtubeMatchList.querySelectorAll("input:checked")].map(
-    (checkbox) => Number(checkbox.dataset.index),
-  );
   const resolve = pendingMatchReview;
   pendingMatchReview = null;
   youtubeMatchReview.hidden = true;
-  resolve(selected);
+  resolve(value);
+}
+
+// 앨범 아트가 깨지면 자리만 차지하므로 숨긴다.
+seedArt.addEventListener("error", () => {
+  seedArt.hidden = true;
 });
 
-youtubeMatchCancel.addEventListener("click", () => {
-  if (!pendingMatchReview) {
+// 공급자 CDN 만료나 404는 재생을 눌러야 드러난다. 조용히 실패하지 않게 한다.
+seedPreview.addEventListener("error", () => {
+  if (!seedPreview.getAttribute("src")) {
     return;
   }
-  const resolve = pendingMatchReview;
-  pendingMatchReview = null;
-  youtubeMatchReview.hidden = true;
-  resolve(null);
+  seedPreviewNote.textContent = "미리 듣기를 불러오지 못했습니다.";
+  seedPreviewNote.hidden = false;
+});
+
+seedPreview.addEventListener("playing", () => {
+  seedPreviewNote.hidden = true;
+});
+
+youtubeMatchSelectAll.addEventListener("change", () => {
+  const shouldCheck = youtubeMatchSelectAll.checked;
+  matchSelectionCheckboxes().forEach((checkbox) => {
+    checkbox.checked = shouldCheck;
+  });
+  updateMatchSelectionSummary();
+});
+
+youtubeMatchConfirm.addEventListener("click", () => {
+  const selected = matchSelectionCheckboxes()
+    .filter((checkbox) => checkbox.checked)
+    .map((checkbox) => Number(checkbox.dataset.index));
+  resolveMatchReview(selected);
+});
+
+youtubeMatchCancel.addEventListener("click", () => resolveMatchReview(null));
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !youtubeMatchReview.hidden) {
+    resolveMatchReview(null);
+  }
 });
 
 async function requestYouTubeMatches(
@@ -368,11 +553,12 @@ async function exportBucket(bucketName, tracks) {
       throw new Error("곡명과 아티스트가 있는 추천곡이 없습니다.");
     }
     const apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput.value);
-    const exportToken = youtubeExportTokenInput.value.trim();
+    const exportToken = backendAccessTokenInput.value.trim();
     if (!exportToken) {
-      throw new Error("YouTube 내보내기 토큰을 입력하세요.");
+      openSettings();
+      throw new Error("설정에서 팀 백엔드 토큰을 입력하세요.");
     }
-    await storeYouTubeExportToken(exportToken);
+    await storeBackendAccessToken(exportToken);
     const matches = await requestYouTubeMatches(
       apiBaseUrl,
       bucketName,
@@ -492,7 +678,7 @@ async function storeApiBaseUrl(apiBaseUrl) {
   );
 }
 
-async function readStoredYouTubeExportToken() {
+async function readStoredBackendAccessToken() {
   if (globalThis.chrome?.storage?.session) {
     const stored = await chrome.storage.session.get("youtubeExportToken");
     return stored.youtubeExportToken;
@@ -500,12 +686,12 @@ async function readStoredYouTubeExportToken() {
   return sessionStorage.getItem("youtubeExportToken");
 }
 
-async function storeYouTubeExportToken(exportToken) {
+async function storeBackendAccessToken(accessToken) {
   if (globalThis.chrome?.storage?.session) {
-    await chrome.storage.session.set({ youtubeExportToken: exportToken });
+    await chrome.storage.session.set({ youtubeExportToken: accessToken });
     return;
   }
-  sessionStorage.setItem("youtubeExportToken", exportToken);
+  sessionStorage.setItem("youtubeExportToken", accessToken);
 }
 
 async function requestRecommendations(apiBaseUrl, query, accessToken) {
@@ -521,8 +707,19 @@ async function requestRecommendations(apiBaseUrl, query, accessToken) {
     });
 
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`HTTP ${response.status}${body ? `: ${body}` : ""}`);
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        // JSON이 아니면 status만으로 안내한다.
+      }
+      throw new Error(
+        backendErrorMessage(
+          response.status,
+          apiErrorMessage(payload, ""),
+          response.headers.get("Retry-After"),
+        ),
+      );
     }
 
     return await response.json();
@@ -537,30 +734,34 @@ form.addEventListener("submit", async (event) => {
 
   try {
     const apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput.value);
-    const accessToken = youtubeExportTokenInput.value.trim();
+    const accessToken = backendAccessTokenInput.value.trim();
     const query = queryInput.value.trim();
     if (!query) {
       throw new Error("검색어를 입력하세요.");
     }
 
     if (requiresBackendAccessToken(apiBaseUrl) && !accessToken) {
+      openSettings();
       throw new Error("배포 백엔드 사용에는 팀 백엔드 토큰이 필요합니다.");
     }
 
     await Promise.all([
       storeApiBaseUrl(apiBaseUrl),
-      accessToken ? storeYouTubeExportToken(accessToken) : Promise.resolve(),
+      accessToken ? storeBackendAccessToken(accessToken) : Promise.resolve(),
     ]);
-    setState("loading", "백엔드에서 추천 결과를 가져오는 중입니다.");
+    showView("loading");
+    setState("loading", "백엔드에서 추천 결과를 가져오는 중입니다. 최대 90초까지 걸릴 수 있습니다.");
     const payload = await requestRecommendations(apiBaseUrl, query, accessToken);
-    renderResponse(payload);
+    const resultCount = renderResponse(payload, apiBaseUrl);
+    showView(resultCount === 0 ? "empty" : "none");
 
-    const resultCount = Object.values(payload.result || {}).reduce(
-      (sum, bucket) => sum + (Array.isArray(bucket) ? bucket.length : 0),
-      0,
-    );
+    if (resultCount === 0) {
+      setState("success", "추천 결과가 없습니다. 다른 검색어를 시도해 보세요.");
+      return;
+    }
     setState("success", `추천 결과 ${resultCount}곡을 받았습니다.`);
   } catch (error) {
+    showView("empty");
     const message =
       error?.name === "AbortError"
         ? "요청 시간이 초과되었습니다. 백엔드 로그를 확인하세요."
@@ -577,7 +778,7 @@ currentTrackButton.addEventListener("click", async () => {
 
     if (!track) {
       currentTrackResult.hidden = true;
-      setState("error", "현재 재생 중인 곡을 찾을 수 없습니다.");
+      setStatus("YouTube Music에서 재생 중인 곡을 찾을 수 없습니다.", true);
       return;
     }
 
@@ -585,12 +786,22 @@ currentTrackButton.addEventListener("click", async () => {
     currentTrackArtist.textContent = track.artist || "아티스트 정보 없음";
     currentTrackResult.hidden = false;
 
-    setState("success", "현재 재생 중인 곡을 가져왔습니다.");
+    // 가져온 곡을 검색어에 그대로 넣어 바로 요청할 수 있게 한다.
+    queryInput.value = track.artist
+      ? `${track.artist} - ${track.title}`
+      : track.title;
+    queryInput.focus();
+    setStatus("현재 재생 중인 곡을 검색어에 넣었습니다.");
   } catch (error) {
     console.error("Failed to read current track:", error);
 
     currentTrackResult.hidden = true;
-    setState("error", "현재 곡 정보를 가져오는 데 실패했습니다.");
+    setStatus(
+      error instanceof NoMusicTabError
+        ? "YouTube Music 탭을 열어 두면 재생 중인 곡을 가져올 수 있습니다."
+        : "현재 곡 정보를 가져오는 데 실패했습니다.",
+      true,
+    );
   } finally {
     currentTrackButton.disabled = false;
   }
@@ -602,7 +813,10 @@ readStoredApiBaseUrl()
       apiBaseUrl,
       apiBaseUrlStorageVersion,
     );
-    apiBaseUrlInput.value = resolved.apiBaseUrl;
+    // 저장소 읽기는 비동기라, 그 사이 사용자가 입력했다면 덮어쓰지 않는다.
+    if (!apiBaseUrlInput.value) {
+      apiBaseUrlInput.value = resolved.apiBaseUrl;
+    }
     if (resolved.shouldPersist) {
       await storeApiBaseUrl(resolved.apiBaseUrl);
     }
@@ -612,12 +826,16 @@ readStoredApiBaseUrl()
     apiBaseUrlInput.value = DEFAULT_API_BASE_URL;
   });
 
-readStoredYouTubeExportToken()
+readStoredBackendAccessToken()
   .then((storedToken) => {
-    youtubeExportTokenInput.value = storedToken || "";
+    if (!backendAccessTokenInput.value) {
+      backendAccessTokenInput.value = storedToken || "";
+    }
+    // 토큰이 없으면 설정을 펼쳐 첫 사용자가 헤매지 않게 한다.
+    settingsPanel.open = !backendAccessTokenInput.value;
   })
   .catch(() => {
-    youtubeExportTokenInput.value = "";
+    settingsPanel.open = !backendAccessTokenInput.value;
   });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -637,6 +855,18 @@ getYouTubeExportState()
   })
   .catch(() => {
     youtubeExportPanel.hidden = true;
+  });
+
+// offscreen EQ는 패널을 닫아도 계속 돌아간다. 열 때 실제 상태를 읽지 않으면
+// 표시와 소리가 어긋난다.
+getEqState()
+  .then((state) => {
+    eqTestStatus.textContent = state?.active
+      ? "EQ가 적용되어 있습니다."
+      : "EQ가 적용되지 않았습니다.";
+  })
+  .catch(() => {
+    eqTestStatus.textContent = "EQ 상태를 확인하지 못했습니다.";
   });
 
 eqTestButton.addEventListener("click", async () => {

@@ -11,25 +11,10 @@ async function sendEqMessage(message) {
   return response;
 }
 
-async function getActiveTabId() {
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
-
-  if (!tab?.id) {
-    throw new Error("현재 탭을 찾을 수 없습니다.");
-  }
-
-  return tab.id;
-}
-
 export async function startEq(preset) {
-  const tabId = await getActiveTabId();
-
+  // The service worker resolves the YouTube Music tab; the side panel cannot.
   return sendEqMessage({
     type: "START_EQ",
-    tabId,
     preset,
   });
 }

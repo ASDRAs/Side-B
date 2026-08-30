@@ -1,6 +1,12 @@
 console.log("Background service worker loaded.");
 
+// The toolbar icon opens the side panel; there is no popup document any more.
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((error) => console.error("Failed to set side panel behavior:", error));
+
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
+const MUSIC_TAB_URL_PATTERN = "https://music.youtube.com/*";
 const YOUTUBE_API_BASE_URL = "https://www.googleapis.com/youtube/v3";
 const YOUTUBE_EXPORT_STORAGE_KEY = "youtubeExport";
 const MAX_YOUTUBE_RETRIES = 2;
@@ -19,6 +25,24 @@ const YOUTUBE_QUOTA_REASONS = new Set([
 
 let creatingOffscreenDocument = null;
 let youtubeExportInProgress = false;
+
+// The side panel outlives the tab it was opened from, so it cannot ask
+// "which tab is active?" and get a useful answer. The service worker resolves
+// the YouTube Music tab instead, and both the track reader and the EQ use it.
+async function resolveMusicTab() {
+  const tabs = await chrome.tabs.query({ url: MUSIC_TAB_URL_PATTERN });
+  if (tabs.length === 0) {
+    return null;
+  }
+  return (
+    tabs.find((tab) => tab.audible) || tabs.find((tab) => tab.active) || tabs[0]
+  );
+}
+
+async function getMusicTab() {
+  const tab = await resolveMusicTab();
+  return { ok: true, tabId: tab?.id ?? null, url: tab?.url ?? null };
+}
 
 async function hasOffscreenDocument() {
   const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
@@ -66,7 +90,12 @@ async function sendToOffscreen(message) {
   return response;
 }
 
-async function startEq(tabId, preset) {
+async function startEq(requestedTabId, preset) {
+  const tabId = requestedTabId ?? (await resolveMusicTab())?.id;
+  if (!Number.isInteger(tabId)) {
+    throw new Error("YouTube Music 탭을 찾을 수 없습니다.");
+  }
+
   await ensureOffscreenDocument();
 
   const state = await sendToOffscreen({
@@ -501,6 +530,9 @@ async function handleMessage(message) {
 
     case "GET_EQ_STATE":
       return getEqState();
+
+    case "GET_MUSIC_TAB":
+      return getMusicTab();
 
     case "CREATE_YOUTUBE_PLAYLIST":
       return createYouTubePlaylist(message.payload);

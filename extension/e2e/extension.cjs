@@ -41,7 +41,7 @@ async function launchExtensionPage(testInfo) {
     expect(extensionId).toBe(EXPECTED_EXTENSION_ID);
 
     const page = await context.newPage();
-    await page.goto(`chrome-extension://${extensionId}/popup.html`);
+    await page.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     return { context, page };
   } catch (error) {
     await context.close();
@@ -54,7 +54,7 @@ async function captureFailure(page, testInfo) {
     return;
   }
   await page.screenshot({
-    path: testInfo.outputPath("popup-failure.png"),
+    path: testInfo.outputPath("sidepanel-failure.png"),
     fullPage: true,
   });
 }

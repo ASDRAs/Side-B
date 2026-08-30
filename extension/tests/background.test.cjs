@@ -53,6 +53,12 @@ function loadBackground(responses, options = {}) {
         offscreenCalls.push("close");
       },
     },
+    sidePanel: {
+      async setPanelBehavior() {},
+    },
+    tabs: {
+      query: async () => options.musicTabs || [],
+    },
     tabCapture: {
       getMediaStreamId: async () => "stream-id",
     },
@@ -358,4 +364,38 @@ test("rejects an unconfigured OAuth client before making requests", async () => 
 
   assert.equal(harness.fetchCalls.length, 0);
   assert.equal(harness.storage.youtubeExport.status, "error");
+});
+
+test("resolves the audible YouTube Music tab for the side panel", async () => {
+  const harness = loadBackground([], {
+    musicTabs: [
+      { id: 11, url: "https://music.youtube.com/watch?v=a", audible: false },
+      { id: 22, url: "https://music.youtube.com/watch?v=b", audible: true },
+    ],
+  });
+
+  const tab = await harness.context.getMusicTab();
+
+  assert.equal(tab.ok, true);
+  assert.equal(tab.tabId, 22);
+  assert.equal(tab.url, "https://music.youtube.com/watch?v=b");
+});
+
+test("reports no tab id when YouTube Music is not open", async () => {
+  const harness = loadBackground([], { musicTabs: [] });
+
+  const tab = await harness.context.getMusicTab();
+
+  assert.equal(tab.ok, true);
+  assert.equal(tab.tabId, null);
+  assert.equal(tab.url, null);
+});
+
+test("startEq fails clearly when no YouTube Music tab is open", async () => {
+  const harness = loadBackground([], { musicTabs: [] });
+
+  await assert.rejects(
+    () => harness.context.startEq(undefined, { preamp: 0, bands: [] }),
+    /YouTube Music 탭을 찾을 수 없습니다/,
+  );
 });

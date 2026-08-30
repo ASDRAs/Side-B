@@ -17,13 +17,15 @@
     "scripting",
     "tabCapture",
     "offscreen",
-    "identity"
+    "identity",
+    "sidePanel"
   ],
   "host_permissions": [
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*",
     "https://side-b-backend-7hmhv6htsa-du.a.run.app/*",
-    "https://www.googleapis.com/*"
+    "https://www.googleapis.com/*",
+    "https://music.youtube.com/*"
   ],
   "oauth2": {
     "client_id": "1073342688292-vrnnhbs5vhi6llpbhpd4174pedcsp7ld.apps.googleusercontent.com",
@@ -41,7 +43,9 @@
       "48": "icons/icon-48.png",
       "128": "icons/icon-128.png"
     },
-    "default_title": "Side-B",
-    "default_popup": "popup.html"
+    "default_title": "Side-B"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   }
 }

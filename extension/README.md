@@ -8,8 +8,18 @@ Side-B 백엔드의 `/recommend` 응답을 확인하는 개발용 Chrome MV3 익
 2. 우측 상단의 `개발자 모드`를 켭니다.
 3. `압축해제된 확장 프로그램을 로드합니다`를 누릅니다.
 4. 이 저장소의 `extension` 폴더를 선택합니다.
-5. Side-B 아이콘을 열고 운영자에게 받은 `팀 백엔드 토큰`을 입력합니다.
-6. 검색어를 입력한 뒤 `추천 요청`을 누릅니다.
+5. 툴바의 Side-B 아이콘을 누르면 브라우저 오른쪽에 **사이드 패널**이 열립니다.
+6. 처음 열면 `설정`이 펼쳐진 상태입니다. 운영자에게 받은 `팀 백엔드 토큰`을
+   입력하세요.
+7. 검색어를 입력한 뒤 `추천 요청`을 누릅니다.
+
+팝업 대신 사이드 패널을 쓰는 이유는 팝업이 포커스를 잃는 순간 문서가 파괴되어
+진행 중이던 추천 요청(최대 90초)이 함께 취소되기 때문입니다. 사이드 패널은 다른
+탭으로 이동해도 유지되므로 YouTube Music을 들으면서 결과를 볼 수 있습니다.
+
+`지금 재생 중인 곡 사용`은 열려 있는 YouTube Music 탭에서 재생 중인 곡을 읽어
+검색어에 채웁니다. 사이드 패널은 특정 탭에 묶이지 않으므로, 어떤 탭이 활성인지와
+무관하게 서비스 워커가 YouTube Music 탭을 찾아 사용합니다.
 
 기본 백엔드 주소는 배포된 Cloud Run 서비스
 `https://side-b-backend-7hmhv6htsa-du.a.run.app`입니다. 다른 주소를 사용한다면
@@ -18,8 +28,8 @@ Side-B 백엔드의 `/recommend` 응답을 확인하는 개발용 Chrome MV3 익
 
 배포 URL은 클라이언트에서 호출해야 하므로 비밀값이 아닙니다. 배포 백엔드는
 `SIDE_B_ACCESS_TOKEN`으로 `/recommend`와 `/exports/youtube/matches`를 보호하며,
-팝업은 입력받은 토큰을 `chrome.storage.session`에만 보관합니다. 토큰은 저장소나
-Extension 패키지에 넣지 않습니다.
+사이드 패널은 입력받은 토큰을 `chrome.storage.session`에만 보관합니다. 토큰은
+저장소나 Extension 패키지에 넣지 않습니다.
 
 ### 로컬 백엔드 연결
 
@@ -35,9 +45,10 @@ Secret으로 설정해야 합니다.
 docker compose up --build
 ```
 
-팝업의 `백엔드 주소`를 `http://127.0.0.1:8000` 또는
+사이드 패널 `설정`의 `백엔드 주소`를 `http://127.0.0.1:8000` 또는
 `http://localhost:8000`으로 변경합니다. 두 로컬 주소는 개발용
-`host_permissions`에 포함되어 있으며, 선택한 주소는 다음 팝업에서도 유지됩니다.
+`host_permissions`에 포함되어 있으며, 선택한 주소는 다음에 패널을 열 때도
+유지됩니다.
 
 ## 테스트
 
@@ -52,7 +63,8 @@ npm test
 ## Extension E2E 테스트
 
 Playwright가 테스트마다 빈 프로필에 실제 MV3 익스텐션을 로드하고, 고정 Extension
-ID가 `hfcclomfoickmehgmdgjdjmiiekaciam`인지 확인합니다. 기본 추천 시나리오는
+ID가 `hfcclomfoickmehgmdgjdjmiiekaciam`인지 확인합니다. 사이드 패널 문서는
+`chrome-extension://<id>/sidepanel.html`을 탭으로 열어 검증합니다. 기본 추천 시나리오는
 백엔드 응답을 고정하고 팀 토큰 헤더와 UI 렌더링을 검증하므로 배포 API 쿼터를 쓰지
 않습니다.
 
@@ -125,7 +137,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 출력값을 Cloud Run의 `SIDE_B_ACCESS_TOKEN` Secret에 설정하고, 팀원에게 안전한
 채널로 전달합니다. 기존 배포의 `YOUTUBE_EXPORT_TOKEN`도 마이그레이션 기간에는
-같은 값으로 인식합니다. 팀원은 팝업의 `팀 백엔드 토큰`에 같은 값을
+같은 값으로 인식합니다. 팀원은 사이드 패널 `설정`의 `팀 백엔드 토큰`에 같은 값을
 입력합니다. 이 값은 저장소나 공개 문서에 커밋하면 안 됩니다. 공개 사용자 대상
 서비스로 전환할 때는 이 공용 토큰 대신 사용자 인증 기반 접근 제어로 교체해야 합니다.
 
@@ -138,7 +150,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 5. 배포 백엔드에 서버 검색용 `YOUTUBE_API_KEY`를 설정합니다.
 6. 위 명령으로 만든 값을 Cloud Run의 `SIDE_B_ACCESS_TOKEN` Secret에 설정합니다.
 7. Chrome의 확장 프로그램 화면에서 Side-B를 다시 로드합니다.
-8. 팝업의 `팀 백엔드 토큰`에 같은 값을 입력합니다. 토큰은
+8. 사이드 패널 `설정`의 `팀 백엔드 토큰`에 같은 값을 입력합니다. 토큰은
    `chrome.storage.session`에만 보관되어 브라우저 세션이 끝나면 사라집니다.
 
 OAuth scope는 `youtube.force-ssl` 하나만 사용합니다. access token은 백엔드나

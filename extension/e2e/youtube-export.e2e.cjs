@@ -40,7 +40,7 @@ const mockedMatchesPayload = {
   deduplicated: 0,
 };
 
-test("popup reaches YouTube match review before OAuth", async ({}, testInfo) => {
+test("side panel reaches YouTube match review before OAuth", async ({}, testInfo) => {
   const { context, page } = await launchExtensionPage(testInfo);
   let capturedMatchRequest = null;
   let capturedRecommendRequest = null;
