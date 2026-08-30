@@ -5,7 +5,7 @@ import textwrap
 # """)
 
 MUSIC_QUERY_ANALYSIS_PROMPT = textwrap.dedent(
-    """
+   """
    Analyze a music query and return JSON matching the response schema.
 
    Intent:
