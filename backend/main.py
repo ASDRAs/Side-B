@@ -72,8 +72,8 @@ async def lifespan(app: FastAPI):
 
     app.state.genre_models = load_genre_models(
         clap_model_path=MODEL_DIR / "clap",
-        svm_model_path=MODEL_DIR / "svm" / "linear_svc.joblib",
-        label_encoder_path=MODEL_DIR / "label_encoder.joblib",
+        svm_model_path=MODEL_DIR / "svm" / "svm_classifier.pkl",
+        label_encoder_path=MODEL_DIR / "svm" / "label_encoder.pkl",
     )
 
     if not settings.lastfm_api_key:
