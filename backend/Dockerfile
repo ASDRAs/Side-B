@@ -12,6 +12,10 @@ ENV PIP_NO_CACHE_DIR=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install "poetry==${POETRY_VERSION}" \
     && python -m venv /opt/venv
 
