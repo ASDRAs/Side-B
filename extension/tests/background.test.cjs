@@ -56,8 +56,11 @@ function loadBackground(responses, options = {}) {
     sidePanel: {
       async setPanelBehavior() {},
     },
+    action: { onClicked: { addListener() {} } },
     tabs: {
       query: async () => options.musicTabs || [],
+      onRemoved: { addListener() {} },
+      onUpdated: { addListener() {} },
     },
     tabCapture: {
       getMediaStreamId: async () => "stream-id",
@@ -72,6 +75,10 @@ function loadBackground(responses, options = {}) {
       },
     },
     storage: {
+      session: {
+        async get() { return {}; },
+        async remove() {},
+      },
       local: {
         async set(values) {
           Object.assign(storage, JSON.parse(JSON.stringify(values)));
@@ -90,6 +97,7 @@ function loadBackground(responses, options = {}) {
     Promise,
     setTimeout: options.setTimeout || setTimeout,
     clearTimeout,
+    URL,
     fetch: async (url, init) => {
       fetchCalls.push({ url, init });
       const next = responses.shift();
@@ -97,6 +105,9 @@ function loadBackground(responses, options = {}) {
       return next;
     },
   });
+  context.importScripts = (...files) => {
+    for (const file of files) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", file), "utf8"), context);
+  };
   vm.runInContext(BACKGROUND_SOURCE, context);
 
   return {
@@ -395,7 +406,7 @@ test("startEq fails clearly when no YouTube Music tab is open", async () => {
   const harness = loadBackground([], { musicTabs: [] });
 
   await assert.rejects(
-    () => harness.context.startEq(undefined, { preamp: 0, bands: [] }),
-    /YouTube Music 탭을 찾을 수 없습니다/,
+    () => harness.context.SideBEq.start({ mode: "auto" }),
+    /YouTube Music 탭을 열어/,
   );
 });

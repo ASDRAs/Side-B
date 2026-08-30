@@ -1,5 +1,6 @@
 import { NoMusicTabError, readCurrentTrack } from "./scripts/tab.js";
 import { getEqState, startEq, stopEq } from "./scripts/eq.js";
+import { eqStatusText } from "./scripts/eqView.js";
 import {
   API_BASE_URL_STORAGE_VERSION,
   DEFAULT_API_BASE_URL,
@@ -96,6 +97,8 @@ const currentTrackArtist = document.querySelector("#currentTrackArtist");
 const eqTestButton = document.querySelector("#eqTestButton");
 const eqStopButton = document.querySelector("#eqStopButton");
 const eqTestStatus = document.querySelector("#eqTestStatus");
+const eqTrack = document.querySelector("#eqTrack");
+const eqModes = document.querySelectorAll('input[name="eqMode"]');
 const youtubeExportPanel = document.querySelector("#youtubeExportPanel");
 const youtubeExportStatus = document.querySelector("#youtubeExportStatus");
 const youtubeExportTitle = document.querySelector("#youtubeExportTitle");
@@ -116,25 +119,6 @@ let pendingMatchReview = null;
 let youtubeExportGeneration = 0;
 let activeYouTubeOperationId = null;
 let recentQueries = [];
-
-// EQ 테스트용. 백엔드가 곡별 프리셋을 보내기 전까지 쓰는 고정값이다.
-// preamp는 필터단 최대 이득(+16.18 dB @ 61 Hz)을 상쇄하도록 잡는다. -6이면
-// 최종 +10.2 dB라 0 dBFS 근처 음원에서 클리핑한다.
-const TEST_EQ_PRESET = {
-  preamp: -17,
-  bands: [
-    { frequency: 31, gain: 12 },
-    { frequency: 62, gain: 12 },
-    { frequency: 125, gain: 8 },
-    { frequency: 250, gain: 4 },
-    { frequency: 500, gain: -6 },
-    { frequency: 1000, gain: -8 },
-    { frequency: 2000, gain: -4 },
-    { frequency: 4000, gain: 4 },
-    { frequency: 8000, gain: 6 },
-    { frequency: 16000, gain: 6 },
-  ],
-};
 
 function normalizeApiBaseUrl(value) {
   const url = new URL(value.trim());
@@ -968,54 +952,119 @@ getYouTubeExportState()
     youtubeExportPanel.hidden = true;
   });
 
-// offscreen EQ는 패널을 닫아도 계속 돌아간다. 열 때 실제 상태를 읽지 않으면
-// 표시와 소리가 어긋난다.
-getEqState()
-  .then((state) => {
-    eqTestStatus.textContent = state?.active
-      ? "EQ가 적용되어 있습니다."
-      : "EQ가 적용되지 않았습니다.";
-  })
-  .catch(() => {
-    eqTestStatus.textContent = "EQ 상태를 확인하지 못했습니다.";
-  });
+let eqBusy = false;
+let eqViewVersion = 0;
+let eqModeEdited = false;
+let lastEqState = null;
+let eqFailure = null;
+let eqFailureKey = null;
+eqModes.forEach((input) => input.addEventListener("change", () => {
+  eqModeEdited = true;
+  eqFailure = null;
+  renderEqState(lastEqState);
+}));
+
+function eqStateKey(state) {
+  const status = state?.status || "inactive";
+  return JSON.stringify([
+    status, Boolean(state?.active), Boolean(state?.capturing ?? state?.active),
+    state?.tabId ?? null, status === "inactive" ? null : state?.mode ?? null,
+    state?.track?.videoId ?? null, state?.track?.title ?? null, state?.track?.artist ?? null,
+  ]);
+}
+
+// A failure is anchored to the state it left behind: repeated snapshots of that
+// state are not a recovery, only a move off the anchor is. A pushed error
+// carries no state of its own, so it anchors to the first state observed after
+// it -- the transition the failure itself caused must not erase its diagnosis.
+function showEqFailure(message, anchor = eqStateKey(lastEqState)) {
+  eqViewVersion += 1;
+  eqFailure = message;
+  eqFailureKey = anchor;
+  eqTestStatus.textContent = message;
+}
+
+function renderEqState(state) {
+  if (state?.status === "error") {
+    showEqFailure(eqStatusText(state), null);
+    return;
+  }
+  eqViewVersion += 1;
+  if (eqFailure) {
+    if (eqFailureKey === null) eqFailureKey = eqStateKey(state);
+    else if (eqStateKey(state) !== eqFailureKey) eqFailure = null;
+  }
+  lastEqState = state;
+  eqTestStatus.textContent = eqFailure || eqStatusText(state);
+  eqTrack.textContent = state?.track
+    ? [state.track.title, state.track.artist].filter(Boolean).join(" - ") : "";
+  eqTrack.hidden = !eqTrack.textContent;
+  if (!eqModeEdited && ["auto", "test"].includes(state?.mode) &&
+      (state.active || state.status === "awaiting_activation")) {
+    for (const input of eqModes) input.checked = input.value === state.mode;
+  }
+}
+
+async function refreshEqState() {
+  if (eqBusy) return;
+  const version = eqViewVersion;
+  try {
+    const state = await getEqState();
+    if (version === eqViewVersion) renderEqState(state);
+  } catch {
+    if (version === eqViewVersion && !eqFailure) eqTestStatus.textContent = "EQ 상태를 확인하지 못했습니다.";
+  }
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.target === "eq-ui" && message.type === "EQ_STATE_UPDATED") renderEqState(message.state);
+});
+void refreshEqState();
+// Also expire a pending toolbar request while the panel stays open.
+setInterval(() => { if (!document.hidden) void refreshEqState(); }, 3_000);
+
+function setEqBusy(busy) {
+  eqBusy = busy;
+  if (busy) eqFailure = null;
+  eqViewVersion += 1;
+  eqTestButton.disabled = busy;
+  eqStopButton.disabled = busy;
+  eqModes.forEach((input) => { input.disabled = busy; });
+}
 
 eqTestButton.addEventListener("click", async () => {
-  eqTestButton.disabled = true;
+  const mode = document.querySelector('input[name="eqMode"]:checked').value;
+  setEqBusy(true);
 
   try {
     eqTestStatus.textContent = "EQ 적용 중...";
 
-    // TEST_EQ_PRESET에 EQ값 넘겨주면 됨
-    // 지금은 버튼 누르면 작동하는데, backend에서 해당 값 보낼 수 있도록
-    await startEq(TEST_EQ_PRESET);
-
-    eqTestStatus.textContent = "EQ가 적용되었습니다.";
+    const state = await startEq(mode);
+    eqModeEdited = false;
+    renderEqState(state);
   } catch (error) {
     console.error("Failed to apply EQ:", error);
 
-    eqTestStatus.textContent = `EQ 적용 실패: ${
+    showEqFailure(`EQ 적용 실패: ${
       error?.message || "알 수 없는 오류"
-    }`;
+    }`);
   } finally {
-    eqTestButton.disabled = false;
+    setEqBusy(false);
   }
 });
 
 eqStopButton.addEventListener("click", async () => {
-  eqStopButton.disabled = true;
+  setEqBusy(true);
 
   try {
-    await stopEq();
-
-    eqTestStatus.textContent = "EQ를 해제했습니다.";
+    renderEqState(await stopEq());
   } catch (error) {
     console.error("Failed to stop EQ:", error);
 
-    eqTestStatus.textContent = `EQ 해제 실패: ${
+    showEqFailure(`EQ 해제 실패: ${
       error?.message || "알 수 없는 오류"
-    }`;
+    }`);
   } finally {
-    eqStopButton.disabled = false;
+    setEqBusy(false);
   }
 });

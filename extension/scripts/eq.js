@@ -11,11 +11,12 @@ async function sendEqMessage(message) {
   return response;
 }
 
-export async function startEq(preset) {
-  // The service worker resolves the YouTube Music tab; the side panel cannot.
+export async function startEq(mode = "auto") {
+  const { id: windowId } = await chrome.windows.getCurrent();
   return sendEqMessage({
     type: "START_EQ",
-    preset,
+    windowId,
+    mode,
   });
 }
 
