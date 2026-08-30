@@ -397,8 +397,9 @@ def _matches_lookups(name: str, artist: str, lookups: list[tuple[str, str]]) -> 
     """iTunes와 같은 기준으로 거른다. 제목·아티스트를 표기별로 독립 채점한다."""
     titles = tuple(title for title, _ in lookups)
     artists = tuple(artist_alias for _, artist_alias in lookups)
+    # 빠진 협업 참여자는 후보 제목의 명시적 크레딧으로만 확인한다.
     return (
-        _alias_artist_score(artist, artists) >= _ARTIST_MIN_SCORE
+        _alias_artist_score(artist, artists, name) >= _ARTIST_MIN_SCORE
         and _alias_match_score(name, artist, titles, artists) >= _LASTFM_CONFIRM_SCORE
     )
 
@@ -521,8 +522,10 @@ def _confirms_same_artist(item: dict[str, Any], expected_artist: str) -> bool:
     candidate = str(item.get("artistName") or "").strip()
     if not candidate:
         return False
+    # 아티스트란에서 빠진 참여자가 있을 수 있으므로 크레딧을 지우기 전 제목을 쓴다.
+    candidate_title = str(item.get("trackName") or "")
     return (
-        _alias_artist_score(candidate, (expected,))
+        _alias_artist_score(candidate, (expected,), candidate_title)
         >= _ARTIST_MIN_SCORE
     )
 
