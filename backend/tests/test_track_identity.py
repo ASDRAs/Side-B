@@ -499,3 +499,123 @@ async def test_lastfm_fallback_still_accepts_a_matching_artist():
     )
 
     assert resolved == ("Danger", "TAEMIN", None)
+
+
+# 요청의 참여자가 후보 아티스트란에서 빠졌다면 후보 제목의 명시적 크레딧만
+# 근거로 삼는다. 그룹명 조각·일반 제목·부분문자열은 같은 규칙의 거부 경계다.
+TITLE_CREDIT_IDENTITY_CASES = [
+    pytest.param(
+        "Boy With Luv",
+        "BTS, Halsey",
+        "Boy With Luv (feat. Halsey)",
+        "BTS",
+        True,
+        id="bts-halsey-credit",
+    ),
+    pytest.param(
+        "eight",
+        "IU & SUGA",
+        "eight (Prod.&Feat. SUGA)",
+        "IU",
+        True,
+        id="iu-suga-credit",
+    ),
+    pytest.param(
+        "Boy With Luv",
+        "BTS, Halsey",
+        "Boy With Luv",
+        "BTS",
+        False,
+        id="missing-credit",
+    ),
+    pytest.param(
+        "Halsey Street",
+        "BTS, Halsey",
+        "Halsey Street",
+        "BTS",
+        False,
+        id="name-outside-credit",
+    ),
+    pytest.param(
+        "September",
+        "Earth, Wind & Fire",
+        "September",
+        "Earth",
+        False,
+        id="group-name-fragment",
+    ),
+    pytest.param(
+        "Wind and Fire",
+        "Earth, Wind & Fire",
+        "Wind and Fire",
+        "Earth",
+        False,
+        id="group-name-title-echo",
+    ),
+    pytest.param(
+        "eight",
+        "IU & SUGA",
+        "eight (feat. SUGABABES)",
+        "IU",
+        False,
+        id="credit-name-substring",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "title,artist,candidate_title,candidate_artist,accepted",
+    TITLE_CREDIT_IDENTITY_CASES,
+)
+async def test_metadata_artist_gate_uses_candidate_title_credits(
+    monkeypatch, title, artist, candidate_title, candidate_artist, accepted
+):
+    item = {
+        "trackId": 9001,
+        "trackName": candidate_title,
+        "artistName": candidate_artist,
+        "artworkUrl100": "https://example.com/credit.jpg",
+    }
+    deezer_calls = []
+
+    async def no_deezer(http, track_name, artist):
+        deezer_calls.append((track_name, artist))
+        return None
+
+    # iTunes 검색·채점·ID 확정은 실제로 실행한다. 별도 공급자의 구제만 막는다.
+    monkeypatch.setattr(sources, "_deezer_or_none", no_deezer)
+    track = TrackInfo(name=title, artist=artist)
+
+    await get_tracks_metadata(
+        _ScoringHttp([item]), [track], fields=["album_art", "source_id"]
+    )
+
+    # 검색 단계가 후보를 버려 ID 검증이 저절로 통과하는 빈 테스트를 방지한다.
+    assert track.album_art_url == item["artworkUrl100"]
+    assert track.source_id == ("itunes:9001" if accepted else None)
+    assert (track.name, track.artist) == (title, artist)
+    assert deezer_calls == ([] if accepted else [(title, artist)])
+
+
+@pytest.mark.parametrize(
+    "title,artist,candidate_title,candidate_artist,accepted",
+    TITLE_CREDIT_IDENTITY_CASES,
+)
+async def test_lastfm_fallback_uses_candidate_title_credits(
+    title, artist, candidate_title, candidate_artist, accepted
+):
+    lastfm = _FakeLastFm([_FakeLastFmTrack(candidate_title, candidate_artist)])
+
+    # iTunes가 빈 경우의 실제 resolver -> Last.fm -> 아티스트 게이트를 지난다.
+    resolved = await sources.preprocess_input(
+        f"{artist} - {title}",
+        [],
+        _ScoringHttp([]),
+        lastfm,
+        track_title=title,
+        artist_name=artist,
+    )
+
+    assert resolved == (
+        (candidate_title, candidate_artist, None) if accepted else (None, None, None)
+    )
