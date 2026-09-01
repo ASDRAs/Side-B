@@ -1,16 +1,21 @@
+import asyncio
+from dataclasses import dataclass
+
 import httpx
-from backend.app.genre_classification.classifier import predict_by_svm
-from backend.app.genre_classification.schema import GenreModels
 
 from app.config import Settings
 from app.genre_classification.audio_preprocessing import split_audio
+from app.genre_classification.classifier import predict_by_svm
 from app.genre_classification.embedder import extract_clap_embedding
+from app.genre_classification.schema import GenreModels
 from app.llm.llm_wrapper import GeminiWrapper
-from app.utils.preview_audio import load_track_preview
+from app.utils.preview_audio import LoadedPreview, load_track_preview
 
 SAMPLE_RATE = 48_000
 TOTAL_SECONDS = 30
 CHUNK_SECONDS = 10
+_INFERENCE_SEMAPHORE = asyncio.Semaphore(1)
+
 EQ_PRESET = {
     "jazz": [0],
     "rock_metal": [0],
@@ -24,9 +29,42 @@ EQ_PRESET = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class GenreClassificationResult:
+    track_name: str
+    artist: str
+    genre: str
+    score: float
+
+
+def _classify_preview(
+    preview: LoadedPreview,
+    models: GenreModels,
+) -> tuple[str, float]:
+    chunks = split_audio(
+        preview.audio,
+        preview.sample_rate,
+        TOTAL_SECONDS,
+        CHUNK_SECONDS,
+    )
+
+    embedding = extract_clap_embedding(
+        audio_chunks=chunks,
+        models=models,
+        sample_rate=preview.sample_rate,
+    )
+
+    prediction = predict_by_svm(
+        embedding=embedding,
+        models=models,
+    )
+
+    return prediction["genre"], prediction["score"]
+
+
 async def run_genre_classifier(
     track_name: str,
-    artist: int,
+    artist: str,
     http: httpx.AsyncClient,
     settings: Settings,
     models: GenreModels,
@@ -36,19 +74,24 @@ async def run_genre_classifier(
     """
     gemini_wrapper = GeminiWrapper(settings.gemini_api_key, settings.gemini_model)
     async with httpx.AsyncClient() as http:
-        result = await load_track_preview(
+        preview = await load_track_preview(
             track_name=track_name,
             artist=artist,
             http=http,
             gemini_wrapper=gemini_wrapper,
             sample_rate=SAMPLE_RATE,
         )
-    chunks = split_audio(result.audio, SAMPLE_RATE, TOTAL_SECONDS, CHUNK_SECONDS)
-    embedding = extract_clap_embedding(chunks, models, SAMPLE_RATE)
-    genre_prediction = predict_by_svm(embedding, models)
 
-    return {
-        "genre": genre_prediction["genre"],
-        "score": genre_prediction["score"],
-        "eq_preset": EQ_PRESET[genre_prediction["genre"]],
-    }
+    async with _INFERENCE_SEMAPHORE:
+        genre, score = await asyncio.to_thread(
+            _classify_preview,
+            preview,
+            models,
+        )
+
+    return GenreClassificationResult(
+        track_name=track_name,
+        artist=artist,
+        genre=genre,
+        score=score,
+    )
