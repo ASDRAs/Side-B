@@ -13,6 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.genre_classification.model_loader import load_genre_models
+from app.routers.genre_classification import (
+    router as genre_classification_router,
+)
 from app.routers.recommend import router as recommend_router
 from app.routers.youtube_export import router as youtube_export_router
 from app.services.access import BackendAccess
@@ -115,8 +118,8 @@ app.add_middleware(
 app.include_router(preview_router)
 app.include_router(recommend_router)
 app.include_router(youtube_export_router)
-# model router 추가 예정
-# app.include_router(genre_classfication_router)
+app.include_router(genre_classification_router)
+
 
 @app.get("/health")
 async def health():
