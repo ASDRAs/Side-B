@@ -8,11 +8,13 @@
   --border-strong: #b8c4cb;
   --text: #172431;
   --text-muted: #536875;
-  --text-faint: #7b8b96;
   --accent: #1f5d78;
   --accent-hover: #174b62;
   --accent-text: #ffffff;
   --focus: #24728c;
+
+  --font-sm: 12px;
+  --font-xs: 11px;
 
   --info-bg: #eaf3f6;
   --info-border: #24728c;
@@ -41,8 +43,7 @@
     --border-strong: #435361;
     --text: #e6edf2;
     --text-muted: #9fb0bc;
-    --text-faint: #7d8e9b;
-    --accent: #3d90b0;
+    --accent: #4a9cbb;
     --accent-hover: #4aa5c7;
     --accent-text: #08131a;
     --focus: #6fc0dc;
@@ -104,6 +105,7 @@ input {
 }
 
 h1 {
+  flex: 1;
   margin: 0;
   font-size: 17px;
   line-height: 1.1;
@@ -113,7 +115,7 @@ h1 {
   flex: none;
   border-radius: 999px;
   padding: 3px 9px;
-  font-size: 11px;
+  font-size: var(--font-xs);
   font-weight: 700;
 }
 
@@ -135,6 +137,29 @@ h1 {
 .badge-error {
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  border: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* 요청 중에는 제출 버튼이 취소 명령이 되므로 색으로도 구분한다. */
+#submitButton.cancel-button {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+
+#submitButton.cancel-button:hover {
+  background: var(--surface-sunken);
 }
 
 .search-bar {
@@ -172,7 +197,7 @@ button {
   color: var(--accent-text);
   cursor: pointer;
   padding: 0 14px;
-  font-size: 12px;
+  font-size: var(--font-sm);
   font-weight: 700;
 }
 
@@ -202,7 +227,7 @@ button:disabled {
   background: none;
   color: var(--accent);
   padding: 0;
-  font-size: 11px;
+  font-size: var(--font-sm);
   text-decoration: underline;
 }
 
@@ -215,7 +240,7 @@ button:disabled {
   min-height: 17px;
   margin: 8px 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-sm);
   line-height: 1.4;
 }
 
@@ -232,19 +257,18 @@ button:disabled {
 }
 
 label,
-.section-label,
-.settings-section-label {
+.section-label {
   display: block;
   margin: 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-sm);
   font-weight: 700;
 }
 
 /* ---------- 설정 ---------- */
 
 .settings {
-  margin-bottom: 14px;
+  margin-top: 14px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -265,13 +289,9 @@ label,
   padding: 11px;
 }
 
-.settings-section-label {
-  margin-top: 6px;
-}
-
 .field-help {
-  color: var(--text-faint);
-  font-size: 11px;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
 }
 
 .field-help > summary {
@@ -292,7 +312,7 @@ label,
 .token-row button {
   height: 36px;
   padding: 0 12px;
-  font-size: 11px;
+  font-size: var(--font-sm);
 }
 
 .token-state {
@@ -301,8 +321,8 @@ label,
   justify-content: space-between;
   gap: 8px;
   margin: 0;
-  color: var(--text-faint);
-  font-size: 11px;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
 }
 
 .link-button {
@@ -311,7 +331,7 @@ label,
   background: none;
   color: var(--accent);
   padding: 0;
-  font-size: 11px;
+  font-size: var(--font-sm);
   font-weight: 700;
   text-decoration: underline;
 }
@@ -325,9 +345,30 @@ label,
   display: none;
 }
 
+.eq-bar {
+  flex: none;
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  padding: 10px 14px;
+}
+
+.eq-bar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.eq-bar .eq-modes {
+  margin: 0;
+}
+
 .eq-buttons {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: auto auto;
   gap: 8px;
 }
 
@@ -344,8 +385,8 @@ label,
 .eq-modes legend {
   padding: 0;
   margin-bottom: 6px;
-  font-size: 11px;
-  color: var(--text-faint);
+  font-size: var(--font-sm);
+  color: var(--text-muted);
 }
 
 .eq-modes label {
@@ -364,8 +405,8 @@ label,
 
 .eq-status {
   margin: 0;
-  color: var(--text-faint);
-  font-size: 11px;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
   overflow-wrap: anywhere;
 }
 
@@ -379,11 +420,6 @@ label,
 
 .callout[hidden] {
   display: none;
-}
-
-.callout-info {
-  border-left: 3px solid var(--info-border);
-  background: var(--info-bg);
 }
 
 .callout-seed {
@@ -442,7 +478,7 @@ label,
 .seed-preview-note {
   margin: 5px 0 0;
   color: var(--danger);
-  font-size: 11px;
+  font-size: var(--font-sm);
 }
 
 .seed-preview-note[hidden] {
@@ -489,7 +525,7 @@ label,
   margin: 0;
   border-top: 1px solid var(--border);
   padding-top: 10px;
-  font-size: 11px;
+  font-size: var(--font-sm);
 }
 
 .bucket-legend dt {
@@ -542,6 +578,76 @@ label,
 
 /* ---------- 추천 결과 ---------- */
 
+.bucket-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.bucket-tabs[hidden] {
+  display: none;
+}
+
+.bucket-tab {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 5px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  padding: 0 11px;
+  white-space: nowrap;
+}
+
+.bucket-tab:hover {
+  background: var(--surface-sunken);
+}
+
+.bucket-tab[aria-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.bucket-tab-count {
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  padding: 0 6px;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+}
+
+.bucket-tab[aria-selected="true"] .bucket-tab-count {
+  background: rgb(255 255 255 / 22%);
+  color: var(--accent-text);
+}
+
+/* 실행은 됐지만 결과가 0곡인 방향. 탭을 숨기면 실행 여부를 알 수 없다. */
+.bucket-empty {
+  margin: 0;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  padding: 16px 12px;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+  text-align: center;
+}
+
+.bucket-empty[hidden] {
+  display: none;
+}
+
+/* 재검색 중에도 이전 결과를 남긴다. 흐리게 해서 갱신 중임을 알린다. */
+.results.is-loading {
+  opacity: 0.45;
+}
+
 .results {
   display: grid;
   gap: 18px;
@@ -555,36 +661,11 @@ label,
   min-width: 0;
 }
 
-.bucket-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 7px;
-}
-
-.bucket-title {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-}
-
-.bucket-title h2 {
-  margin: 0;
-  font-size: 13px;
-}
-
-.count {
-  color: var(--text-faint);
-  font-size: 11px;
-}
-
 .export-button {
-  flex: none;
-  height: 28px;
-  padding: 0 10px;
-  font-size: 11px;
+  width: 100%;
+  height: 34px;
+  margin-top: 10px;
+  font-size: var(--font-sm);
 }
 
 .track-list {
@@ -597,7 +678,7 @@ label,
 
 .track-item {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr) auto;
   gap: 9px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -613,8 +694,26 @@ label,
   border-radius: 5px;
   background: var(--surface-sunken);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-xs);
   font-weight: 800;
+}
+
+.track-open {
+  align-self: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: var(--accent);
+  font-size: var(--font-xs);
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.track-open:hover {
+  border-color: var(--accent);
+  color: var(--accent-hover);
 }
 
 .track-copy {
@@ -642,13 +741,13 @@ label,
 
 .track-artist {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-sm);
 }
 
 .track-label {
   margin-top: 2px;
-  color: var(--text-faint);
-  font-size: 10px;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
 }
 
 .track-label[hidden] {
@@ -691,7 +790,7 @@ label,
 
 .export-panel-heading strong {
   flex: none;
-  font-size: 11px;
+  font-size: var(--font-sm);
 }
 
 .export-panel[data-tone="active"] .export-panel-heading strong {
@@ -720,7 +819,7 @@ label,
 .export-detail {
   margin: 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-sm);
   line-height: 1.45;
 }
 
@@ -730,7 +829,7 @@ label,
   margin: 7px 0 0;
   padding-left: 17px;
   color: var(--danger);
-  font-size: 10px;
+  font-size: var(--font-xs);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -752,7 +851,7 @@ label,
 
 .export-links a {
   color: var(--accent);
-  font-size: 11px;
+  font-size: var(--font-sm);
   font-weight: 700;
 }
 
@@ -763,13 +862,24 @@ label,
   position: fixed;
   inset: 0;
   z-index: 10;
-  display: flex;
-  flex-direction: column;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  padding: 0;
   background: var(--bg);
+  color: inherit;
 }
 
-.match-review[hidden] {
-  display: none;
+.match-review[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.match-review::backdrop {
+  background: rgb(0 0 0 / 45%);
 }
 
 .match-review-header {
@@ -791,7 +901,7 @@ label,
 .match-review-subtitle {
   margin: 3px 0 0;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-sm);
   line-height: 1.45;
 }
 
@@ -801,7 +911,7 @@ label,
   gap: 5px;
   align-items: center;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-sm);
   font-weight: 700;
   cursor: pointer;
 }
@@ -829,8 +939,8 @@ label,
   border-bottom: 1px solid var(--border);
   background: var(--bg);
   padding: 8px 0 6px;
-  color: var(--text-faint);
-  font-size: 10px;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
   font-weight: 700;
 }
 
@@ -856,7 +966,7 @@ label,
 
 .match-sub {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-sm);
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -887,8 +997,8 @@ label,
 
   .match-target::before {
     content: "YouTube 매칭";
-    color: var(--text-faint);
-    font-size: 10px;
+    color: var(--text-muted);
+    font-size: var(--font-xs);
     font-weight: 700;
   }
 }
@@ -921,7 +1031,7 @@ label,
 .confidence {
   border-radius: 999px;
   padding: 1px 7px;
-  font-size: 10px;
+  font-size: var(--font-xs);
   font-weight: 700;
 }
 
@@ -942,8 +1052,8 @@ label,
 }
 
 .match-note {
-  color: var(--text-faint);
-  font-size: 10px;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
 }
 
 .match-review-actions {
@@ -953,36 +1063,4 @@ label,
   flex: none;
   border-top: 1px solid var(--border);
   padding: 12px 14px;
-}
-
-/* ---------- 원본 JSON ---------- */
-
-.raw-panel {
-  margin-top: 16px;
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
-}
-
-.raw-panel[hidden] {
-  display: none;
-}
-
-.raw-panel summary {
-  cursor: pointer;
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.raw-panel pre {
-  max-height: 260px;
-  overflow: auto;
-  margin: 8px 0 0;
-  border-radius: 6px;
-  background: #172431;
-  color: #e5edf1;
-  padding: 10px;
-  font: 10px/1.45 Consolas, monospace;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
