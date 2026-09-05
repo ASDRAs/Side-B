@@ -49,6 +49,31 @@ async function launchExtensionPage(testInfo) {
   }
 }
 
+// #apiBaseUrl은 설정 패널 안의 "고급 설정" details에 들어 있어 두 겹으로 접혀
+// 있다. Playwright의 fill()은 가시성을 요구하므로 접힌 상태에서는 채우지 못하고
+// actionability 타임아웃까지 멈춘다. SIDE_B_API_BASE_URL이 없는 실행에서는
+// inputValue()만 쓰기 때문에 이 문제가 드러나지 않아, 배포 대상 e2e에서만
+// 터진다. 값을 읽기만 하더라도 열어 두는 편이 안전하다.
+async function resolveApiBaseUrl(page, configuredApiBaseUrl) {
+  await page.locator("#apiBaseUrl").evaluate((input) => {
+    for (
+      let element = input.closest("details");
+      element;
+      element = element.parentElement?.closest("details")
+    ) {
+      element.open = true;
+    }
+  });
+
+  const apiBaseUrlInput = page.locator("#apiBaseUrl");
+  if (configuredApiBaseUrl) {
+    await apiBaseUrlInput.fill(configuredApiBaseUrl);
+  } else {
+    await expect(apiBaseUrlInput).not.toHaveValue("");
+  }
+  return (await apiBaseUrlInput.inputValue()).replace(/\/+$/, "");
+}
+
 async function captureFailure(page, testInfo) {
   if (!page || page.isClosed()) {
     return;
@@ -63,4 +88,5 @@ module.exports = {
   assertApiOriginIsAllowed,
   captureFailure,
   launchExtensionPage,
+  resolveApiBaseUrl,
 };

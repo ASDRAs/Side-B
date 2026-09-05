@@ -1,4 +1,15 @@
 import { NoMusicTabError, readCurrentTrack } from "./scripts/tab.js";
+import {
+  BUCKET_LABELS,
+  defaultBucketIndex,
+  executedBuckets,
+  totalTrackCount,
+} from "./scripts/buckets.js";
+import {
+  youtubeMusicSearchLabel,
+  youtubeMusicSearchUrl,
+} from "./scripts/youtubeMusicUrl.js";
+import { requestErrorMessage, timeoutReason } from "./scripts/requestState.js";
 import { getEqState, startEq, stopEq } from "./scripts/eq.js";
 import { eqStatusText } from "./scripts/eqView.js";
 import {
@@ -31,12 +42,6 @@ const ACCESS_TOKEN_KEY = "backendAccessToken";
 const LAST_QUERY_KEY = "lastQuery";
 const RECENT_QUERIES_KEY = "recentQueries";
 const MAX_RECENT_QUERIES = 5;
-const BUCKET_LABELS = {
-  similar: "유사한 곡",
-  reverse: "저노출 유사곡",
-  opposite: "반대 무드",
-  hidden: "숨겨진 곡",
-};
 const EXPORT_STATUS_LABELS = {
   matching: "곡 매칭 중",
   awaiting_auth: "Google 인증 대기",
@@ -73,6 +78,7 @@ const historyClearButton = document.querySelector("#historyClearButton");
 const historyStatus = document.querySelector("#historyStatus");
 const queryHistory = document.querySelector("#queryHistory");
 const settingsPanel = document.querySelector("#settingsPanel");
+const settingsToggle = document.querySelector("#settingsToggle");
 const queryInput = document.querySelector("#query");
 const submitButton = document.querySelector("#submitButton");
 const connectionBadge = document.querySelector("#connectionBadge");
@@ -86,14 +92,10 @@ const seedPreviewNote = document.querySelector("#seedPreviewNote");
 const emptyState = document.querySelector("#emptyState");
 const loadingSkeleton = document.querySelector("#loadingSkeleton");
 const results = document.querySelector("#results");
-const rawPanel = document.querySelector("#rawPanel");
-const rawResponse = document.querySelector("#rawResponse");
+const bucketTabs = document.querySelector("#bucketTabs");
 const bucketTemplate = document.querySelector("#bucketTemplate");
 const trackTemplate = document.querySelector("#trackTemplate");
 const currentTrackButton = document.querySelector("#currentTrackButton");
-const currentTrackResult = document.querySelector("#currentTrackResult");
-const currentTrackTitle = document.querySelector("#currentTrackTitle");
-const currentTrackArtist = document.querySelector("#currentTrackArtist");
 const eqTestButton = document.querySelector("#eqTestButton");
 const eqStopButton = document.querySelector("#eqStopButton");
 const eqTestStatus = document.querySelector("#eqTestStatus");
@@ -119,11 +121,45 @@ let pendingMatchReview = null;
 let youtubeExportGeneration = 0;
 let activeYouTubeOperationId = null;
 let recentQueries = [];
+let renderedBuckets = [];
+let selectedBucketIndex = 0;
+// 활성 요청 하나만 추적한다. 취소와 타임아웃은 같은 controller를 서로 다른
+// reason으로 중단해 구분한다.
+let activeRequest = null;
+// Track user actions before the asynchronous current-track lookup starts.
+let recommendationIntent = 0;
+// 추천 요청이 진행 중인 동안에는 화면에 남은 이전 결과를 내보낼 수 없다.
+// 내보내기 진행 여부와는 별개의 사유라 따로 둔다.
+let requestPending = false;
+let exportInFlight = false;
+let matchReviewOpener = null;
+// 첫 실행에서 우리가 연 설정만 자동으로 닫는다. 사용자가 직접 연 설정을
+// 닫아버리면 편집 중이던 값을 가린다.
+let settingsAutoOpened = false;
+// 저장소 읽기가 끝나기 전에 사용자가 설정을 직접 여닫았는지. 읽기가 늦게
+// 도착해 그 조작을 되돌리면 커서 아래에서 패널이 닫힌다.
+let settingsUserToggled = false;
+
+// 요청을 보내기 전에 발견한 문제. 서버에 닿아 본 적이 없으므로 연결 배지를
+// 실패로 바꾸면 안 된다. 사용자가 고칠 곳은 입력란이지 서버가 아니다.
+class PreflightError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "PreflightError";
+  }
+}
 
 function normalizeApiBaseUrl(value) {
-  const url = new URL(value.trim());
+  let url;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    // URL 생성자의 TypeError를 그대로 올리면 "Invalid URL"이 사용자에게 그대로
+    // 보이고, 요청을 보낸 적도 없는데 연결 실패로 분류된다.
+    throw new PreflightError("백엔드 주소 형식이 올바르지 않습니다.");
+  }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("백엔드 주소는 http 또는 https여야 합니다.");
+    throw new PreflightError("백엔드 주소는 http 또는 https여야 합니다.");
   }
   return url.toString().replace(/\/$/, "");
 }
@@ -136,16 +172,17 @@ function setStatus(message, isError = false) {
 // 배지는 백엔드 연결 상태만 나타낸다. EQ와 현재 곡은 각자 자리에서 알린다.
 function setState(state, message) {
   const badgeText = {
-    idle: "대기",
+    idle: "서버 대기",
     loading: "요청 중",
     success: "연결됨",
-    error: "실패",
+    error: "연결 실패",
   }[state];
 
   connectionBadge.className = `badge badge-${state}`;
   connectionBadge.textContent = badgeText;
   setStatus(message, state === "error");
-  submitButton.disabled = state === "loading";
+  // 요청 중에도 제출 버튼은 눌러야 한다. 그때는 취소 명령이기 때문이다.
+  // 비활성화는 setRequestPending이 currentTrackButton에만 적용한다.
 }
 
 function renderTokenStatus(token) {
@@ -186,25 +223,50 @@ function openSettings() {
   settingsPanel.scrollIntoView({ block: "nearest" });
 }
 
+settingsToggle.addEventListener("click", () => {
+  settingsUserToggled = true;
+  if (settingsPanel.open) {
+    settingsPanel.open = false;
+    return;
+  }
+  openSettings();
+});
+
+// 헤더 명령과 패널의 summary가 같은 disclosure를 조작한다. 어느 쪽을 눌렀든
+// 사용자의 조작이므로 둘 다 기록한다. toggle 이벤트는 비동기로 발생해
+// 프로그램 변경과 사용자 조작을 구분할 수 없어 여기서 잡는다.
+settingsPanel.querySelector("summary")?.addEventListener("click", () => {
+  settingsUserToggled = true;
+});
+
+// summary를 직접 눌러 여닫아도 헤더 명령의 상태가 따라간다.
+settingsPanel.addEventListener("toggle", () => {
+  settingsToggle.setAttribute("aria-expanded", String(settingsPanel.open));
+});
+
+// 자동으로 연 설정만 나중에 자동으로 닫는다.
+function openSettingsForOnboarding() {
+  // 저장소 읽기는 비동기다. 그 사이 사용자가 설정을 직접 여닫았다면 이 결정은
+  // 이미 늦었다. 커서 아래에서 패널을 닫아버리지 않는다.
+  if (settingsUserToggled) {
+    return;
+  }
+  settingsAutoOpened = !backendAccessTokenInput.value;
+  settingsPanel.open = settingsAutoOpened;
+}
+
 function showView(view) {
   emptyState.hidden = view !== "empty";
   loadingSkeleton.hidden = view !== "loading";
 }
 
-function clearResults() {
+// 요청을 시작할 때는 진행 중인 내보내기만 무효화하고 추천 DOM은 남긴다.
+// 여기서 결과까지 지우면 취소나 실패 뒤에 빈 화면만 남는다. 추천 DOM 교체는
+// 새 응답을 받은 renderResponse가 맡는다.
+function invalidateExport() {
   youtubeExportGeneration += 1;
-  if (pendingMatchReview) {
-    pendingMatchReview(undefined);
-    pendingMatchReview = null;
-  }
-  currentRecommendation = null;
+  resolveMatchReview(undefined);
   activeYouTubeOperationId = null;
-  results.replaceChildren();
-  resetSeedMedia();
-  seedSection.hidden = true;
-  rawPanel.hidden = true;
-  rawPanel.open = false;
-  rawResponse.textContent = "";
   youtubeExportPanel.hidden = true;
   youtubeExportPanel.removeAttribute("data-tone");
   youtubeExportLinks.hidden = true;
@@ -215,7 +277,6 @@ function clearResults() {
   youtubeExportDetail.textContent = "";
   youtubeExportFailures.hidden = true;
   youtubeExportFailures.replaceChildren();
-  youtubeMatchReview.hidden = true;
   youtubeMatchList.replaceChildren();
   setExportButtonsDisabled(false);
 }
@@ -231,28 +292,117 @@ function renderTrack(track, index) {
   const labelText = track.label || (track.reason_tags || []).join(", ");
   label.textContent = labelText;
   label.hidden = !labelText;
+
+  // 검색 URL만 만든다. 행 전체를 링크로 만들지 않아 제목 선택과 스크롤을 막지
+  // 않는다. 곡명이 없으면 검색어가 아티스트 하나로 뭉개지므로 명령을 뺀다.
+  const open = fragment.querySelector(".track-open");
+  const searchUrl = youtubeMusicSearchUrl(track);
+  if (searchUrl) {
+    open.href = searchUrl;
+    open.setAttribute("aria-label", youtubeMusicSearchLabel(track));
+  } else {
+    open.remove();
+  }
   return fragment;
 }
 
-function renderBucket(bucketName, tracks) {
-  if (!Array.isArray(tracks) || tracks.length === 0) {
-    return 0;
+const bucketTabId = (name) => `bucketTab-${name}`;
+// tabpanel은 #results 하나로 고정하고 내용만 갈아 끼운다. 선택된 패널만 DOM에
+// 두면 나머지 탭의 aria-controls가 존재하지 않는 id를 가리키게 된다.
+const BUCKET_PANEL_ID = "results";
+
+function renderBucketPanel(bucket) {
+  const fragment = bucketTemplate.content.cloneNode(true);
+  const section = fragment.querySelector(".bucket");
+  section.dataset.bucket = bucket.name;
+  // 패널은 하나뿐이므로 어느 탭이 이 내용을 설명하는지만 갱신한다.
+  results.setAttribute("aria-labelledby", bucketTabId(bucket.name));
+
+  const exportButton = fragment.querySelector(".export-button");
+  if (bucket.tracks.length === 0) {
+    // 실행은 됐지만 결과가 없는 방향. 내보낼 곡이 없으니 명령도 두지 않는다.
+    exportButton.remove();
+    fragment.querySelector(".bucket-empty").hidden = false;
+  } else {
+    exportButton.addEventListener("click", () => {
+      // 매칭 검토를 닫은 뒤 이 버튼으로 포커스를 돌려주기 위해 기억한다.
+      matchReviewOpener = exportButton;
+      exportBucket(bucket.name, bucket.tracks);
+    });
+    const list = fragment.querySelector(".track-list");
+    bucket.tracks.forEach((track, index) =>
+      list.append(renderTrack(track, index)),
+    );
   }
 
-  const fragment = bucketTemplate.content.cloneNode(true);
-  const bucket = fragment.querySelector(".bucket");
-  bucket.dataset.bucket = bucketName;
-  fragment.querySelector("h2").textContent =
-    BUCKET_LABELS[bucketName] || bucketName;
-  fragment.querySelector(".count").textContent = `${tracks.length}곡`;
-  const exportButton = fragment.querySelector(".export-button");
-  exportButton.addEventListener("click", () => exportBucket(bucketName, tracks));
-
-  const list = fragment.querySelector(".track-list");
-  tracks.forEach((track, index) => list.append(renderTrack(track, index)));
-  results.append(fragment);
-  return tracks.length;
+  results.replaceChildren(fragment);
+  // 탭을 옮겨 새로 그린 버튼도 진행 중인 내보내기 상태를 물려받아야 한다.
+  applyExportDisabled();
 }
+
+function selectBucket(index, { focusTab = false } = {}) {
+  if (index < 0 || index >= renderedBuckets.length) {
+    return;
+  }
+
+  selectedBucketIndex = index;
+  [...bucketTabs.children].forEach((tab, position) => {
+    const selected = position === index;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    if (selected && focusTab) {
+      tab.focus();
+    }
+  });
+  renderBucketPanel(renderedBuckets[index]);
+}
+
+function renderBucketTabs(buckets) {
+  bucketTabs.replaceChildren(
+    ...buckets.map((bucket, index) => {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "bucket-tab";
+      tab.id = bucketTabId(bucket.name);
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", BUCKET_PANEL_ID);
+      tab.setAttribute("aria-selected", "false");
+      tab.tabIndex = -1;
+
+      const count = document.createElement("span");
+      count.className = "bucket-tab-count";
+      count.textContent = String(bucket.tracks.length);
+      tab.append(bucket.label, count);
+      tab.addEventListener("click", () => selectBucket(index));
+      return tab;
+    }),
+  );
+  bucketTabs.hidden = buckets.length === 0;
+}
+
+// tablist 안에서는 방향키가 탭을 옮긴다. Tab 키는 목록 밖으로 나간다.
+bucketTabs.addEventListener("keydown", (event) => {
+  if (renderedBuckets.length === 0) {
+    return;
+  }
+
+  const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
+  const target =
+    event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? renderedBuckets.length - 1
+        : step === undefined
+          ? null
+          : (selectedBucketIndex + step + renderedBuckets.length) %
+            renderedBuckets.length;
+
+  if (target === null) {
+    return;
+  }
+  event.preventDefault();
+  selectBucket(target, { focusTab: true });
+});
 
 function renderSeedArtwork(payload) {
   const artworkUrl = String(payload.album_art_url || "").trim();
@@ -291,24 +441,36 @@ function resetSeedMedia() {
 
 function renderResponse(payload, apiBaseUrl) {
   currentRecommendation = payload;
+  // 이전 미리듣기를 멈추고 나서 새 기준 곡을 그린다.
+  resetSeedMedia();
   seedTitle.textContent = payload.track_name || "기준 곡 없음";
   seedArtist.textContent = payload.artist || "";
   renderSeedArtwork(payload);
   renderSeedPreview(payload, apiBaseUrl);
   seedSection.hidden = false;
 
-  const buckets = payload.result || {};
-  const rendered = Object.keys(BUCKET_LABELS).reduce(
-    (sum, name) => sum + renderBucket(name, buckets[name]),
-    0,
-  );
+  renderedBuckets = executedBuckets(payload.result);
+  renderBucketTabs(renderedBuckets);
+  if (renderedBuckets.length === 0) {
+    results.replaceChildren();
+    results.removeAttribute("aria-labelledby");
+    return 0;
+  }
 
-  rawResponse.textContent = JSON.stringify(payload, null, 2);
-  rawPanel.hidden = false;
-  return rendered;
+  selectBucket(defaultBucketIndex(renderedBuckets));
+  // 화면에는 한 탭만 그리므로 총 곡 수는 응답에서 센다.
+  return totalTrackCount(renderedBuckets);
 }
 
 function setExportButtonsDisabled(disabled) {
+  exportInFlight = disabled;
+  applyExportDisabled();
+}
+
+// 새 추천을 기다리는 동안에도 막는다. 화면에 남은 결과는 이전 곡의 것이고,
+// 그것을 내보내면 새 결과 위로 이전 곡의 매칭 검토 창이 열린다.
+function applyExportDisabled() {
+  const disabled = exportInFlight || requestPending;
   document.querySelectorAll(".export-button").forEach((button) => {
     button.disabled = disabled;
   });
@@ -341,8 +503,11 @@ function renderYouTubeExportState(state) {
   youtubeExportPanel.hidden = false;
   youtubeExportPanel.dataset.tone =
     EXPORT_TONES[state.status] || (active ? "active" : "neutral");
-  if (state.status !== "reviewing") {
-    youtubeMatchReview.hidden = true;
+  // close()만 부르면 close 리스너가 대기 중인 검토를 취소(null)로 정리하고,
+  // exportBucket이 방금 그린 이 상태를 "취소됨"으로 덮어쓴다. undefined로
+  // 끝내면 exportBucket이 아무것도 다시 그리지 않아 여기서 그린 상태가 남는다.
+  if (state.status !== "reviewing" && youtubeMatchReview.open) {
+    resolveMatchReview(undefined);
   }
   youtubeExportStatus.textContent =
     EXPORT_STATUS_LABELS[state.status] || state.status;
@@ -475,7 +640,8 @@ function reviewYouTubeMatches(matches) {
   }
 
   updateMatchSelectionSummary();
-  youtubeMatchReview.hidden = false;
+  // 포커스 제한, Escape, 배경 inert는 native dialog가 처리한다.
+  youtubeMatchReview.showModal();
   youtubeMatchConfirm.focus();
   return new Promise((resolve) => {
     pendingMatchReview = resolve;
@@ -483,14 +649,32 @@ function reviewYouTubeMatches(matches) {
 }
 
 function resolveMatchReview(value) {
-  if (!pendingMatchReview) {
-    return;
-  }
   const resolve = pendingMatchReview;
   pendingMatchReview = null;
-  youtubeMatchReview.hidden = true;
-  resolve(value);
+  if (youtubeMatchReview.open) {
+    youtubeMatchReview.close();
+  }
+  resolve?.(value);
 }
+
+// Escape로 브라우저가 닫은 경우에도 대기 중인 검토를 취소로 정리하고, 내보내기를
+// 시작한 버튼으로 포커스를 돌려준다.
+youtubeMatchReview.addEventListener("close", () => {
+  if (pendingMatchReview) {
+    const resolve = pendingMatchReview;
+    pendingMatchReview = null;
+    resolve(null);
+  }
+
+  // 확정 경로에서는 플레이리스트 생성이 이어져 내보내기 버튼이 비활성인 채로
+  // 남는다. disabled 요소는 포커스를 못 받아 <body>로 떨어지므로 선택된 탭으로
+  // 되돌린다. 취소 경로에서 버튼이 다시 살아나는 것은 close 이벤트(매크로태스크)
+  // 앞에 상태 갱신(마이크로태스크)이 끼어들기 때문이며, 그 순서에 기대지 않는다.
+  const opener = matchReviewOpener;
+  matchReviewOpener = null;
+  const usableOpener = opener?.isConnected && !opener.disabled ? opener : null;
+  (usableOpener || bucketTabs.children[selectedBucketIndex])?.focus();
+});
 
 // 앨범 아트가 깨지면 자리만 차지하므로 숨긴다.
 seedArt.addEventListener("error", () => {
@@ -527,12 +711,6 @@ youtubeMatchConfirm.addEventListener("click", () => {
 
 youtubeMatchCancel.addEventListener("click", () => resolveMatchReview(null));
 
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !youtubeMatchReview.hidden) {
-    resolveMatchReview(null);
-  }
-});
-
 async function requestYouTubeMatches(
   apiBaseUrl,
   bucketName,
@@ -550,8 +728,10 @@ async function requestYouTubeMatches(
 }
 
 async function exportBucket(bucketName, tracks) {
+  if (requestPending || exportInFlight) return;
   if (!currentRecommendation) {
-    setState("error", "먼저 추천 결과를 요청하세요.");
+    // 백엔드에 닿아 본 적 없는 조건이라 연결 배지는 건드리지 않는다.
+    setStatus("먼저 추천 결과를 요청하세요.", true);
     return;
   }
 
@@ -737,9 +917,16 @@ async function storeBackendAccessToken(accessToken) {
   renderTokenStatus(token);
 }
 
-async function requestRecommendations(apiBaseUrl, query, accessToken) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+async function requestRecommendations(
+  apiBaseUrl,
+  query,
+  accessToken,
+  controller,
+) {
+  const timeoutId = setTimeout(
+    () => controller.abort(timeoutReason()),
+    REQUEST_TIMEOUT_MS,
+  );
 
   try {
     const response = await fetch(`${apiBaseUrl}/recommend`, {
@@ -771,84 +958,173 @@ async function requestRecommendations(apiBaseUrl, query, accessToken) {
   }
 }
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  clearResults();
+// 요청 중에는 제출 버튼이 취소 명령이 된다. disabled로 막아 두면 최대 90초 동안
+// 사용자가 할 수 있는 일이 없다.
+function setRequestPending(pending) {
+  requestPending = pending;
+  submitButton.textContent = pending ? "취소" : "추천 요청";
+  submitButton.classList.toggle("cancel-button", pending);
+  // 요청 중 버튼은 폼 제출이 아니라 취소 명령이다. 사용자가 대기 중 검색어나
+  // 백엔드 주소를 비워도 required/type 검증이 submit 이벤트를 막지 않게 한다.
+  form.noValidate = pending;
+  currentTrackButton.disabled = pending;
+  results.setAttribute("aria-busy", String(pending));
+  results.classList.toggle("is-loading", pending);
+  applyExportDisabled();
+}
+
+// 첫 실행에서 우리가 연 설정만, 첫 추천이 성공한 뒤에 접는다. 토큰 입력 중에
+// 접으면 편집 중인 값과 포커스를 빼앗는다.
+function closeOnboardingSettings() {
+  if (settingsUserToggled || !settingsAutoOpened || !backendAccessTokenInput.value.trim()) {
+    return;
+  }
+  settingsAutoOpened = false;
+  settingsPanel.open = false;
+}
+
+async function runRecommendation(query, loadingMessage) {
+  // A manual search invalidates any earlier current-track lookup, even after
+  // this request has completed or been cancelled.
+  recommendationIntent += 1;
+  activeRequest?.abort();
+  invalidateExport();
+  const controller = new AbortController();
+  activeRequest = controller;
+  // 이 요청이 아직 주인일 때만 화면과 상태를 건드린다. 취소당한 이전 요청의
+  // catch와 finally가 최신 요청의 화면을 되돌리면 안 된다.
+  const isCurrent = () => activeRequest === controller;
+  setRequestPending(true);
 
   try {
     const apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput.value);
     const accessToken = backendAccessTokenInput.value.trim();
-    const query = queryInput.value.trim();
     if (!query) {
-      throw new Error("검색어를 입력하세요.");
+      throw new PreflightError("검색어를 입력하세요.");
     }
 
     if (requiresBackendAccessToken(apiBaseUrl) && !accessToken) {
       openSettings();
-      throw new Error("배포 백엔드 사용에는 팀 백엔드 토큰이 필요합니다.");
+      throw new PreflightError("배포 백엔드 사용에는 팀 백엔드 토큰이 필요합니다.");
     }
 
     await Promise.all([
       storeApiBaseUrl(apiBaseUrl),
       accessToken ? storeBackendAccessToken(accessToken) : Promise.resolve(),
     ]);
-    showView("loading");
-    setState("loading", "백엔드에서 추천 결과를 가져오는 중입니다. 최대 90초까지 걸릴 수 있습니다.");
-    const payload = await requestRecommendations(apiBaseUrl, query, accessToken);
-    const resultCount = renderResponse(payload, apiBaseUrl);
-    showView(resultCount === 0 ? "empty" : "none");
-    await rememberQuery(query);
+    if (!isCurrent()) return;
+    controller.signal.throwIfAborted();
+    // 이전 결과가 있으면 흐리게 유지한다. 전체 스켈레톤은 첫 요청에만 쓴다.
+    showView(currentRecommendation ? "none" : "loading");
+    setState(
+      "loading",
+      loadingMessage ||
+        "백엔드에서 추천 결과를 가져오는 중입니다. 최대 90초까지 걸릴 수 있습니다.",
+    );
 
-    if (resultCount === 0) {
-      setState("success", "추천 결과가 없습니다. 다른 검색어를 시도해 보세요.");
+    const payload = await requestRecommendations(
+      apiBaseUrl,
+      query,
+      accessToken,
+      controller,
+    );
+    if (!isCurrent()) {
       return;
     }
-    setState("success", `추천 결과 ${resultCount}곡을 받았습니다.`);
+    const resultCount = renderResponse(payload, apiBaseUrl);
+    // 응답을 받았으면 첫 진입 안내를 띄우지 않는다. 곡 0개와 아직 아무것도
+    // 요청하지 않음은 다른 상태다. 버킷 탭과 방향별 빈 안내가 이미 결과를
+    // 설명하는데 그 위에 온보딩 범례를 겹치면 화면이 두 겹이 된다.
+    showView("none");
+    await rememberQuery(query);
+    if (!isCurrent()) return;
+    controller.signal.throwIfAborted();
+    closeOnboardingSettings();
+
+    setState(
+      "success",
+      resultCount === 0
+        ? "추천 결과가 없습니다. 다른 검색어를 시도해 보세요."
+        : `추천 결과 ${resultCount}곡을 받았습니다.`,
+    );
   } catch (error) {
-    showView("empty");
-    const message =
-      error?.name === "AbortError"
-        ? "요청 시간이 초과되었습니다. 백엔드 로그를 확인하세요."
-        : error?.message || "추천 요청에 실패했습니다.";
-    setState("error", message);
+    if (!isCurrent()) {
+      return;
+    }
+    if (error instanceof PreflightError) {
+      // 요청을 보내지 않았으므로 연결 상태는 알 수 없다. 배지를 그대로 두고
+      // 본문에만 알린다. 여기서 "연결 실패"를 띄우면 입력값 문제를 서버 장애로
+      // 오인해 엉뚱한 곳을 파게 된다.
+      showView(currentRecommendation ? "none" : "empty");
+      setStatus(error.message, true);
+      return;
+    }
+    // 실패해도 이전 결과는 남긴다. 지울 결과가 없을 때만 안내 화면으로 돌아간다.
+    showView(currentRecommendation ? "none" : "empty");
+    if (error?.name === "AbortError") {
+      // 취소는 서버 상태에 대한 정보가 아니므로 연결 배지를 실패로 바꾸지 않는다.
+      setState(
+        currentRecommendation ? "success" : "idle",
+        requestErrorMessage(error),
+      );
+      return;
+    }
+    setState("error", requestErrorMessage(error));
+  } finally {
+    if (isCurrent()) {
+      activeRequest = null;
+      setRequestPending(false);
+    }
   }
+}
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+
+  if (activeRequest) {
+    // 인자 없는 abort는 기본 AbortError를 남긴다. 그것이 사용자 취소의 표식이다.
+    activeRequest.abort();
+    return;
+  }
+  void runRecommendation(queryInput.value.trim());
 });
 
 currentTrackButton.addEventListener("click", async () => {
+  const intent = ++recommendationIntent;
+  const isCurrent = () => intent === recommendationIntent;
   currentTrackButton.disabled = true;
+  let query = null;
 
   try {
     const track = await readCurrentTrack();
+    if (!isCurrent()) return;
 
     if (!track) {
-      currentTrackResult.hidden = true;
       setStatus("YouTube Music에서 재생 중인 곡을 찾을 수 없습니다.", true);
       return;
     }
 
-    currentTrackTitle.textContent = track.title;
-    currentTrackArtist.textContent = track.artist || "아티스트 정보 없음";
-    currentTrackResult.hidden = false;
-
-    // 가져온 곡을 검색어에 그대로 넣어 바로 요청할 수 있게 한다.
-    queryInput.value = track.artist
-      ? `${track.artist} - ${track.title}`
-      : track.title;
-    queryInput.focus();
-    setStatus("현재 재생 중인 곡을 검색어에 넣었습니다.");
+    query = track.artist ? `${track.artist} - ${track.title}` : track.title;
+    // 검색어에 남겨 두면 사용자가 그대로 고쳐서 다시 요청할 수 있다.
+    queryInput.value = query;
   } catch (error) {
+    if (!isCurrent()) return;
     console.error("Failed to read current track:", error);
 
-    currentTrackResult.hidden = true;
+    // 곡을 못 읽었을 뿐이므로 기존 추천 결과는 그대로 둔다.
     setStatus(
       error instanceof NoMusicTabError
         ? "YouTube Music 탭을 열어 두면 재생 중인 곡을 가져올 수 있습니다."
         : "현재 곡 정보를 가져오는 데 실패했습니다.",
       true,
     );
+    return;
   } finally {
-    currentTrackButton.disabled = false;
+    if (isCurrent()) currentTrackButton.disabled = requestPending;
   }
+
+  // 어떤 곡을 읽었는지 상태 영역이 대신 알린다. 콜아웃을 따로 두지 않는다.
+  await runRecommendation(query, `${query} 추천을 찾는 중입니다.`);
 });
 
 readLocal([
@@ -876,7 +1152,7 @@ readLocal([
       queryInput.value = stored[LAST_QUERY_KEY] || "";
     }
     // 토큰이 없으면 설정을 펼쳐 첫 사용자가 헤매지 않게 한다.
-    settingsPanel.open = !backendAccessTokenInput.value;
+    openSettingsForOnboarding();
 
     if (resolved.shouldPersist) {
       await storeApiBaseUrl(resolved.apiBaseUrl);
@@ -887,7 +1163,7 @@ readLocal([
   })
   .catch(() => {
     apiBaseUrlInput.value = DEFAULT_API_BASE_URL;
-    settingsPanel.open = !backendAccessTokenInput.value;
+    openSettingsForOnboarding();
   });
 
 // 지연 없이 곧바로 저장한다. change는 blur에서만 발생하고, 디바운스 타이머는
