@@ -99,6 +99,31 @@ for (const { phase, readFails } of [
   });
 }
 
+for (const toggleSelector of ["#settingsToggle", "#settingsPanel > summary"]) {
+  test(`manually reopened settings stay open after recommendation (${toggleSelector})`, async ({}, testInfo) => {
+    const { context, page } = await launchExtensionPage(testInfo);
+    try {
+      const apiBaseUrl = (await page.locator("#apiBaseUrl").inputValue()).replace(/\/+$/, "");
+      await page.route(`${apiBaseUrl}/recommend`, (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(recommendationPayload),
+      }));
+      await page.locator("#backendAccessToken").fill(accessToken);
+      await page.locator(toggleSelector).click();
+      await expect(page.locator("#settingsPanel")).not.toHaveAttribute("open");
+      await page.locator(toggleSelector).click();
+      await expect(page.locator("#settingsPanel")).toHaveAttribute("open", "");
+      await page.locator("#query").fill(query);
+      await page.locator("#submitButton").click();
+      await expect(page.locator("#connectionBadge")).toHaveText("연결됨");
+      await expect(page.locator("#settingsPanel")).toHaveAttribute("open", "");
+    } finally {
+      await context.close();
+    }
+  });
+}
+
 test("current-track action reads the track and requests recommendations once", async ({}, testInfo) => {
   const { context, page } = await launchExtensionPage(testInfo);
   const requests = [];

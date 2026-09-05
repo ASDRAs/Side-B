@@ -976,7 +976,7 @@ function setRequestPending(pending) {
 // 첫 실행에서 우리가 연 설정만, 첫 추천이 성공한 뒤에 접는다. 토큰 입력 중에
 // 접으면 편집 중인 값과 포커스를 빼앗는다.
 function closeOnboardingSettings() {
-  if (!settingsAutoOpened || !backendAccessTokenInput.value.trim()) {
+  if (settingsUserToggled || !settingsAutoOpened || !backendAccessTokenInput.value.trim()) {
     return;
   }
   settingsAutoOpened = false;
