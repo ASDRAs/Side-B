@@ -16,7 +16,6 @@
   --font-sm: 12px;
   --font-xs: 11px;
 
-  --info-bg: #eaf3f6;
   --info-border: #24728c;
   --seed-bg: #fff7df;
   --seed-border: #d69328;
@@ -48,7 +47,6 @@
     --accent-text: #08131a;
     --focus: #6fc0dc;
 
-    --info-bg: #16303b;
     --info-border: #3d90b0;
     --seed-bg: #33290f;
     --seed-border: #d69328;
@@ -485,20 +483,6 @@ label,
   display: none;
 }
 
-.track-line {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px 7px;
-  align-items: baseline;
-  margin-top: 3px;
-  min-width: 0;
-}
-
-.track-line span {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
 /* ---------- 빈 상태 ---------- */
 
 .empty-state[hidden] {
@@ -584,6 +568,13 @@ label,
   margin-bottom: 12px;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+/* scrollbar-width는 Chrome 121부터다. manifest의 minimum_chrome_version은
+   116이라 그 사이 버전에서는 좁은 사이드 패널에 가로 스크롤바가 그대로
+   보인다. 표준 속성을 지원하는 브라우저는 위 선언을 쓰고 이 규칙은 무시한다. */
+.bucket-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .bucket-tabs[hidden] {

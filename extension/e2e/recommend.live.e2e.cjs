@@ -4,6 +4,7 @@ const {
   assertApiOriginIsAllowed,
   captureFailure,
   launchExtensionPage,
+  resolveApiBaseUrl,
 } = require("./extension.cjs");
 
 const accessToken = process.env.SIDE_B_E2E_ACCESS_TOKEN?.trim() || "";
@@ -19,13 +20,7 @@ if (!accessToken) {
 test("side panel requests recommendations from the deployed backend", async ({}, testInfo) => {
   const { context, page } = await launchExtensionPage(testInfo);
   try {
-    const apiBaseUrlInput = page.locator("#apiBaseUrl");
-    if (configuredApiBaseUrl) {
-      await apiBaseUrlInput.fill(configuredApiBaseUrl);
-    } else {
-      await expect(apiBaseUrlInput).not.toHaveValue("");
-    }
-    const apiBaseUrl = (await apiBaseUrlInput.inputValue()).replace(/\/+$/, "");
+    const apiBaseUrl = await resolveApiBaseUrl(page, configuredApiBaseUrl);
     assertApiOriginIsAllowed(apiBaseUrl);
     await page.locator("#backendAccessToken").fill(accessToken);
     await page.locator("#query").fill(query);

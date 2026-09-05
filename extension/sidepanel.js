@@ -126,16 +126,40 @@ let selectedBucketIndex = 0;
 // 활성 요청 하나만 추적한다. 취소와 타임아웃은 같은 controller를 서로 다른
 // reason으로 중단해 구분한다.
 let activeRequest = null;
+// Track user actions before the asynchronous current-track lookup starts.
+let recommendationIntent = 0;
+// 추천 요청이 진행 중인 동안에는 화면에 남은 이전 결과를 내보낼 수 없다.
+// 내보내기 진행 여부와는 별개의 사유라 따로 둔다.
+let requestPending = false;
 let exportInFlight = false;
 let matchReviewOpener = null;
 // 첫 실행에서 우리가 연 설정만 자동으로 닫는다. 사용자가 직접 연 설정을
 // 닫아버리면 편집 중이던 값을 가린다.
 let settingsAutoOpened = false;
+// 저장소 읽기가 끝나기 전에 사용자가 설정을 직접 여닫았는지. 읽기가 늦게
+// 도착해 그 조작을 되돌리면 커서 아래에서 패널이 닫힌다.
+let settingsUserToggled = false;
+
+// 요청을 보내기 전에 발견한 문제. 서버에 닿아 본 적이 없으므로 연결 배지를
+// 실패로 바꾸면 안 된다. 사용자가 고칠 곳은 입력란이지 서버가 아니다.
+class PreflightError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "PreflightError";
+  }
+}
 
 function normalizeApiBaseUrl(value) {
-  const url = new URL(value.trim());
+  let url;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    // URL 생성자의 TypeError를 그대로 올리면 "Invalid URL"이 사용자에게 그대로
+    // 보이고, 요청을 보낸 적도 없는데 연결 실패로 분류된다.
+    throw new PreflightError("백엔드 주소 형식이 올바르지 않습니다.");
+  }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("백엔드 주소는 http 또는 https여야 합니다.");
+    throw new PreflightError("백엔드 주소는 http 또는 https여야 합니다.");
   }
   return url.toString().replace(/\/$/, "");
 }
@@ -200,11 +224,19 @@ function openSettings() {
 }
 
 settingsToggle.addEventListener("click", () => {
+  settingsUserToggled = true;
   if (settingsPanel.open) {
     settingsPanel.open = false;
     return;
   }
   openSettings();
+});
+
+// 헤더 명령과 패널의 summary가 같은 disclosure를 조작한다. 어느 쪽을 눌렀든
+// 사용자의 조작이므로 둘 다 기록한다. toggle 이벤트는 비동기로 발생해
+// 프로그램 변경과 사용자 조작을 구분할 수 없어 여기서 잡는다.
+settingsPanel.querySelector("summary")?.addEventListener("click", () => {
+  settingsUserToggled = true;
 });
 
 // summary를 직접 눌러 여닫아도 헤더 명령의 상태가 따라간다.
@@ -214,6 +246,11 @@ settingsPanel.addEventListener("toggle", () => {
 
 // 자동으로 연 설정만 나중에 자동으로 닫는다.
 function openSettingsForOnboarding() {
+  // 저장소 읽기는 비동기다. 그 사이 사용자가 설정을 직접 여닫았다면 이 결정은
+  // 이미 늦었다. 커서 아래에서 패널을 닫아버리지 않는다.
+  if (settingsUserToggled) {
+    return;
+  }
   settingsAutoOpened = !backendAccessTokenInput.value;
   settingsPanel.open = settingsAutoOpened;
 }
@@ -430,9 +467,12 @@ function setExportButtonsDisabled(disabled) {
   applyExportDisabled();
 }
 
+// 새 추천을 기다리는 동안에도 막는다. 화면에 남은 결과는 이전 곡의 것이고,
+// 그것을 내보내면 새 결과 위로 이전 곡의 매칭 검토 창이 열린다.
 function applyExportDisabled() {
+  const disabled = exportInFlight || requestPending;
   document.querySelectorAll(".export-button").forEach((button) => {
-    button.disabled = exportInFlight;
+    button.disabled = disabled;
   });
 }
 
@@ -463,8 +503,11 @@ function renderYouTubeExportState(state) {
   youtubeExportPanel.hidden = false;
   youtubeExportPanel.dataset.tone =
     EXPORT_TONES[state.status] || (active ? "active" : "neutral");
+  // close()만 부르면 close 리스너가 대기 중인 검토를 취소(null)로 정리하고,
+  // exportBucket이 방금 그린 이 상태를 "취소됨"으로 덮어쓴다. undefined로
+  // 끝내면 exportBucket이 아무것도 다시 그리지 않아 여기서 그린 상태가 남는다.
   if (state.status !== "reviewing" && youtubeMatchReview.open) {
-    youtubeMatchReview.close();
+    resolveMatchReview(undefined);
   }
   youtubeExportStatus.textContent =
     EXPORT_STATUS_LABELS[state.status] || state.status;
@@ -685,8 +728,10 @@ async function requestYouTubeMatches(
 }
 
 async function exportBucket(bucketName, tracks) {
+  if (requestPending || exportInFlight) return;
   if (!currentRecommendation) {
-    setState("error", "먼저 추천 결과를 요청하세요.");
+    // 백엔드에 닿아 본 적 없는 조건이라 연결 배지는 건드리지 않는다.
+    setStatus("먼저 추천 결과를 요청하세요.", true);
     return;
   }
 
@@ -916,6 +961,7 @@ async function requestRecommendations(
 // 요청 중에는 제출 버튼이 취소 명령이 된다. disabled로 막아 두면 최대 90초 동안
 // 사용자가 할 수 있는 일이 없다.
 function setRequestPending(pending) {
+  requestPending = pending;
   submitButton.textContent = pending ? "취소" : "추천 요청";
   submitButton.classList.toggle("cancel-button", pending);
   // 요청 중 버튼은 폼 제출이 아니라 취소 명령이다. 사용자가 대기 중 검색어나
@@ -924,6 +970,7 @@ function setRequestPending(pending) {
   currentTrackButton.disabled = pending;
   results.setAttribute("aria-busy", String(pending));
   results.classList.toggle("is-loading", pending);
+  applyExportDisabled();
 }
 
 // 첫 실행에서 우리가 연 설정만, 첫 추천이 성공한 뒤에 접는다. 토큰 입력 중에
@@ -937,27 +984,36 @@ function closeOnboardingSettings() {
 }
 
 async function runRecommendation(query, loadingMessage) {
+  // A manual search invalidates any earlier current-track lookup, even after
+  // this request has completed or been cancelled.
+  recommendationIntent += 1;
+  activeRequest?.abort();
   invalidateExport();
   const controller = new AbortController();
   activeRequest = controller;
+  // 이 요청이 아직 주인일 때만 화면과 상태를 건드린다. 취소당한 이전 요청의
+  // catch와 finally가 최신 요청의 화면을 되돌리면 안 된다.
+  const isCurrent = () => activeRequest === controller;
   setRequestPending(true);
 
   try {
     const apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput.value);
     const accessToken = backendAccessTokenInput.value.trim();
     if (!query) {
-      throw new Error("검색어를 입력하세요.");
+      throw new PreflightError("검색어를 입력하세요.");
     }
 
     if (requiresBackendAccessToken(apiBaseUrl) && !accessToken) {
       openSettings();
-      throw new Error("배포 백엔드 사용에는 팀 백엔드 토큰이 필요합니다.");
+      throw new PreflightError("배포 백엔드 사용에는 팀 백엔드 토큰이 필요합니다.");
     }
 
     await Promise.all([
       storeApiBaseUrl(apiBaseUrl),
       accessToken ? storeBackendAccessToken(accessToken) : Promise.resolve(),
     ]);
+    if (!isCurrent()) return;
+    controller.signal.throwIfAborted();
     // 이전 결과가 있으면 흐리게 유지한다. 전체 스켈레톤은 첫 요청에만 쓴다.
     showView(currentRecommendation ? "none" : "loading");
     setState(
@@ -972,9 +1028,17 @@ async function runRecommendation(query, loadingMessage) {
       accessToken,
       controller,
     );
+    if (!isCurrent()) {
+      return;
+    }
     const resultCount = renderResponse(payload, apiBaseUrl);
-    showView(resultCount === 0 ? "empty" : "none");
+    // 응답을 받았으면 첫 진입 안내를 띄우지 않는다. 곡 0개와 아직 아무것도
+    // 요청하지 않음은 다른 상태다. 버킷 탭과 방향별 빈 안내가 이미 결과를
+    // 설명하는데 그 위에 온보딩 범례를 겹치면 화면이 두 겹이 된다.
+    showView("none");
     await rememberQuery(query);
+    if (!isCurrent()) return;
+    controller.signal.throwIfAborted();
     closeOnboardingSettings();
 
     setState(
@@ -984,6 +1048,17 @@ async function runRecommendation(query, loadingMessage) {
         : `추천 결과 ${resultCount}곡을 받았습니다.`,
     );
   } catch (error) {
+    if (!isCurrent()) {
+      return;
+    }
+    if (error instanceof PreflightError) {
+      // 요청을 보내지 않았으므로 연결 상태는 알 수 없다. 배지를 그대로 두고
+      // 본문에만 알린다. 여기서 "연결 실패"를 띄우면 입력값 문제를 서버 장애로
+      // 오인해 엉뚱한 곳을 파게 된다.
+      showView(currentRecommendation ? "none" : "empty");
+      setStatus(error.message, true);
+      return;
+    }
     // 실패해도 이전 결과는 남긴다. 지울 결과가 없을 때만 안내 화면으로 돌아간다.
     showView(currentRecommendation ? "none" : "empty");
     if (error?.name === "AbortError") {
@@ -996,8 +1071,10 @@ async function runRecommendation(query, loadingMessage) {
     }
     setState("error", requestErrorMessage(error));
   } finally {
-    activeRequest = null;
-    setRequestPending(false);
+    if (isCurrent()) {
+      activeRequest = null;
+      setRequestPending(false);
+    }
   }
 }
 
@@ -1013,11 +1090,14 @@ form.addEventListener("submit", (event) => {
 });
 
 currentTrackButton.addEventListener("click", async () => {
+  const intent = ++recommendationIntent;
+  const isCurrent = () => intent === recommendationIntent;
   currentTrackButton.disabled = true;
   let query = null;
 
   try {
     const track = await readCurrentTrack();
+    if (!isCurrent()) return;
 
     if (!track) {
       setStatus("YouTube Music에서 재생 중인 곡을 찾을 수 없습니다.", true);
@@ -1028,6 +1108,7 @@ currentTrackButton.addEventListener("click", async () => {
     // 검색어에 남겨 두면 사용자가 그대로 고쳐서 다시 요청할 수 있다.
     queryInput.value = query;
   } catch (error) {
+    if (!isCurrent()) return;
     console.error("Failed to read current track:", error);
 
     // 곡을 못 읽었을 뿐이므로 기존 추천 결과는 그대로 둔다.
@@ -1039,7 +1120,7 @@ currentTrackButton.addEventListener("click", async () => {
     );
     return;
   } finally {
-    currentTrackButton.disabled = false;
+    if (isCurrent()) currentTrackButton.disabled = requestPending;
   }
 
   // 어떤 곡을 읽었는지 상태 영역이 대신 알린다. 콜아웃을 따로 두지 않는다.

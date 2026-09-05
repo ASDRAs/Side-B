@@ -4,6 +4,7 @@ const {
   assertApiOriginIsAllowed,
   captureFailure,
   launchExtensionPage,
+  resolveApiBaseUrl,
 } = require("./extension.cjs");
 
 const configuredApiBaseUrl = process.env.SIDE_B_API_BASE_URL?.replace(/\/+$/, "");
@@ -46,13 +47,7 @@ test("side panel reaches YouTube match review before OAuth", async ({}, testInfo
   let capturedRecommendRequest = null;
 
   try {
-    const apiBaseUrlInput = page.locator("#apiBaseUrl");
-    if (configuredApiBaseUrl) {
-      await apiBaseUrlInput.fill(configuredApiBaseUrl);
-    } else {
-      await expect(apiBaseUrlInput).not.toHaveValue("");
-    }
-    const apiBaseUrl = (await apiBaseUrlInput.inputValue()).replace(/\/+$/, "");
+    const apiBaseUrl = await resolveApiBaseUrl(page, configuredApiBaseUrl);
     assertApiOriginIsAllowed(apiBaseUrl);
 
     await page.route(`${apiBaseUrl}/recommend`, (route) => {
