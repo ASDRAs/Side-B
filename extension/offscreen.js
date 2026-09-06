@@ -279,6 +279,9 @@ async function setEqMode(mode) {
   if (!audioContext) throw new Error("현재 실행 중인 EQ가 없습니다.");
   await audioContext.resume();
   stopAutomation();
+  // EQ 시작과 모드 변경은 사용자의 "다시 적용" 동작이다. 캐시를 비워 백엔드
+  // 상태를 다시 확인한다(startEq도 이 경로를 지난다). 429 대기 기한은 유지한다.
+  SideBEqProvider.resetCache();
   currentMode = mode;
   currentTrack = null;
   presetGenre = null;

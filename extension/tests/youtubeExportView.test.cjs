@@ -1,14 +1,12 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { pathToFileURL } = require("node:url");
 
+// 이 모듈은 apiConfig를 상대 경로로 import한다. data: URL에서는 상대 경로가
+// 해석되지 않으므로 파일 URL로 불러온다.
 async function loadModule() {
-  const source = fs.readFileSync(
-    path.join(__dirname, "..", "scripts", "youtubeExportView.js"),
-    "utf8",
-  );
-  return import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+  return import(pathToFileURL(path.join(__dirname, "..", "scripts", "youtubeExportView.js")).href);
 }
 
 test("partitions invalid recommendation tracks before matching", async () => {
@@ -93,7 +91,7 @@ test("counts duplicate tracks separately from skipped tracks", async () => {
 });
 
 test("formats FastAPI validation arrays without object coercion", async () => {
-  const { apiErrorMessage } = await loadModule();
+  const { apiErrorMessage } = await import("../scripts/apiConfig.js");
 
   const message = apiErrorMessage(
     {

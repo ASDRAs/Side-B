@@ -74,6 +74,35 @@ function retryAfterSuffix(retryAfter) {
     : "잠시 후 다시 시도하세요.";
 }
 
+// FastAPI의 detail은 문자열, 객체, 검증 오류 배열 셋 다로 온다.
+export function apiErrorMessage(payload, fallback) {
+  const detail = payload?.detail;
+  if (typeof detail === "string" && detail) {
+    return detail;
+  }
+  if (detail && typeof detail.message === "string") {
+    return detail.message;
+  }
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((issue) => {
+        if (!issue || typeof issue !== "object") {
+          return "";
+        }
+        const location = Array.isArray(issue.loc)
+          ? issue.loc.filter((part) => part !== "body").join(".")
+          : "";
+        const message = String(issue.msg || "").trim();
+        return [location, message].filter(Boolean).join(": ");
+      })
+      .filter(Boolean);
+    if (messages.length > 0) {
+      return messages.join(" / ");
+    }
+  }
+  return fallback;
+}
+
 // 백엔드는 detail.message로 정확한 진단을 보낸다(recommend.py). 그 문장을
 // 버리고 status만으로 문구를 지어내면, 운영자만 고칠 수 있는 설정 오류가
 // "잠시 후 다시 시도하세요"로 덮여 영원히 해결되지 않는다.
