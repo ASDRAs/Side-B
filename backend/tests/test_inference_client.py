@@ -14,6 +14,39 @@ from app.services.inference_client import (
 RESULT = {"genre": "pop", "score": -0.2, "model_version": "fixture-v1"}
 
 
+async def test_tagged_request_uses_service_origin_as_identity_audience():
+    def handle(request):
+        if request.url.host == "metadata.google.internal":
+            assert request.url.params["audience"] == "https://inference.run.app"
+            return httpx.Response(200, text="fixture-token")
+        assert str(request.url) == "https://candidate---inference.run.app/predict"
+        assert request.headers["Authorization"] == "Bearer fixture-token"
+        return httpx.Response(200, json=RESULT)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+        client = InferenceClient(
+            http,
+            "https://candidate---inference.run.app",
+            audience="https://inference.run.app",
+        )
+        assert (await client.predict(b"audio")).genre == "pop"
+
+
+@pytest.mark.parametrize(
+    "audience",
+    [
+        "not-a-url",
+        "http://remote.example",
+        "https://user:pass@remote.example",
+        "https://remote.example/path",
+    ],
+)
+async def test_invalid_identity_audience_is_rejected(audience):
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(InferenceConfigurationError):
+            InferenceClient(http, "https://inference.run.app", audience=audience)
+
+
 async def test_identity_audience_cached_and_audio_forwarded():
     calls = []
 

@@ -43,8 +43,8 @@ async def classify_genre(
         alias="X-Side-B-Access-Token",
     ),
 ) -> GenreClassificationResponse:
-    # 기존 recommend API와 인증 및 rate limit 공유
-    access = request.app.state.recommend_access
+    # 인증 토큰은 recommend와 공유하되, rate limit 버킷은 분리한다.
+    access = request.app.state.genre_access
 
     if access is not None:
         try:

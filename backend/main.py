@@ -17,7 +17,7 @@ from app.routers.genre_classification import (
 from app.routers.recommend import router as recommend_router
 from app.routers.youtube_export import router as youtube_export_router
 from app.services.access import BackendAccess
-from app.services.inference_client import InferenceClient
+from app.services.inference_client import InferenceClient, InferenceConfigurationError
 from app.services.youtube import YouTubeMatcher, YouTubeSearchClient
 from preview import router as preview_router
 
@@ -55,13 +55,25 @@ async def lifespan(app: FastAPI):
         settings.backend_access_token,
         requests_per_minute=settings.youtube_export_requests_per_minute,
     )
+    unauthenticated = (
+        settings.allow_unauthenticated_recommend and not settings.backend_access_token
+    )
     app.state.recommend_access = (
         None
-        if settings.allow_unauthenticated_recommend
-        and not settings.backend_access_token
+        if unauthenticated
         else BackendAccess(
             settings.backend_access_token,
             requests_per_minute=settings.recommend_requests_per_minute,
+        )
+    )
+    # 자동 EQ는 곡이 바뀔 때마다 한 번씩 호출한다. 버킷을 분리하지 않으면 곡을
+    # 여러 번 넘기는 것만으로 /recommend가 429로 막힌다.
+    app.state.genre_access = (
+        None
+        if unauthenticated
+        else BackendAccess(
+            settings.backend_access_token,
+            requests_per_minute=settings.genre_requests_per_minute,
         )
     )
     app.state.lastfm_pylast = pylast.LastFMNetwork(
@@ -69,12 +81,20 @@ async def lifespan(app: FastAPI):
         api_secret=settings.lastfm_api_secret or "",
     )
 
-    app.state.genre_inference = InferenceClient(
-        http,
-        settings.clap_inference_url,
-        use_iam=settings.clap_inference_use_iam,
-        timeout=settings.clap_inference_timeout_seconds,
-    )
+    # 잘못된 URL로 부팅 전체를 막지 않는다. 장르 분류만 비활성화하고 추천은 살린다.
+    try:
+        app.state.genre_inference = InferenceClient(
+            http,
+            settings.clap_inference_url,
+            audience=settings.clap_inference_audience,
+            use_iam=settings.clap_inference_use_iam,
+            timeout=settings.clap_inference_timeout_seconds,
+        )
+    except InferenceConfigurationError:
+        logger.exception(
+            "CLAP_INFERENCE_URL is invalid — genre classification disabled."
+        )
+        app.state.genre_inference = None
 
     if not settings.lastfm_api_key:
         logger.warning("LASTFM_API_KEY not set — Last.fm calls will fail.")
