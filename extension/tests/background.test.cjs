@@ -84,6 +84,7 @@ function loadBackground(responses, options = {}) {
           Object.assign(storage, JSON.parse(JSON.stringify(values)));
         },
         async get(key) {
+          if (Array.isArray(key)) return Object.fromEntries(key.map((name) => [name, storage[name]]));
           return { [key]: storage[key] };
         },
       },
@@ -119,6 +120,16 @@ function loadBackground(responses, options = {}) {
     offscreenCalls,
   };
 }
+
+test("EQ configuration bridge only returns settings to the extension offscreen document", async () => {
+  const h = loadBackground([], { storage: { backendAccessToken: "fixture-team-token" } });
+  const message = { type: "GET_EQ_SETTINGS" };
+  await assert.rejects(h.context.handleMessage(message, { url: "https://music.youtube.com/" }));
+  await assert.rejects(h.context.handleMessage(message, { url: "chrome-extension://other/offscreen.html" }));
+  const result = await h.context.handleMessage(message, { url: "chrome-extension://test/offscreen.html" });
+  assert.equal(result.settings.backendAccessToken, "fixture-team-token");
+  assert.equal(h.fetchCalls.length, 0);
+});
 
 function exportPayload(items = [
   { video_id: "video-1", name: "First", artist: "Artist 1" },

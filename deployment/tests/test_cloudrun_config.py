@@ -1,5 +1,6 @@
 import ast
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +27,11 @@ def test_edge_deadline_exceeds_actual_router_deadline():
     assert len(deadlines) == 1
     assert config["backend"]["timeout_seconds"] >= deadlines[0] + 30
     assert config["backend"]["inference_timeout_seconds"] < deadlines[0]
+    offscreen = (ROOT / "extension/offscreen.js").read_text(encoding="utf-8")
+    match = re.search(r"const AI_TIMEOUT_MS = ([\d_]+);", offscreen)
+    assert match is not None
+    client_timeout = int(match.group(1).replace("_", "")) / 1000
+    assert deadlines[0] + 10 <= client_timeout < config["backend"]["timeout_seconds"]
 
 
 def test_inference_capacity_remains_bounded():

@@ -7,9 +7,10 @@ export function eqStatusText(state) {
     case "analyzing":
       return "곡별 EQ 분석 중 · 원음 재생 중";
     case "unavailable":
-      return "AI 프리셋 없음 · 원음 재생 중";
+      return state.error ? `${state.error} · 원음 재생 중` : "지원하는 장르 프리셋 없음 · 원음 재생 중";
     case "applied":
-      return state.mode === "test" ? "테스트 EQ 적용 중 · 1 kHz 감쇠" : "곡별 EQ 적용 중";
+      return state.mode === "test" ? "테스트 EQ 적용 중 · 1 kHz 감쇠" :
+        (state.genre ? `${state.genre} EQ 적용 중` : "곡별 EQ 적용 중");
     case "suspended":
       return "오디오 출력이 중단됐습니다. EQ 적용을 다시 눌러 주세요.";
     case "error":

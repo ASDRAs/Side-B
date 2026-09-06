@@ -1,14 +1,47 @@
-globalThis.SideBEqProvider = {
-  async getPreset(track, { signal }) {
-    // AI 연결 지점: 별도 곡/장르 분류 모델이 준비되면 이 함수만 연결한다.
-    // 입력 track: { title, artist, videoId, url }, signal: 취소용 AbortSignal.
-    // 출력: { preamp: dB(-30..0), bands: [{ frequency: Hz(20..20000),
-    //         gain: dB(-12..12), q?: 0.1..18 }] 또는 null(분류/프리셋 없음).
-    // 장르별 EQ 규칙, 모델 종류, 오디오 전달 방식은 여기서 임의로 정하지 않는다.
-    // 실제 API 연결 시 signal을 fetch에 전달하고 키를 코드에 넣지 않는다.
-    // offscreen이 시간 제한·응답 검증·곡 변경 시 취소·원음 복귀를 담당한다.
-    void track;
-    void signal;
-    return null;
-  },
-};
+globalThis.SideBEqProvider = (() => {
+  let configure;
+  const configuration = new Promise((resolve) => { configure = resolve; });
+
+  async function getPreset(track, { signal }) {
+    const title = String(track?.title || "").trim();
+    const artist = String(track?.artist || "").trim();
+    if (!title || !artist) throw new Error("곡명과 아티스트를 확인할 수 없습니다.");
+    if (title.length > 200 || artist.length > 200) throw new Error("곡 정보가 너무 깁니다.");
+    const api = await configuration;
+    signal.throwIfAborted();
+    // Offscreen only has chrome.runtime. Read settings through the worker, but
+    // own the long fetch here so worker suspension cannot kill the request.
+    const result = await chrome.runtime.sendMessage({ target: "background", type: "GET_EQ_SETTINGS" });
+    signal.throwIfAborted();
+    if (!result?.ok) throw new Error("백엔드 설정을 읽지 못했습니다.");
+    const stored = result.settings || {};
+    const { apiBaseUrl } = api.resolveApiBaseUrlSetting(stored.apiBaseUrl, stored.apiBaseUrlStorageVersion);
+    let url;
+    try { url = new URL(apiBaseUrl); } catch { throw new Error("백엔드 주소가 올바르지 않습니다."); }
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if ((url.protocol !== "https:" && !(local && url.protocol === "http:")) ||
+        url.username || url.password || url.search || url.hash) {
+      throw new Error("백엔드 주소는 HTTPS 또는 로컬 HTTP 주소여야 합니다.");
+    }
+    const token = String(stored.backendAccessToken || "").trim();
+    if (api.requiresBackendAccessToken(apiBaseUrl) && !token) throw new Error("설정에서 팀 백엔드 토큰을 입력하세요.");
+    const response = await fetch(`${apiBaseUrl}/genre-classification`, {
+      method: "POST", headers: api.recommendationHeaders(token),
+      body: JSON.stringify({ track_name: title, artist }), signal, redirect: "error",
+    });
+    let payload;
+    try { payload = await response.json(); } catch { payload = null; }
+    signal.throwIfAborted();
+    if (!response.ok) throw new Error(api.backendErrorMessage(response.status,
+      api.apiErrorMessage(payload, ""), response.headers.get("Retry-After")));
+    if (typeof payload?.genre !== "string" || !Number.isFinite(payload.score) ||
+        typeof payload.model_version !== "string" || !payload.model_version.trim()) {
+      throw new Error("장르 분석 응답 형식이 올바르지 않습니다.");
+    }
+    // score is an SVM margin, not confidence. Negative margins are valid.
+    const preset = SideBEqPresets.forGenre(payload.genre);
+    return preset ? { ...preset, genre: payload.genre } : null;
+  }
+
+  return { configure, getPreset };
+})();
