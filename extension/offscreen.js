@@ -1,6 +1,7 @@
 const DEFAULT_Q = 1.4;
 const TRACK_POLL_MS = 2_000;
-const AI_TIMEOUT_MS = 10_000;
+// Allow the backend's 150-second JSON deadline plus transport/read-track time.
+const AI_TIMEOUT_MS = 170_000;
 
 let audioContext = null;
 let mediaStream = null;
@@ -11,6 +12,8 @@ let currentTabId = null;
 let currentMode = "auto";
 let currentTrack = null;
 let presetStatus = "inactive";
+let presetGenre = null;
+let presetError = null;
 let automation = null;
 let commandQueue = Promise.resolve();
 
@@ -230,6 +233,8 @@ async function cleanupEq() {
   currentTabId = null;
   currentTrack = null;
   presetStatus = "inactive";
+  presetGenre = null;
+  presetError = null;
 }
 
 async function stopEq() {
@@ -251,6 +256,8 @@ function getState() {
     mode: currentMode,
     track: currentTrack,
     status: capturing && !active ? "suspended" : presetStatus,
+    genre: presetGenre,
+    error: presetError,
   };
 }
 
@@ -274,6 +281,8 @@ async function setEqMode(mode) {
   stopAutomation();
   currentMode = mode;
   currentTrack = null;
+  presetGenre = null;
+  presetError = null;
   updateEq(mode === "test" ? SideBEqPresets.test() : SideBEqPresets.flat());
   presetStatus = mode === "test" ? "applied" : "waiting_track";
   const state = publishState();
@@ -305,6 +314,8 @@ function acceptTrack(session, track) {
   session.key = key;
   session.controller?.abort();
   currentTrack = key ? track : null;
+  presetGenre = null;
+  presetError = null;
   // Never carry the previous song's EQ into a newly detected/unknown song.
   updateEq(SideBEqPresets.flat());
   presetStatus = key ? "analyzing" : "waiting_track";
@@ -348,11 +359,15 @@ async function resolvePreset(session, track, key, controller) {
       return;
     }
     updateEq(preset === null ? SideBEqPresets.flat() : SideBEqPresets.validate(preset));
+    presetGenre = preset?.genre || null;
     presetStatus = preset === null ? "unavailable" : "applied";
     publishState();
-  } catch {
+  } catch (error) {
     if (!stillCurrent()) return;
     updateEq(SideBEqPresets.flat());
+    presetGenre = null;
+    presetError = signal.aborted ? "장르 분석 시간이 초과되었습니다. EQ 적용을 다시 눌러 주세요." :
+      (error?.message || "장르 분석에 실패했습니다.");
     presetStatus = "unavailable";
     publishState();
   } finally {
@@ -376,6 +391,8 @@ async function handleMessage(message) {
       SideBEqPresets.validate(message.preset);
       stopAutomation();
       currentMode = "manual";
+      presetGenre = null;
+      presetError = null;
       updateEq(message.preset);
       presetStatus = "applied";
       return publishState();

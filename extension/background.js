@@ -462,7 +462,7 @@ async function createYouTubePlaylist(payload) {
   }
 }
 
-async function handleMessage(message) {
+async function handleMessage(message, sender) {
   switch (message.type) {
     case "START_EQ":
       return SideBEq.start(message);
@@ -482,6 +482,14 @@ async function handleMessage(message) {
     case "READ_EQ_TRACK":
       return { ok: true, track: await SideBEq.readTrack(message.tabId) };
 
+    case "GET_EQ_SETTINGS":
+      if (sender?.url !== chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH)) {
+        throw new Error("EQ 설정 요청을 허용하지 않습니다.");
+      }
+      return { ok: true, settings: await chrome.storage.local.get([
+        "apiBaseUrl", "apiBaseUrlStorageVersion", "backendAccessToken",
+      ]) };
+
     case "GET_MUSIC_TAB":
       return getMusicTab();
 
@@ -499,13 +507,13 @@ async function handleMessage(message) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== "background") {
     return false;
   }
   if (message.type !== "READ_EQ_TRACK") console.log("Background received:", message);
 
-  handleMessage(message)
+  handleMessage(message, sender)
     .then(sendResponse)
     .catch((error) => {
       console.error("Background message error:", error);

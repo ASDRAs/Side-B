@@ -247,8 +247,8 @@ async function startAuto(options = {}) {
   return h;
 }
 
-test("without the future AI adapter, auto EQ explicitly keeps the original audio", async () => {
-  const h = await startAuto({ track: song("A") });
+test("without a supported genre preset, auto EQ explicitly keeps the original audio", async () => {
+  const h = await startAuto({ track: song("A"), provider: async () => null });
   assert.equal(h.context.getState().active, true);
   assert.equal(h.context.getState().status, "unavailable");
   assert.equal(activeFilters(h.graph).length, 0);
@@ -263,6 +263,24 @@ test("one AI request per observed track, independent of repeated polling", async
   assert.equal(requests, 1);
   assert.equal(h.context.getState().status, "applied");
   assert.equal(activeFilters(h.graph)[0].frequency.value, 1000);
+});
+
+test("genre metadata belongs only to the applied song and clears with its filters", async () => {
+  const options = { track: song("A"), provider: async () => ({ ...cut(1000), genre: "ballad" }) };
+  const h = await startAuto(options);
+  assert.equal(h.context.getState().genre, "ballad");
+  await h.context.setEqMode("test");
+  assert.equal(h.context.getState().genre, null);
+  assert.equal(h.context.getState().error, null);
+});
+
+test("analysis failure stays visible until another EQ action", async () => {
+  const h = await startAuto({ track: song("A"), provider: async () => { throw new Error("Invalid team token"); } });
+  for (const poll of h.intervals.values()) poll();
+  await settle();
+  assert.equal(h.context.getState().error, "Invalid team token");
+  await h.context.setEqMode("test");
+  assert.equal(h.context.getState().error, null);
 });
 
 test("changing songs clears the old filters before the new AI result arrives", async () => {
@@ -330,7 +348,7 @@ test("AI timeout recovers even if the adapter ignores AbortSignal", async () => 
     signal = options.signal;
     return new Promise(() => {});
   } });
-  [...h.timers.values()].find((timer) => timer.ms === 10_000).fn();
+  [...h.timers.values()].find((timer) => timer.ms === 170_000).fn();
   await settle();
   assert.equal(signal.aborted, true);
   assert.equal(h.context.getState().status, "unavailable");

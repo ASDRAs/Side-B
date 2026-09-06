@@ -106,7 +106,7 @@ test("a stop error survives same-state pushes and polling but clears when the so
     });
     await notify(next);
     await expect(page.locator("#eqTrack")).toHaveText("Second Song - Fixture Artist");
-    await expect(page.locator("#eqTestStatus")).toHaveText("AI 프리셋 없음 · 원음 재생 중");
+    await expect(page.locator("#eqTestStatus")).toHaveText("지원하는 장르 프리셋 없음 · 원음 재생 중");
   } finally {
     await context.close();
   }
