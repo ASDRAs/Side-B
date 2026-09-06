@@ -4,7 +4,6 @@ FastAPI entrypoint — recommendation pipeline (iTunes + Deezer + Last.fm + Gemi
 
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import httpx
 import pylast
@@ -12,18 +11,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.genre_classification.model_loader import load_genre_models
 from app.routers.genre_classification import (
     router as genre_classification_router,
 )
 from app.routers.recommend import router as recommend_router
 from app.routers.youtube_export import router as youtube_export_router
 from app.services.access import BackendAccess
+from app.services.inference_client import InferenceClient
 from app.services.youtube import YouTubeMatcher, YouTubeSearchClient
 from preview import router as preview_router
-
-BASE_DIR = Path(__file__).resolve().parent
-MODEL_DIR = BASE_DIR / "models"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,10 +69,11 @@ async def lifespan(app: FastAPI):
         api_secret=settings.lastfm_api_secret or "",
     )
 
-    app.state.genre_models = load_genre_models(
-        clap_model_path=MODEL_DIR / "clap",
-        svm_model_path=MODEL_DIR / "svm" / "svm_classifier.pkl",
-        label_encoder_path=MODEL_DIR / "svm" / "label_encoder.pkl",
+    app.state.genre_inference = InferenceClient(
+        http,
+        settings.clap_inference_url,
+        use_iam=settings.clap_inference_use_iam,
+        timeout=settings.clap_inference_timeout_seconds,
     )
 
     if not settings.lastfm_api_key:
