@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -14,6 +15,11 @@ from app.services.access import (
 from app.services.genre_classification_service import (
     GenreClassificationConfigurationError,
     run_genre_classification,
+)
+from app.services.inference_client import (
+    InferenceAudioError,
+    InferenceTimeoutError,
+    InferenceUnavailableError,
 )
 from app.utils.preview_audio import PreviewNotFoundError
 
@@ -75,12 +81,16 @@ async def classify_genre(
             ) from exc
 
     try:
-        result = await run_genre_classification(
-            track_name=req.track_name,
-            artist=req.artist,
-            http=request.app.state.http,
-            settings=request.app.state.settings,
-            models=request.app.state.genre_models,
+        result = await asyncio.wait_for(
+            run_genre_classification(
+                track_name=req.track_name,
+                artist=req.artist,
+                http=request.app.state.http,
+                settings=request.app.state.settings,
+                inference=request.app.state.genre_inference,
+            ),
+            # Preview lookup plus a scale-to-zero model cold start.
+            timeout=150,
         )
 
     except GenreClassificationConfigurationError as exc:
@@ -89,6 +99,33 @@ async def classify_genre(
             detail={
                 "code": "genre_configuration_error",
                 "message": "장르 분류 서비스 설정이 완료되지 않았습니다.",
+            },
+        ) from exc
+
+    except (InferenceTimeoutError, TimeoutError) as exc:
+        raise HTTPException(
+            504,
+            detail={
+                "code": "genre_timeout",
+                "message": "장르 분석 응답 시간이 초과되었습니다.",
+            },
+        ) from exc
+
+    except InferenceUnavailableError as exc:
+        raise HTTPException(
+            503,
+            detail={
+                "code": "genre_unavailable",
+                "message": "장르 분석 서비스를 사용할 수 없습니다.",
+            },
+        ) from exc
+
+    except InferenceAudioError as exc:
+        raise HTTPException(
+            422,
+            detail={
+                "code": "genre_audio_invalid",
+                "message": "미리듣기 음원을 분석할 수 없습니다.",
             },
         ) from exc
 
@@ -121,4 +158,5 @@ async def classify_genre(
         artist=result.artist,
         genre=result.genre,
         score=result.score,
+        model_version=result.model_version,
     )

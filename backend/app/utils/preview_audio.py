@@ -1,12 +1,15 @@
+from __future__ import annotations
+
 import asyncio
 import io
 import subprocess
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import httpx
-import librosa
-import numpy as np
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from app.llm.llm_response import TrackSearchAnalysis
 from app.llm.llm_wrapper import GeminiWrapper
@@ -45,6 +48,14 @@ class PreviewCandidate:
 class LoadedPreview:
     audio: np.ndarray
     sample_rate: int
+    provider: Provider
+    track_name: str
+    artist: str
+
+
+@dataclass(frozen=True)
+class PreviewBytes:
+    audio_bytes: bytes
     provider: Provider
     track_name: str
     artist: str
@@ -138,7 +149,8 @@ async def _get_preview_bytes(
     preview_url: str,
     http: httpx.AsyncClient,
 ) -> bytes:
-    response = await http.get(
+    async with http.stream(
+        "GET",
         preview_url,
         headers={
             "Accept": "audio/*,*/*;q=0.8",
@@ -146,10 +158,15 @@ async def _get_preview_bytes(
         },
         follow_redirects=True,
         timeout=30.0,
-    )
-    response.raise_for_status()
+    ) as response:
+        response.raise_for_status()
+        data = bytearray()
+        async for chunk in response.aiter_bytes():
+            if len(data) + len(chunk) > MAX_PREVIEW_BYTES:
+                raise PreviewDownloadError("preview exceeds 10 MiB")
+            data.extend(chunk)
 
-    audio_bytes = response.content
+    audio_bytes = bytes(data)
 
     if not audio_bytes:
         raise PreviewDownloadError("preview response is empty")
@@ -213,6 +230,8 @@ def _load_audio(
     sample_rate: int,
 ) -> tuple[np.ndarray, int]:
     """오디오 bytes를 디스크에 저장하지 않고 np.ndarray로 변환합니다."""
+    import librosa
+    import numpy as np
 
     try:
         audio, loaded_sample_rate = librosa.load(
@@ -305,13 +324,12 @@ async def _search_preview_candidate(
     )
 
 
-async def load_track_preview(
+async def load_track_preview_bytes(
     track_name: str,
     artist: str,
     http: httpx.AsyncClient,
     gemini_wrapper: GeminiWrapper,
-    sample_rate: int = 48_000,
-) -> LoadedPreview:
+) -> PreviewBytes:
     analysis = await analyze_track_search(
         track_name=track_name,
         artist=artist,
@@ -350,16 +368,8 @@ async def load_track_preview(
                     http,
                 )
 
-                async with _DECODE_SEMAPHORE:
-                    audio, loaded_sample_rate = await asyncio.to_thread(
-                        _load_audio,
-                        audio_bytes,
-                        sample_rate,
-                    )
-
-                return LoadedPreview(
-                    audio=audio,
-                    sample_rate=loaded_sample_rate,
+                return PreviewBytes(
+                    audio_bytes=audio_bytes,
                     provider=candidate.provider,
                     track_name=candidate.track_name,
                     artist=candidate.artist,
@@ -375,4 +385,18 @@ async def load_track_preview(
 
     raise PreviewNotFoundError(
         f"preview unavailable for {artist} - {track_name}: " + "; ".join(errors)
+    )
+
+
+async def load_track_preview(
+    track_name, artist, http, gemini_wrapper, sample_rate=48_000
+) -> LoadedPreview:
+    """Local analysis helper; production forwards compressed bytes to inference."""
+    preview = await load_track_preview_bytes(track_name, artist, http, gemini_wrapper)
+    async with _DECODE_SEMAPHORE:
+        audio, rate = await asyncio.to_thread(
+            _load_audio, preview.audio_bytes, sample_rate
+        )
+    return LoadedPreview(
+        audio, rate, preview.provider, preview.track_name, preview.artist
     )

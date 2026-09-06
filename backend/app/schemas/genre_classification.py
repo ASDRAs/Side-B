@@ -21,4 +21,5 @@ class GenreClassificationResponse(BaseModel):
     track_name: str
     artist: str
     genre: str
-    score: float
+    score: float = Field(allow_inf_nan=False)
+    model_version: str

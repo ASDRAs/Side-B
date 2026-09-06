@@ -1,0 +1,25 @@
+[project]
+name = "side-b-inference"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn==0.47.0",
+    "torch==2.13.0+cpu",
+    "transformers==5.16.1",
+    "scikit-learn==1.6.1",
+    "numpy==2.2.6",
+    "joblib==1.6.0",
+    "librosa==1.0.0",
+]
+
+[tool.poetry]
+package-mode = false
+
+[[tool.poetry.source]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
+
+[tool.poetry.dependencies]
+torch = {source = "pytorch-cpu"}

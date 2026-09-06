@@ -5,6 +5,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    clap_inference_url: str = Field(default="", validation_alias="CLAP_INFERENCE_URL")
+    clap_inference_use_iam: bool = Field(
+        default=True, validation_alias="CLAP_INFERENCE_USE_IAM"
+    )
+    clap_inference_timeout_seconds: float = Field(
+        default=90, gt=0, le=120, validation_alias="CLAP_INFERENCE_TIMEOUT_SECONDS"
+    )
+
     model_config = SettingsConfigDict(
         env_file=("../.env", ".env"),
         env_file_encoding="utf-8",

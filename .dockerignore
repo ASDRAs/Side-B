@@ -1,0 +1,13 @@
+**
+!inference/
+!inference/**
+!backend/
+!backend/app/
+!backend/app/genre_classification/
+!backend/app/genre_classification/**
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+inference/tests/
+inference/.venv/
