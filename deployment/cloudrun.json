@@ -1,0 +1,19 @@
+{
+  "project": "gen-lang-client-0392647514",
+  "region": "asia-northeast3",
+  "backend": {
+    "service": "side-b-backend",
+    "timeout_seconds": 180,
+    "inference_timeout_seconds": 90
+  },
+  "inference": {
+    "service": "side-b-clap-inference",
+    "service_account": "side-b-clap-inference@gen-lang-client-0392647514.iam.gserviceaccount.com",
+    "cpu": 2,
+    "memory": "2Gi",
+    "concurrency": 1,
+    "min_instances": 0,
+    "max_instances": 1,
+    "timeout_seconds": 120
+  }
+}
