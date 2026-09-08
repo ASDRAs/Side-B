@@ -69,3 +69,20 @@ def test_cors_allows_fixed_extension_and_rejects_untrusted_web_origin():
         "chrome-extension://hfcclomfoickmehgmdgjdjmiiekaciam"
     )
     assert "access-control-allow-origin" not in denied.headers
+
+
+def test_invalid_inference_url_disables_genre_only_and_still_boots(monkeypatch):
+    import main
+
+    settings = Settings(
+        _env_file=None,
+        SIDE_B_ACCESS_TOKEN="team-token",
+        CLAP_INFERENCE_URL="http://inference.example.com/predict",
+    )
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+
+    with TestClient(main.app) as client:
+        assert client.get("/api/health").status_code == 200
+        assert main.app.state.genre_inference is None
+        # 추천 경로는 계속 살아 있어야 한다.
+        assert main.app.state.recommend_access is not None

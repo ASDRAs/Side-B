@@ -35,18 +35,21 @@ class InferenceClient:
         http: httpx.AsyncClient,
         url: str,
         *,
+        audience: str = "",
         use_iam: bool = True,
         timeout: float = 90,
     ):
         self.http = http
         self.url = url.strip().rstrip("/")
+        # Tagged revision URLs route requests; IAM still expects the service origin.
+        self.audience = audience.strip().rstrip("/") or self.url
         self.use_iam = use_iam
         self.timeout = timeout
         self._token = ""
         self._token_until = 0.0
         self._token_lock = asyncio.Lock()
-        if self.url:
-            parsed = urlsplit(self.url)
+        for origin in {self.url, self.audience} - {""}:
+            parsed = urlsplit(origin)
             local = parsed.hostname in {
                 "localhost",
                 "127.0.0.1",
@@ -75,7 +78,7 @@ class InferenceClient:
             try:
                 response = await self.http.get(
                     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity",
-                    params={"audience": self.url, "format": "full"},
+                    params={"audience": self.audience, "format": "full"},
                     headers={"Metadata-Flavor": "Google"},
                     timeout=3,
                 )

@@ -152,14 +152,16 @@ test("side panel reaches YouTube match review before OAuth", async ({}, testInfo
     // dialog가 닫힌다. OAuth까지 가지 않도록 배경 메시지만 가로챈다.
     await page.evaluate(() => {
       const original = chrome.runtime.sendMessage.bind(chrome.runtime);
+      const creationPending = new Promise((resolve) => {
+        globalThis.completeExportFixture = resolve;
+      });
       chrome.runtime.sendMessage = async (message) => {
         if (message?.type !== "CREATE_YOUTUBE_PLAYLIST") {
           return original(message);
         }
         const { payload } = message;
-        // 실제 생성은 OAuth와 여러 API 호출을 거친다. 즉시 응답하면 버튼이
-        // 곧바로 다시 활성화돼 포커스 결함이 가려진다.
-        await new Promise((resolve) => setTimeout(resolve, 400));
+        // Hold creation until the focus assertion finishes, independent of host speed.
+        await creationPending;
         return {
           ok: true,
           state: {
@@ -192,20 +194,15 @@ test("side panel reaches YouTube match review before OAuth", async ({}, testInfo
 
     // 확정 뒤 포커스가 <body>로 떨어지면 키보드 사용자는 위치를 잃는다.
     // 비활성 버튼은 포커스를 못 받으므로 선택된 탭이 대신 받아야 한다.
-    const focusedAfterConfirm = await page.evaluate(() => {
-      const active = document.activeElement;
-      if (!active || active === document.body) {
-        return "body";
-      }
-      if (active.classList.contains("bucket-tab")) {
-        return "bucket-tab";
-      }
-      if (active.classList.contains("export-button")) {
-        return "export-button";
-      }
-      return active.tagName;
+    // The native dialog close event is queued; wait for its observable focus result.
+    await expect(page.locator('.bucket-tab[aria-selected="true"]')).toBeFocused();
+    await expect(
+      page.locator('.bucket[data-bucket="similar"] .export-button'),
+    ).toBeDisabled();
+    await page.evaluate(() => {
+      globalThis.completeExportFixture();
+      delete globalThis.completeExportFixture;
     });
-    expect(["bucket-tab", "export-button"]).toContain(focusedAfterConfirm);
     await expect(page.locator("#youtubeExportStatus")).toHaveText("완료");
   } catch (error) {
     await captureFailure(page, testInfo);

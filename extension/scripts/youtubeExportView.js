@@ -1,3 +1,5 @@
+import { apiErrorMessage } from "./apiConfig.js";
+
 export function partitionExportableTracks(tracks, limit = 10) {
   const source = Array.isArray(tracks) ? tracks.slice(0, limit) : [];
   const valid = [];
@@ -63,34 +65,6 @@ export function exportExclusionCounts({
     skipped: invalid + unmatched + unselected,
     deduplicated,
   };
-}
-
-export function apiErrorMessage(payload, fallback) {
-  const detail = payload?.detail;
-  if (typeof detail === "string" && detail) {
-    return detail;
-  }
-  if (detail && typeof detail.message === "string") {
-    return detail.message;
-  }
-  if (Array.isArray(detail)) {
-    const messages = detail
-      .map((issue) => {
-        if (!issue || typeof issue !== "object") {
-          return "";
-        }
-        const location = Array.isArray(issue.loc)
-          ? issue.loc.filter((part) => part !== "body").join(".")
-          : "";
-        const message = String(issue.msg || "").trim();
-        return [location, message].filter(Boolean).join(": ");
-      })
-      .filter(Boolean);
-    if (messages.length > 0) {
-      return messages.join(" / ");
-    }
-  }
-  return fallback;
 }
 
 export function unmatchedReasonLabel(reason) {

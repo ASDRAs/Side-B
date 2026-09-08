@@ -14,7 +14,9 @@ from app.genre_classification.model_loader import load_genre_models
 from inference.main import InvalidAudio, Prediction
 
 SAMPLE_RATE = 48_000
-MAX_SECONDS = 35
+# 디코딩 창과 분석 창은 같은 값이어야 한다. 더 길게 디코딩하면 모델이 쓰지도
+# 않는 구간 때문에 긴 미리듣기가 거절된다.
+ANALYSIS_SECONDS = 30
 
 
 def decode_audio(data: bytes) -> np.ndarray:
@@ -32,7 +34,7 @@ def decode_audio(data: bytes) -> np.ndarray:
                 "-i",
                 "pipe:0",
                 "-t",
-                "35.001",
+                str(ANALYSIS_SECONDS),
                 "-vn",
                 "-ac",
                 "1",
@@ -53,8 +55,6 @@ def decode_audio(data: bytes) -> np.ndarray:
     audio = np.frombuffer(result.stdout, dtype="<f4")
     if not audio.size or not np.isfinite(audio).all():
         raise InvalidAudio("Audio is empty or invalid")
-    if audio.size > SAMPLE_RATE * MAX_SECONDS:
-        raise InvalidAudio("Audio exceeds 35 seconds")
     return audio
 
 
@@ -77,11 +77,13 @@ class Predictor:
             device="cpu",
         )
         # Warm up before accepting requests and verify the model/SVM shape contract.
-        self._predict(np.zeros(SAMPLE_RATE * 30, dtype=np.float32))
+        self._predict(np.zeros(SAMPLE_RATE * ANALYSIS_SECONDS, dtype=np.float32))
 
     def _predict(self, audio):
         embedding = extract_clap_embedding(
-            split_audio(audio, SAMPLE_RATE, 30, 10), self.models, SAMPLE_RATE
+            split_audio(audio, SAMPLE_RATE, ANALYSIS_SECONDS, 10),
+            self.models,
+            SAMPLE_RATE,
         )
         value = predict_by_svm(embedding, self.models)
         return Prediction(**value, model_version=self.model_version)

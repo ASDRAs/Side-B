@@ -24,9 +24,9 @@ async def run_genre_classification(
     artist: str,
     http: httpx.AsyncClient,
     settings: Settings,
-    inference: InferenceClient,
+    inference: InferenceClient | None,
 ) -> GenreClassificationResult:
-    if not inference.url or not settings.gemini_api_key:
+    if inference is None or not inference.url or not settings.gemini_api_key:
         raise GenreClassificationConfigurationError(
             "Genre classification is not configured"
         )

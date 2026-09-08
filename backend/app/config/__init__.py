@@ -6,6 +6,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     clap_inference_url: str = Field(default="", validation_alias="CLAP_INFERENCE_URL")
+    clap_inference_audience: str = Field(
+        default="", validation_alias="CLAP_INFERENCE_AUDIENCE"
+    )
     clap_inference_use_iam: bool = Field(
         default=True, validation_alias="CLAP_INFERENCE_USE_IAM"
     )
@@ -42,6 +45,12 @@ class Settings(BaseSettings):
         ge=1,
         le=60,
         validation_alias="RECOMMEND_REQUESTS_PER_MINUTE",
+    )
+    genre_requests_per_minute: int = Field(
+        default=6,
+        ge=1,
+        le=60,
+        validation_alias="GENRE_REQUESTS_PER_MINUTE",
     )
     allow_unauthenticated_recommend: bool = Field(
         default=False,
