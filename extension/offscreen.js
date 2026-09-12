@@ -258,6 +258,7 @@ function getState() {
     status: capturing && !active ? "suspended" : presetStatus,
     genre: presetGenre,
     error: presetError,
+    bands: capturing ? filterNodes.map(({ frequency, node }) => ({ frequency, gain: node.gain.value })) : [],
   };
 }
 

@@ -12,7 +12,7 @@ export function eqStatusText(state) {
       return state.mode === "test" ? "테스트 EQ 적용 중 · 1 kHz 감쇠" :
         (state.genre ? `${state.genre} EQ 적용 중` : "곡별 EQ 적용 중");
     case "suspended":
-      return "오디오 출력이 중단됐습니다. EQ 적용을 다시 눌러 주세요.";
+      return "오디오 출력이 중단됐습니다. EQ 상세에서 다시 적용을 눌러 주세요.";
     case "error":
       return `EQ 적용 실패: ${state.error || "오디오 연결 오류"}`;
     default:

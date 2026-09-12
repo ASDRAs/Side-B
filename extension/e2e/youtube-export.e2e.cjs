@@ -204,6 +204,14 @@ test("side panel reaches YouTube match review before OAuth", async ({}, testInfo
       delete globalThis.completeExportFixture;
     });
     await expect(page.locator("#youtubeExportStatus")).toHaveText("완료");
+    for (const width of [280, 480]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.locator("#youtubeExportPanel").scrollIntoViewIfNeeded();
+      await expect(page.locator("#youtubeMusicLink")).toBeVisible();
+      expect(await page.locator("#youtubeExportPanel").evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+      expect(await page.locator("#youtubeExportLinks").evaluate((node) => node.firstElementChild.id)).toBe("youtubeMusicLink");
+      await page.screenshot({ path: testInfo.outputPath(`export-completed-${width}.png`) });
+    }
   } catch (error) {
     await captureFailure(page, testInfo);
     throw error;

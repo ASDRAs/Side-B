@@ -36,6 +36,16 @@ test("saved settings, real HTTP provider and Web Audio apply genre EQ and recove
       .toEqual({ genre: "dance", bands: [2, 0, -1, 1, 1] });
     expect(requests).toEqual([{ track_name: "Girls On Top", artist: "BoA" }]);
     await expect(page.locator("#eqTestStatus")).toHaveText("dance EQ 적용 중");
+    const liveBands = await audio.evaluate(() => getState().bands);
+    expect(liveBands).toEqual([
+      { frequency: 80, gain: 2 }, { frequency: 250, gain: 0 },
+      { frequency: 1000, gain: -1 }, { frequency: 4000, gain: 1 }, { frequency: 10000, gain: 1 },
+    ]);
+    await audio.evaluate(() => publishState());
+    await page.locator("#eqDetailsToggle").click();
+    await expect(page.locator("#eqBands dd")).toHaveText(["+2 dB", "0 dB", "-1 dB", "+1 dB", "+1 dB"]);
+    await expect(page.locator("#eqTestButton")).toHaveAttribute("aria-checked", "true");
+    await expect(page.locator("#eqTrack")).toHaveText("Girls On Top - BoA");
 
     status = 401;
     await audio.evaluate(() => setEqMode("auto"));
@@ -43,6 +53,8 @@ test("saved settings, real HTTP provider and Web Audio apply genre EQ and recove
     expect(await audio.evaluate(() => filterNodes.length)).toBe(0);
     await expect.poll(() => audio.evaluate(() => preampNode.gain.value)).toBeCloseTo(1, 3);
     await expect(page.locator("#eqTestStatus")).toContainText("Fixture invalid token");
+    await expect(page.locator("#eqBands")).toBeHidden();
+    await expect(page.locator("#eqBandsEmpty")).toBeVisible();
     for (const width of [280, 480]) {
       await page.setViewportSize({ width, height: 900 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
