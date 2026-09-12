@@ -455,6 +455,8 @@ label,
 }
 
 .eq-bands dt { color: var(--text-muted); }
+.eq-bands > div { display: flex; flex-direction: column; }
+.eq-bands dt { order: 1; }
 .eq-bands dd { margin: 5px 0 0; font-weight: 700; }
 .eq-status[data-error="true"] { color: var(--danger); }
 

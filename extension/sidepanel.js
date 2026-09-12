@@ -90,6 +90,7 @@ const seedArtist = document.querySelector("#seedArtist");
 const seedArt = document.querySelector("#seedArt");
 const seedPreview = document.querySelector("#seedPreview");
 const seedPlayButton = document.querySelector("#seedPlayButton");
+let seedPlaybackGeneration = 0;
 const seedPreviewNote = document.querySelector("#seedPreviewNote");
 const emptyState = document.querySelector("#emptyState");
 const loadingSkeleton = document.querySelector("#loadingSkeleton");
@@ -491,6 +492,7 @@ function renderSeedPreview(payload, apiBaseUrl) {
 }
 
 function resetSeedMedia() {
+  seedPlaybackGeneration += 1;
   seedPreview.pause();
   seedPreview.removeAttribute("src");
   seedPreview.load();
@@ -779,16 +781,20 @@ function syncSeedPlayback() {
   seedPlayButton.setAttribute("aria-label", seedPlayButton.title);
   seedPlayButton.querySelector(".icon").className = `icon ${playing ? "icon-pause" : "icon-play"}`;
 }
-for (const event of ["playing", "pause", "ended", "emptied", "error"]) {
+for (const event of ["play", "playing", "pause", "ended", "emptied", "error"]) {
   seedPreview.addEventListener(event, syncSeedPlayback);
 }
 seedPlayButton.addEventListener("click", async () => {
   const source = seedPreview.getAttribute("src");
   if (!source) return;
+  const generation = ++seedPlaybackGeneration;
   if (!seedPreview.paused) { seedPreview.pause(); return; }
   try { await seedPreview.play(); }
-  catch {
-    if (seedPreview.getAttribute("src") === source) {
+  catch (error) {
+    // Pausing or replacing a source rejects play(); only the current attempt
+    // may report a real playback failure.
+    if (error?.name !== "AbortError" && generation === seedPlaybackGeneration &&
+        seedPreview.getAttribute("src") === source) {
       seedPreviewNote.textContent = "미리 듣기를 불러오지 못했습니다.";
       seedPreviewNote.hidden = false;
     }
@@ -1400,7 +1406,8 @@ function renderEqBands(state) {
     fill.className = db < 0 ? "eq-band-cut" : "eq-band-boost";
     fill.style.height = `${Math.min(12, Math.abs(db)) / 12 * 50}%`;
     graph.append(fill);
-    column.append(value, graph, label);
+    value.append(graph);
+    column.append(label, value);
     return column;
   }));
   eqBands.hidden = bands.length === 0;
