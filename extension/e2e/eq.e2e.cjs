@@ -29,6 +29,7 @@ test("EQ action errors survive unchanged polling and clear on the next EQ action
     await expect.poll(() => page.evaluate(() => eqPolls)).toBeGreaterThanOrEqual(initialPolls + 2);
     await expect(page.locator("#eqTestStatus")).toHaveText(error);
 
+    await page.locator("#eqDetailsToggle").click();
     await page.locator('input[name="eqMode"][value="test"]').check();
     await expect(page.locator("#eqTestStatus")).toHaveText("EQ가 적용되지 않았습니다.");
     await page.locator("#eqTestButton").click();
@@ -92,6 +93,7 @@ test("a stop error survives same-state pushes and polling but clears when the so
     await notify(state);
     await expect(page.locator("#eqTrack")).toHaveText("First Song - Fixture Artist");
     await observeEqPolling(page);
+    await page.locator("#eqDetailsToggle").click();
     await page.locator("#eqStopButton").click();
     const error = "EQ 해제 실패: Fixture stop failure";
     await expect(page.locator("#eqTestStatus")).toHaveText(error);
@@ -130,6 +132,7 @@ test("a toolbar activation error stays visible across inactive state polling", a
     const initialPolls = await page.evaluate(() => eqPolls);
     await expect.poll(() => page.evaluate(() => eqPolls)).toBeGreaterThanOrEqual(initialPolls + 2);
     await expect(page.locator("#eqTestStatus")).toHaveText("EQ 적용 실패: Fixture activation failure");
+    await page.locator("#eqDetailsToggle").click();
     await page.locator("#eqStopButton").click();
     await expect(page.locator("#eqTestStatus")).toHaveText("EQ가 적용되지 않았습니다.");
   } finally {
@@ -155,6 +158,7 @@ test("real uninvoked tabCapture requests recover through the music-tab activatio
     expect(track.videoId).toBe("fixture");
 
     await page.bringToFront();
+    await page.locator("#eqDetailsToggle").click();
     await page.locator('input[name="eqMode"][value="test"]').check();
     await page.locator("#eqTestButton").click();
     await expect(page.locator("#eqTestStatus")).toContainText("툴바의 Side-B 아이콘");

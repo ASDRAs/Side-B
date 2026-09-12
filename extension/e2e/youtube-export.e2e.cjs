@@ -41,6 +41,42 @@ const mockedMatchesPayload = {
   deduplicated: 0,
 };
 
+test("manual-review matches open the exact video without selecting or exporting it", async ({}, testInfo) => {
+  const { context, page } = await launchExtensionPage(testInfo);
+  let matchCalls = 0;
+  try {
+    const base = (await page.locator("#apiBaseUrl").inputValue()).replace(/\/+$/, "");
+    await page.route(`${base}/recommend`, (route) => route.fulfill({ json: recommendationPayload }));
+    await page.route(`${base}/exports/youtube/matches`, (route) => {
+      matchCalls += 1;
+      return route.fulfill({ json: {
+        ...mockedMatchesPayload,
+        matched: [{ ...mockedMatchesPayload.matched[0], auto_selected: false }],
+      } });
+    });
+    await context.route("https://music.youtube.com/**", (route) => route.fulfill({ contentType: "text/html", body: "<title>Music fixture</title>" }));
+    await page.locator("#backendAccessToken").fill("fixture-token");
+    await page.locator("#query").fill("The Weeknd - Blinding Lights");
+    await page.locator("#submitButton").click();
+    await page.locator(".export-button").click();
+    const row = page.locator('.match-item[data-review="needed"]');
+    const link = row.locator(".match-listen");
+    await expect(link).toHaveAttribute("href", "https://music.youtube.com/watch?v=4NRXx6U8ABQ");
+    await page.setViewportSize({ width: 280, height: 640 });
+    await expect(link.locator(".icon")).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("manual-review-listen-280.png") });
+    const opened = context.waitForEvent("page");
+    await link.click();
+    const music = await opened;
+    await music.waitForURL("https://music.youtube.com/watch?v=4NRXx6U8ABQ");
+    await music.close();
+    await expect(row.locator("input")).not.toBeChecked();
+    await expect(page.locator("#youtubeMatchConfirm")).toBeDisabled();
+    await expect(page.locator("#youtubeMatchReview")).toBeVisible();
+    expect(matchCalls).toBe(1);
+  } finally { await context.close(); }
+});
+
 test("side panel reaches YouTube match review before OAuth", async ({}, testInfo) => {
   const { context, page } = await launchExtensionPage(testInfo);
   let capturedMatchRequest = null;
@@ -204,6 +240,14 @@ test("side panel reaches YouTube match review before OAuth", async ({}, testInfo
       delete globalThis.completeExportFixture;
     });
     await expect(page.locator("#youtubeExportStatus")).toHaveText("완료");
+    for (const width of [280, 480]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.locator("#youtubeExportPanel").scrollIntoViewIfNeeded();
+      await expect(page.locator("#youtubeMusicLink")).toBeVisible();
+      expect(await page.locator("#youtubeExportPanel").evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+      expect(await page.locator("#youtubeExportLinks").evaluate((node) => node.firstElementChild.id)).toBe("youtubeMusicLink");
+      await page.screenshot({ path: testInfo.outputPath(`export-completed-${width}.png`) });
+    }
   } catch (error) {
     await captureFailure(page, testInfo);
     throw error;

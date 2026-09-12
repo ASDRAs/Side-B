@@ -42,6 +42,9 @@ async function launchExtensionPage(testInfo) {
 
     const page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+    // Navigation does not wait for chrome.storage restoration. Tests that read
+    // the API address immediately must wait for that asynchronous UI state.
+    await expect(page.locator("#apiBaseUrl")).not.toHaveValue("");
     return { context, page };
   } catch (error) {
     await context.close();

@@ -1,6 +1,7 @@
 import { NoMusicTabError, readCurrentTrack } from "./scripts/tab.js";
 import {
   BUCKET_LABELS,
+  BUCKET_DESCRIPTIONS,
   defaultBucketIndex,
   executedBuckets,
   totalTrackCount,
@@ -88,16 +89,23 @@ const seedTitle = document.querySelector("#seedTitle");
 const seedArtist = document.querySelector("#seedArtist");
 const seedArt = document.querySelector("#seedArt");
 const seedPreview = document.querySelector("#seedPreview");
+const seedPlayButton = document.querySelector("#seedPlayButton");
+let seedPlaybackGeneration = 0;
 const seedPreviewNote = document.querySelector("#seedPreviewNote");
 const emptyState = document.querySelector("#emptyState");
 const loadingSkeleton = document.querySelector("#loadingSkeleton");
 const results = document.querySelector("#results");
 const bucketTabs = document.querySelector("#bucketTabs");
+const bucketDescription = document.querySelector("#bucketDescription");
 const bucketTemplate = document.querySelector("#bucketTemplate");
 const trackTemplate = document.querySelector("#trackTemplate");
 const currentTrackButton = document.querySelector("#currentTrackButton");
 const eqTestButton = document.querySelector("#eqTestButton");
 const eqStopButton = document.querySelector("#eqStopButton");
+const eqRetryButton = document.querySelector("#eqRetryButton");
+const eqNowPlaying = document.querySelector("#eqNowPlaying");
+const eqBands = document.querySelector("#eqBands");
+const eqBandsEmpty = document.querySelector("#eqBandsEmpty");
 const eqTestStatus = document.querySelector("#eqTestStatus");
 const eqTrack = document.querySelector("#eqTrack");
 const eqModes = document.querySelectorAll('input[name="eqMode"]');
@@ -229,7 +237,15 @@ settingsToggle.addEventListener("click", () => {
     settingsPanel.open = false;
     return;
   }
+  document.body.classList.add("settings-view");
   openSettings();
+  document.querySelector("#settingsBack").focus();
+});
+
+document.querySelector("#settingsBack").addEventListener("click", () => {
+  settingsPanel.open = false;
+  document.body.classList.remove("settings-view");
+  settingsToggle.focus();
 });
 
 // 헤더 명령과 패널의 summary가 같은 disclosure를 조작한다. 어느 쪽을 눌렀든
@@ -242,6 +258,7 @@ settingsPanel.querySelector("summary")?.addEventListener("click", () => {
 // summary를 직접 눌러 여닫아도 헤더 명령의 상태가 따라간다.
 settingsPanel.addEventListener("toggle", () => {
   settingsToggle.setAttribute("aria-expanded", String(settingsPanel.open));
+  if (!settingsPanel.open) document.body.classList.remove("settings-view");
 });
 
 // 자동으로 연 설정만 나중에 자동으로 닫는다.
@@ -287,11 +304,48 @@ function renderTrack(track, index) {
   fragment.querySelector(".track-title").textContent = track.name || "제목 없음";
   fragment.querySelector(".track-artist").textContent =
     track.artist || "아티스트 없음";
+  fragment.querySelector(".track-title").title = track.name || "제목 없음";
+  fragment.querySelector(".track-artist").title = track.artist || "아티스트 없음";
 
   const label = fragment.querySelector(".track-label");
   const labelText = track.label || (track.reason_tags || []).join(", ");
   label.textContent = labelText;
   label.hidden = !labelText;
+
+  const exposure = track.popularity;
+  if (Number.isFinite(exposure) && exposure >= 0 && exposure <= 100 &&
+      track.exposure_source && track.exposure_source !== "none") {
+    const evidence = document.createElement("div");
+    evidence.className = "track-evidence";
+    evidence.title = "이 요청의 같은 출처·비교 집단 안에서의 상대 노출도입니다. 절대 인지도나 재생수가 아니며, 다른 검색 결과와 비교할 수 없습니다.";
+    const caption = document.createElement("span");
+    caption.textContent = "상대 노출";
+    const meter = document.createElement("meter");
+    meter.min = 0;
+    meter.max = 100;
+    meter.value = exposure;
+    meter.setAttribute("aria-label", "후보군 내 상대 노출도");
+    const value = document.createElement("span");
+    value.textContent = String(Math.round(exposure));
+    evidence.append(caption, meter, value);
+    fragment.querySelector(".track-copy").append(evidence);
+  }
+
+  const rediscover = fragment.querySelector(".track-recommend");
+  if (track.name?.trim() && track.artist?.trim()) {
+    rediscover.setAttribute("aria-label", `${track.artist} - ${track.name}에서 다시 탐색`);
+    rediscover.addEventListener("click", () => {
+      if (requestPending) return;
+      queryInput.value = `${track.artist} - ${track.name}`;
+      if (queryInput.value.length > 200) {
+        setStatus("검색어는 200자 이내로 입력하세요.", true);
+        queryInput.focus();
+        return;
+      }
+      queryInput.focus();
+      void runRecommendation(queryInput.value);
+    });
+  } else rediscover.remove();
 
   // 검색 URL만 만든다. 행 전체를 링크로 만들지 않아 제목 선택과 스크롤을 막지
   // 않는다. 곡명이 없으면 검색어가 아티스트 하나로 뭉개지므로 명령을 뺀다.
@@ -315,6 +369,8 @@ function renderBucketPanel(bucket) {
   const fragment = bucketTemplate.content.cloneNode(true);
   const section = fragment.querySelector(".bucket");
   section.dataset.bucket = bucket.name;
+  bucketDescription.textContent = BUCKET_DESCRIPTIONS[bucket.name];
+  bucketDescription.hidden = false;
   // 패널은 하나뿐이므로 어느 탭이 이 내용을 설명하는지만 갱신한다.
   results.setAttribute("aria-labelledby", bucketTabId(bucket.name));
 
@@ -324,6 +380,9 @@ function renderBucketPanel(bucket) {
     exportButton.remove();
     fragment.querySelector(".bucket-empty").hidden = false;
   } else {
+    const requested = partitionExportableTracks(bucket.tracks).requested;
+    exportButton.querySelector(".export-button-label").textContent = `${requested}곡 플레이리스트로 내보내기`;
+    exportButton.setAttribute("aria-label", `${bucket.label} · ${requested}곡 플레이리스트로 내보내기`);
     exportButton.addEventListener("click", () => {
       // 매칭 검토를 닫은 뒤 이 버튼으로 포커스를 돌려주기 위해 기억한다.
       matchReviewOpener = exportButton;
@@ -338,6 +397,7 @@ function renderBucketPanel(bucket) {
   results.replaceChildren(fragment);
   // 탭을 옮겨 새로 그린 버튼도 진행 중인 내보내기 상태를 물려받아야 한다.
   applyExportDisabled();
+  results.querySelectorAll(".track-recommend").forEach((button) => { button.disabled = requestPending; });
 }
 
 function selectBucket(index, { focusTab = false } = {}) {
@@ -421,19 +481,23 @@ function renderSeedPreview(payload, apiBaseUrl) {
 
   if (!params) {
     seedPreview.hidden = true;
+    seedPlayButton.hidden = true;
     return;
   }
 
   // preload="none"이라 재생을 누를 때만 공급자 API를 호출한다.
   seedPreview.src = `${apiBaseUrl}/preview/stream?${params}`;
   seedPreview.hidden = false;
+  seedPlayButton.hidden = false;
 }
 
 function resetSeedMedia() {
+  seedPlaybackGeneration += 1;
   seedPreview.pause();
   seedPreview.removeAttribute("src");
   seedPreview.load();
   seedPreview.hidden = true;
+  seedPlayButton.hidden = true;
   seedPreviewNote.hidden = true;
   seedArt.removeAttribute("src");
   seedArt.hidden = true;
@@ -452,6 +516,7 @@ function renderResponse(payload, apiBaseUrl) {
   renderedBuckets = executedBuckets(payload.result);
   renderBucketTabs(renderedBuckets);
   if (renderedBuckets.length === 0) {
+    bucketDescription.hidden = true;
     results.replaceChildren();
     results.removeAttribute("aria-labelledby");
     return 0;
@@ -567,6 +632,7 @@ function updateMatchSelectionSummary() {
     selected > 0 && selected < checkboxes.length;
   youtubeMatchSelectAll.disabled = checkboxes.length === 0;
   youtubeMatchConfirm.disabled = selected === 0;
+  youtubeMatchConfirm.textContent = `${selected}곡으로 플레이리스트 만들기`;
 }
 
 function reviewYouTubeMatches(matches) {
@@ -624,6 +690,21 @@ function reviewYouTubeMatches(matches) {
         note.className = "match-note";
         note.textContent = "직접 확인 필요";
         meta.append(note);
+      }
+
+      if (/^[A-Za-z0-9_-]{11}$/.test(track.video_id || "")) {
+        const listen = document.createElement("a");
+        listen.className = "match-listen track-open";
+        listen.href = `https://music.youtube.com/watch?v=${track.video_id}`;
+        listen.target = "_blank";
+        listen.rel = "noopener noreferrer";
+        listen.title = "YouTube Music에서 매칭된 영상 듣기";
+        listen.setAttribute("aria-label", `${track.youtube_title} · YouTube Music에서 듣기`);
+        const icon = document.createElement("span");
+        icon.className = "icon icon-play";
+        icon.setAttribute("aria-hidden", "true");
+        listen.append(icon);
+        meta.append(listen);
       }
 
       target.append(targetTitle, targetChannel, meta);
@@ -692,6 +773,41 @@ seedPreview.addEventListener("error", () => {
 
 seedPreview.addEventListener("playing", () => {
   seedPreviewNote.hidden = true;
+});
+
+function syncSeedPlayback() {
+  const playing = !seedPreview.paused && !seedPreview.ended;
+  seedPlayButton.title = playing ? "미리 듣기 일시정지" : "미리 듣기";
+  seedPlayButton.setAttribute("aria-label", seedPlayButton.title);
+  seedPlayButton.querySelector(".icon").className = `icon ${playing ? "icon-pause" : "icon-play"}`;
+}
+for (const event of ["play", "playing", "pause", "ended", "emptied", "error"]) {
+  seedPreview.addEventListener(event, syncSeedPlayback);
+}
+seedPlayButton.addEventListener("click", async () => {
+  const source = seedPreview.getAttribute("src");
+  if (!source) return;
+  const generation = ++seedPlaybackGeneration;
+  if (!seedPreview.paused) { seedPreview.pause(); return; }
+  try { await seedPreview.play(); }
+  catch (error) {
+    // Pausing or replacing a source rejects play(); only the current attempt
+    // may report a real playback failure.
+    if (error?.name !== "AbortError" && generation === seedPlaybackGeneration &&
+        seedPreview.getAttribute("src") === source) {
+      seedPreviewNote.textContent = "미리 듣기를 불러오지 못했습니다.";
+      seedPreviewNote.hidden = false;
+    }
+  }
+});
+
+document.querySelectorAll("[data-query]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (requestPending) return;
+    queryInput.value = button.dataset.query;
+    queryInput.focus();
+    void runRecommendation(queryInput.value);
+  });
 });
 
 youtubeMatchSelectAll.addEventListener("change", () => {
@@ -962,12 +1078,13 @@ async function requestRecommendations(
 // 사용자가 할 수 있는 일이 없다.
 function setRequestPending(pending) {
   requestPending = pending;
-  submitButton.textContent = pending ? "취소" : "추천 요청";
+  submitButton.textContent = pending ? "취소" : "찾기";
   submitButton.classList.toggle("cancel-button", pending);
   // 요청 중 버튼은 폼 제출이 아니라 취소 명령이다. 사용자가 대기 중 검색어나
   // 백엔드 주소를 비워도 required/type 검증이 submit 이벤트를 막지 않게 한다.
   form.noValidate = pending;
   currentTrackButton.disabled = pending;
+  document.querySelectorAll(".track-recommend, [data-query]").forEach((button) => { button.disabled = pending; });
   results.setAttribute("aria-busy", String(pending));
   results.classList.toggle("is-loading", pending);
   applyExportDisabled();
@@ -1234,6 +1351,13 @@ let eqModeEdited = false;
 let lastEqState = null;
 let eqFailure = null;
 let eqFailureKey = null;
+const eqDetails = document.querySelector("#eqDetails");
+const eqDetailsToggle = document.querySelector("#eqDetailsToggle");
+eqDetailsToggle.addEventListener("click", () => { eqDetails.open = !eqDetails.open; });
+eqDetails.addEventListener("toggle", () => {
+  eqDetailsToggle.setAttribute("aria-expanded", String(eqDetails.open));
+  eqDetailsToggle.textContent = eqDetails.open ? "닫기" : "상세";
+});
 eqModes.forEach((input) => input.addEventListener("change", () => {
   eqModeEdited = true;
   eqFailure = null;
@@ -1258,6 +1382,36 @@ function showEqFailure(message, anchor = eqStateKey(lastEqState)) {
   eqFailure = message;
   eqFailureKey = anchor;
   eqTestStatus.textContent = message;
+  eqTestStatus.dataset.error = "true";
+}
+
+function eqIsEnabled(state) {
+  return Boolean(state?.capturing ?? state?.active) || state?.status === "awaiting_activation";
+}
+
+function renderEqBands(state) {
+  const bands = state?.capturing && Array.isArray(state.bands)
+    ? state.bands.filter((band) => Number.isFinite(band.frequency) && Number.isFinite(band.gain)) : [];
+  eqBands.replaceChildren(...bands.map(({ frequency, gain }) => {
+    const column = document.createElement("div");
+    const label = document.createElement("dt");
+    label.textContent = frequency >= 1000 ? `${frequency / 1000}k Hz` : `${frequency} Hz`;
+    const value = document.createElement("dd");
+    const db = Math.round(gain * 10) / 10;
+    value.textContent = `${db > 0 ? "+" : ""}${db} dB`;
+    const graph = document.createElement("span");
+    graph.className = "eq-band-graph";
+    graph.setAttribute("aria-hidden", "true");
+    const fill = document.createElement("span");
+    fill.className = db < 0 ? "eq-band-cut" : "eq-band-boost";
+    fill.style.height = `${Math.min(12, Math.abs(db)) / 12 * 50}%`;
+    graph.append(fill);
+    value.append(graph);
+    column.append(label, value);
+    return column;
+  }));
+  eqBands.hidden = bands.length === 0;
+  eqBandsEmpty.hidden = bands.length > 0;
 }
 
 function renderEqState(state) {
@@ -1272,9 +1426,15 @@ function renderEqState(state) {
   }
   lastEqState = state;
   eqTestStatus.textContent = eqFailure || eqStatusText(state);
+  eqTestStatus.dataset.error = String(Boolean(eqFailure || state?.error));
+  const enabled = eqIsEnabled(state);
+  eqTestButton.setAttribute("aria-checked", String(enabled));
+  eqTestButton.title = enabled ? "EQ 끄기" : "EQ 켜기";
+  renderEqBands(state);
   eqTrack.textContent = state?.track
     ? [state.track.title, state.track.artist].filter(Boolean).join(" - ") : "";
   eqTrack.hidden = !eqTrack.textContent;
+  eqNowPlaying.hidden = eqTrack.hidden;
   if (!eqModeEdited && ["auto", "test"].includes(state?.mode) &&
       (state.active || state.status === "awaiting_activation")) {
     for (const input of eqModes) input.checked = input.value === state.mode;
@@ -1301,14 +1461,20 @@ setInterval(() => { if (!document.hidden) void refreshEqState(); }, 3_000);
 
 function setEqBusy(busy) {
   eqBusy = busy;
-  if (busy) eqFailure = null;
+  if (busy) {
+    eqFailure = null;
+    eqTestStatus.dataset.error = "false";
+  }
   eqViewVersion += 1;
   eqTestButton.disabled = busy;
   eqStopButton.disabled = busy;
+  eqRetryButton.disabled = busy;
+  eqTestButton.setAttribute("aria-busy", String(busy));
   eqModes.forEach((input) => { input.disabled = busy; });
 }
 
-eqTestButton.addEventListener("click", async () => {
+async function applyEq() {
+  if (eqBusy) return;
   const mode = document.querySelector('input[name="eqMode"]:checked').value;
   setEqBusy(true);
 
@@ -1327,9 +1493,10 @@ eqTestButton.addEventListener("click", async () => {
   } finally {
     setEqBusy(false);
   }
-});
+}
 
-eqStopButton.addEventListener("click", async () => {
+async function disableEq() {
+  if (eqBusy) return;
   setEqBusy(true);
 
   try {
@@ -1343,4 +1510,8 @@ eqStopButton.addEventListener("click", async () => {
   } finally {
     setEqBusy(false);
   }
-});
+}
+
+eqTestButton.addEventListener("click", () => eqIsEnabled(lastEqState) ? disableEq() : applyEq());
+eqRetryButton.addEventListener("click", applyEq);
+eqStopButton.addEventListener("click", disableEq);

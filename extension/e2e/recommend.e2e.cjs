@@ -66,7 +66,7 @@ for (const { phase, readFails } of [
 
       if (phase === "completed") {
         releaseResponse();
-        await expect(page.locator("#submitButton")).toHaveText("추천 요청");
+        await expect(page.locator("#submitButton")).toHaveText("찾기");
       } else if (phase === "cancelled") {
         await page.locator("#submitButton").click();
         await expect(page.locator("#statusMessage")).toHaveText("추천 요청을 취소했습니다.");
@@ -86,7 +86,7 @@ for (const { phase, readFails } of [
         await expect(page.locator("#currentTrackButton")).toBeDisabled();
         releaseResponse();
         await expect(page.locator("#seedTitle")).toHaveText("Creep");
-        await expect(page.locator("#submitButton")).toHaveText("추천 요청");
+        await expect(page.locator("#submitButton")).toHaveText("찾기");
       }
       expect(requests).toEqual([query]);
     } catch (error) {
@@ -102,23 +102,32 @@ for (const { phase, readFails } of [
 for (const toggleSelector of ["#settingsToggle", "#settingsPanel > summary"]) {
   test(`manually reopened settings stay open after recommendation (${toggleSelector})`, async ({}, testInfo) => {
     const { context, page } = await launchExtensionPage(testInfo);
+    let release;
+    const responseGate = new Promise((resolve) => { release = resolve; });
     try {
       const apiBaseUrl = (await page.locator("#apiBaseUrl").inputValue()).replace(/\/+$/, "");
-      await page.route(`${apiBaseUrl}/recommend`, (route) => route.fulfill({
+      await page.route(`${apiBaseUrl}/recommend`, async (route) => {
+        await responseGate;
+        return route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify(recommendationPayload),
-      }));
+        });
+      });
       await page.locator("#backendAccessToken").fill(accessToken);
       await page.locator(toggleSelector).click();
       await expect(page.locator("#settingsPanel")).not.toHaveAttribute("open");
+      await page.locator("#query").fill(query);
+      const sent = page.waitForRequest(`${apiBaseUrl}/recommend`);
+      await page.locator("#submitButton").click();
+      await sent;
       await page.locator(toggleSelector).click();
       await expect(page.locator("#settingsPanel")).toHaveAttribute("open", "");
-      await page.locator("#query").fill(query);
-      await page.locator("#submitButton").click();
+      release();
       await expect(page.locator("#connectionBadge")).toHaveText("연결됨");
       await expect(page.locator("#settingsPanel")).toHaveAttribute("open", "");
     } finally {
+      release();
       await context.close();
     }
   });
@@ -142,7 +151,7 @@ test("current-track action reads the track and requests recommendations once", a
     });
     await page.locator("#currentTrackButton").click();
     await expect(page.locator("#seedTitle")).toHaveText("Creep");
-    await expect(page.locator("#submitButton")).toHaveText("추천 요청");
+    await expect(page.locator("#submitButton")).toHaveText("찾기");
     await expect(page.locator("#currentTrackButton")).toBeEnabled();
     await expect(page.locator("#query")).toHaveValue(query);
     expect(requests).toEqual([query]);
@@ -205,7 +214,7 @@ test("side panel sends an authenticated recommendation and renders it", async ({
     await expect(page.locator(".bucket-tab")).toHaveCount(3);
     await expect(
       page.locator('.bucket-tab[aria-selected="true"]'),
-    ).toContainText("유사한 곡");
+    ).toContainText("닮은 곡");
     await expect(page.locator(".track-title")).toHaveText("Karma Police");
 
     // 선택되지 않은 탭의 aria-controls도 실재하는 패널을 가리켜야 한다.
@@ -253,7 +262,7 @@ test("side panel sends an authenticated recommendation and renders it", async ({
     await page.locator('.bucket-tab[aria-selected="true"]').press("ArrowRight");
     await expect(
       page.locator('.bucket-tab[aria-selected="true"]'),
-    ).toContainText("숨겨진 곡");
+    ).toContainText("숨은 발견");
     await expect(page.locator(".track-title")).toHaveText("Lucky");
     expect(apiRequests.length).toBe(requestsBeforeOpen);
 
@@ -316,7 +325,7 @@ test("추천 요청을 취소하고 곧바로 다시 요청할 수 있다", asyn
     await expect(page.locator("#statusMessage")).toHaveText(
       "추천 요청을 취소했습니다.",
     );
-    await expect(page.locator("#submitButton")).toHaveText("추천 요청");
+    await expect(page.locator("#submitButton")).toHaveText("찾기");
     // 취소는 서버 상태에 대한 판단이 아니므로 연결 배지를 실패로 바꾸지 않는다.
     await expect(page.locator("#connectionBadge")).not.toHaveText("연결 실패");
 
@@ -437,7 +446,7 @@ test("새 추천 요청 중에는 이전 결과를 내보낼 수 없다", async 
     await expect(page.locator(".export-button")).toBeDisabled();
 
     releaseSecondRequest?.();
-    await expect(page.locator("#submitButton")).toHaveText("추천 요청");
+    await expect(page.locator("#submitButton")).toHaveText("찾기");
     await expect(page.locator(".export-button")).toBeEnabled();
   } catch (error) {
     await captureFailure(page, testInfo);

@@ -6,10 +6,17 @@
 // 그래서 "배열이 아님 = 실행하지 않은 방향", "빈 배열 = 실행했지만 0곡"이다.
 // 둘을 0곡으로 합치면 사용자가 알고리즘이 돌았는지 알 수 없어진다.
 export const BUCKET_LABELS = {
-  similar: "유사한 곡",
-  reverse: "저노출 유사곡",
+  similar: "닮은 곡",
+  reverse: "덜 알려진 닮은 곡",
   opposite: "반대 무드",
-  hidden: "숨겨진 곡",
+  hidden: "숨은 발견",
+};
+
+export const BUCKET_DESCRIPTIONS = {
+  similar: "곡 또는 태그의 연결점을 따라 찾은 추천입니다.",
+  reverse: "연관된 후보 중 상대적으로 덜 노출된 곡을 찾습니다.",
+  opposite: "입력한 분위기와 대비되는 태그에서 찾은 추천입니다.",
+  hidden: "연관된 아티스트나 태그에서 덜 노출된 곡을 발견합니다.",
 };
 
 export function executedBuckets(result) {
