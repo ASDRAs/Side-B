@@ -690,6 +690,21 @@ function reviewYouTubeMatches(matches) {
         meta.append(note);
       }
 
+      if (/^[A-Za-z0-9_-]{11}$/.test(track.video_id || "")) {
+        const listen = document.createElement("a");
+        listen.className = "match-listen track-open";
+        listen.href = `https://music.youtube.com/watch?v=${track.video_id}`;
+        listen.target = "_blank";
+        listen.rel = "noopener noreferrer";
+        listen.title = "YouTube Music에서 매칭된 영상 듣기";
+        listen.setAttribute("aria-label", `${track.youtube_title} · YouTube Music에서 듣기`);
+        const icon = document.createElement("span");
+        icon.className = "icon icon-play";
+        icon.setAttribute("aria-hidden", "true");
+        listen.append(icon);
+        meta.append(listen);
+      }
+
       target.append(targetTitle, targetChannel, meta);
     } else {
       const reason = document.createElement("span");
