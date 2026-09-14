@@ -83,13 +83,9 @@ export async function fetchYouTubeMatches(
   apiBaseUrl,
   bucketName,
   tracks,
-  exportToken,
   timeoutMs,
+  signal,
 ) {
-  const token = String(exportToken || "").trim();
-  if (!token) {
-    throw new Error("YouTube 내보내기 토큰을 입력하세요.");
-  }
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -98,10 +94,9 @@ export async function fetchYouTubeMatches(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Side-B-Export-Token": token,
       },
       body: JSON.stringify({ bucket: bucketName, tracks }),
-      signal: controller.signal,
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
     });
 
     if (!response.ok) {
@@ -114,7 +109,7 @@ export async function fetchYouTubeMatches(
       }
       throw new Error(message);
     }
-    return response.json();
+    return await response.json();
   } finally {
     clearTimeout(timeoutId);
   }

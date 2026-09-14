@@ -135,41 +135,50 @@
         <button id="settingsBack" class="secondary-button" type="button">추천으로 돌아가기</button>
 
         <div class="settings-body">
-          <label for="backendAccessToken">팀 백엔드 토큰</label>
-          <div class="token-row">
-            <input
-              id="backendAccessToken"
-              name="backendAccessToken"
-              type="password"
-              autocomplete="off"
-              aria-describedby="backendAccessTokenHelp"
-              placeholder="운영자에게 받은 토큰"
-            />
-            <button
-              id="tokenRevealButton"
-              class="secondary-button"
-              type="button"
-              aria-pressed="false"
-            >
-              보기
-            </button>
-          </div>
+          <section id="accountSettings" class="account-settings" hidden>
+            <span class="settings-label">Side-B 계정</span>
+            <p id="authStatus" class="token-state">로그인 상태 확인 중</p>
+            <p id="accountLabel" class="account-label" hidden></p>
+            <button id="signInButton" type="button">Google로 로그인</button>
+            <button id="signOutButton" class="secondary-button" type="button" hidden>로그아웃</button>
+          </section>
 
-          <p class="token-state">
-            <span id="tokenStatus">저장된 토큰 없음</span>
-            <button id="tokenClearButton" class="link-button" type="button" hidden>
-              삭제
-            </button>
-          </p>
+          <section id="legacyAuthSettings">
+            <label for="backendAccessToken">팀 백엔드 토큰</label>
+            <div class="token-row">
+              <input
+                id="backendAccessToken"
+                name="backendAccessToken"
+                type="password"
+                autocomplete="off"
+                aria-describedby="backendAccessTokenHelp"
+                placeholder="운영자에게 받은 토큰"
+              />
+              <button
+                id="tokenRevealButton"
+                class="secondary-button"
+                type="button"
+                aria-pressed="false"
+              >
+                보기
+              </button>
+            </div>
 
-          <details id="backendAccessTokenHelp" class="field-help">
-            <summary>이 토큰은 무엇인가요?</summary>
-            <p>
-              사용자별 Google 토큰이 아닙니다. Cloud Run의 SIDE_B_ACCESS_TOKEN과
-              같은 팀 공용 값을 입력하세요. 추천과 YouTube 검색을 함께
-              보호합니다.
+            <p class="token-state">
+              <span id="tokenStatus">저장된 토큰 없음</span>
+              <button id="tokenClearButton" class="link-button" type="button" hidden>
+                삭제
+              </button>
             </p>
-          </details>
+
+            <details id="backendAccessTokenHelp" class="field-help">
+              <summary>이 토큰은 무엇인가요?</summary>
+              <p>
+                기존 배포를 위한 이전 방식입니다. 추천과 YouTube 검색을 함께
+                보호합니다.
+              </p>
+            </details>
+          </section>
 
           <p class="token-state">
             <span id="historyStatus">검색 기록 없음</span>

@@ -15,13 +15,17 @@ import { getEqState, startEq, stopEq } from "./scripts/eq.js";
 import { eqStatusText } from "./scripts/eqView.js";
 import { createPlaylistDestination } from "./scripts/playlistDestination.js";
 import {
+  authenticatedFetch,
+  configureAuth,
+  signIn,
+  signOut,
+} from "./scripts/authClient.js";
+import {
   API_BASE_URL_STORAGE_VERSION,
   DEFAULT_API_BASE_URL,
   backendErrorMessage,
   previewQueryParams,
   apiErrorMessage,
-  recommendationHeaders,
-  requiresBackendAccessToken,
   resolveApiBaseUrlSetting,
 } from "./scripts/apiConfig.js";
 import {
@@ -78,6 +82,12 @@ const backendAccessTokenInput = document.querySelector("#backendAccessToken");
 const tokenRevealButton = document.querySelector("#tokenRevealButton");
 const tokenClearButton = document.querySelector("#tokenClearButton");
 const tokenStatus = document.querySelector("#tokenStatus");
+const accountSettings = document.querySelector("#accountSettings");
+const legacyAuthSettings = document.querySelector("#legacyAuthSettings");
+const authStatus = document.querySelector("#authStatus");
+const accountLabel = document.querySelector("#accountLabel");
+const signInButton = document.querySelector("#signInButton");
+const signOutButton = document.querySelector("#signOutButton");
 const historyClearButton = document.querySelector("#historyClearButton");
 const historyStatus = document.querySelector("#historyStatus");
 const queryHistory = document.querySelector("#queryHistory");
@@ -153,6 +163,9 @@ let settingsAutoOpened = false;
 // 저장소 읽기가 끝나기 전에 사용자가 설정을 직접 여닫았는지. 읽기가 늦게
 // 도착해 그 조작을 되돌리면 커서 아래에서 패널이 닫힌다.
 let settingsUserToggled = false;
+let authState = null;
+let authStateInitialized = false;
+let matchRequest = null;
 
 // 요청을 보내기 전에 발견한 문제. 서버에 닿아 본 적이 없으므로 연결 배지를
 // 실패로 바꾸면 안 된다. 사용자가 고칠 곳은 입력란이지 서버가 아니다.
@@ -274,8 +287,14 @@ function openSettingsForOnboarding() {
   if (settingsUserToggled) {
     return;
   }
-  settingsAutoOpened = !backendAccessTokenInput.value;
+  const needsManagedLogin = ["firebase", "dual"].includes(authState?.mode) && authState.status !== "signed_in";
+  const needsLegacyToken = authState?.mode === "legacy" && !backendAccessTokenInput.value;
+  settingsAutoOpened = needsManagedLogin || needsLegacyToken ||
+    authState?.status === "configuration_unavailable";
   settingsPanel.open = settingsAutoOpened;
+  if (needsManagedLogin || authState?.status === "configuration_unavailable") {
+    document.body.classList.add("settings-view");
+  }
 }
 
 function showView(view) {
@@ -287,6 +306,8 @@ function showView(view) {
 // 여기서 결과까지 지우면 취소나 실패 뒤에 빈 화면만 남는다. 추천 DOM 교체는
 // 새 응답을 받은 renderResponse가 맡는다.
 function invalidateExport() {
+  matchRequest?.abort();
+  matchRequest = null;
   youtubeExportGeneration += 1;
   resolveMatchReview(undefined);
   activeYouTubeOperationId = null;
@@ -644,6 +665,83 @@ function updateMatchSelectionSummary() {
   youtubeMatchConfirm.textContent = `다음 · ${selected}곡`;
 }
 
+function renderAuthState(state) {
+  const mode = state?.mode;
+  const managed = mode === "firebase" || mode === "dual";
+  accountSettings.hidden = !managed && state?.status !== "configuration_unavailable";
+  legacyAuthSettings.hidden = mode !== "legacy";
+  const statusText = {
+    initializing: "로그인 상태 확인 중",
+    signing_in: "Google 로그인 중",
+    signed_out: "로그인되지 않음",
+    signed_in: "로그인됨",
+    configuration_unavailable: "로그인 설정을 사용할 수 없음",
+    denied: "승인되지 않은 계정",
+    error: "로그인 상태 확인 실패",
+    legacy: state?.compatibility === "legacy_server" ? "이전 서버 호환 모드" : "이전 인증 모드",
+  }[state?.status] || "로그인 상태 확인 중";
+  authStatus.textContent = state?.error ? `${statusText}: ${state.error}` : statusText;
+  authStatus.dataset.error = String(["configuration_unavailable", "denied", "error"].includes(state?.status));
+  const account = state?.account;
+  accountLabel.textContent = account
+    ? [account.displayName, account.email].filter(Boolean).join(" · ")
+    : "";
+  accountLabel.hidden = !accountLabel.textContent;
+  signInButton.hidden = !managed || state?.status === "signed_in";
+  signInButton.disabled = state?.status === "signing_in" || state?.status === "initializing" ||
+    state?.status === "configuration_unavailable";
+  signOutButton.hidden = !["signed_in", "signing_in"].includes(state?.status);
+}
+
+async function ensureAuth(apiBaseUrl) {
+  const origin = new URL(apiBaseUrl).origin;
+  if (authState?.apiOrigin !== origin || authState?.status === "initializing") {
+    acceptAuthState(await configureAuth(apiBaseUrl));
+  }
+  return authState;
+}
+
+function clearAccountScopedState() {
+  recommendationIntent += 1;
+  activeRequest?.abort();
+  activeRequest = null;
+  setRequestPending(false);
+  setStatus("");
+  invalidateExport();
+  resetSeedMedia();
+  destinationPicker.reset("");
+  currentRecommendation = null;
+  renderedBuckets = [];
+  results.replaceChildren();
+  bucketTabs.replaceChildren();
+  bucketTabs.hidden = true;
+  bucketDescription.hidden = true;
+  seedSection.hidden = true;
+  showView("empty");
+  void removeLocal(["youtubeLastDestination"]);
+  void stopEq().catch(() => {});
+}
+
+function acceptAuthState(nextState) {
+  const previousGeneration = authState?.sessionGeneration;
+  authState = nextState;
+  renderAuthState(authState);
+  if (authStateInitialized && previousGeneration !== authState?.sessionGeneration) {
+    clearAccountScopedState();
+  }
+  authStateInitialized = true;
+}
+
+signInButton.addEventListener("click", async () => {
+  try { acceptAuthState(await signIn()); }
+  catch (error) { authStatus.textContent = error.message; }
+});
+signOutButton.addEventListener("click", async () => {
+  clearAccountScopedState();
+  try { acceptAuthState(await signOut()); }
+  catch (error) { authStatus.textContent = error.message; }
+});
+
 function reviewYouTubeMatches(matches, title) {
   destinationPicker.reset(title);
   showMatchStep();
@@ -887,14 +985,19 @@ async function requestYouTubeMatches(
   bucketName,
   tracks,
   exportToken,
+  signal,
 ) {
   return fetchYouTubeMatches(
-    fetch,
+    (url, init) => authenticatedFetch(fetch, url, init, {
+      apiBaseUrl,
+      legacyToken: exportToken,
+      legacyHeader: "X-Side-B-Export-Token",
+    }),
     apiBaseUrl,
     bucketName,
     tracks,
-    exportToken,
     REQUEST_TIMEOUT_MS,
+    signal,
   );
 }
 
@@ -932,18 +1035,21 @@ async function exportBucket(bucketName, tracks) {
       throw new Error("곡명과 아티스트가 있는 추천곡이 없습니다.");
     }
     const apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput.value);
+    await ensureAuth(apiBaseUrl);
     const exportToken = backendAccessTokenInput.value.trim();
-    if (!exportToken) {
+    if (authState?.mode === "legacy" && !exportToken) {
       openSettings();
       throw new Error("설정에서 팀 백엔드 토큰을 입력하세요.");
     }
     if (exportToken) await storeBackendAccessToken(exportToken);
     if (!isCurrentExport()) return;
+    matchRequest = new AbortController();
     const matches = await requestYouTubeMatches(
       apiBaseUrl,
       bucketName,
       exportable.valid,
       exportToken,
+      matchRequest.signal,
     );
     if (!isCurrentExport()) {
       return;
@@ -1102,11 +1208,14 @@ async function requestRecommendations(
   );
 
   try {
-    const response = await fetch(`${apiBaseUrl}/recommend`, {
+    const response = await authenticatedFetch(fetch, `${apiBaseUrl}/recommend`, {
       method: "POST",
-      headers: recommendationHeaders(accessToken),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, top_n: 10 }),
       signal: controller.signal,
+    }, {
+      apiBaseUrl,
+      legacyToken: accessToken,
     });
 
     if (!response.ok) {
@@ -1150,7 +1259,9 @@ function setRequestPending(pending) {
 // 첫 실행에서 우리가 연 설정만, 첫 추천이 성공한 뒤에 접는다. 토큰 입력 중에
 // 접으면 편집 중인 값과 포커스를 빼앗는다.
 function closeOnboardingSettings() {
-  if (settingsUserToggled || !settingsAutoOpened || !backendAccessTokenInput.value.trim()) {
+  const authenticated = authState?.status === "signed_in" ||
+    (authState?.mode === "legacy" && backendAccessTokenInput.value.trim());
+  if (settingsUserToggled || !settingsAutoOpened || !authenticated) {
     return;
   }
   settingsAutoOpened = false;
@@ -1177,7 +1288,9 @@ async function runRecommendation(query, loadingMessage) {
       throw new PreflightError("검색어를 입력하세요.");
     }
 
-    if (requiresBackendAccessToken(apiBaseUrl) && !accessToken) {
+    await ensureAuth(apiBaseUrl);
+    if (authState?.mode === "legacy" &&
+        !accessToken && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(apiBaseUrl).hostname)) {
       openSettings();
       throw new PreflightError("배포 백엔드 사용에는 팀 백엔드 토큰이 필요합니다.");
     }
@@ -1301,7 +1414,7 @@ currentTrackButton.addEventListener("click", async () => {
   await runRecommendation(query, `${query} 추천을 찾는 중입니다.`);
 });
 
-readLocal([
+const settingsReady = readLocal([
   "apiBaseUrl",
   "apiBaseUrlStorageVersion",
   ACCESS_TOKEN_KEY,
@@ -1334,6 +1447,8 @@ readLocal([
     queryInput.focus();
     // 복원한 검색어는 전체 선택해 바로 덮어쓸 수 있게 한다.
     queryInput.select();
+    await ensureAuth(apiBaseUrlInput.value);
+    openSettingsForOnboarding();
   })
   .catch(() => {
     apiBaseUrlInput.value = DEFAULT_API_BASE_URL;
@@ -1394,7 +1509,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 getYouTubeExportState()
-  .then((state) => {
+  .then(async (state) => {
+    await settingsReady;
+    if (authState?.mode !== "legacy" &&
+        !(authState?.status === "signed_in" && state?.ownerUid === authState.account?.uid)) return;
     activeYouTubeOperationId = state?.operationId || null;
     renderYouTubeExportState(state);
   })
@@ -1510,6 +1628,7 @@ async function refreshEqState() {
 }
 
 chrome.runtime.onMessage.addListener((message) => {
+  if (message.target === "auth-ui" && message.type === "AUTH_STATE_CHANGED") acceptAuthState(message.state);
   if (message.target === "eq-ui" && message.type === "EQ_STATE_UPDATED") renderEqState(message.state);
 });
 void refreshEqState();

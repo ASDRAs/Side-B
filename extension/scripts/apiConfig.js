@@ -110,7 +110,7 @@ export function backendErrorMessage(status, detail, retryAfter) {
   const message = String(detail || "").trim();
 
   if (status === 401 || status === 403) {
-    return `${message || "팀 백엔드 토큰이 올바르지 않습니다."} 설정에서 확인하세요.`;
+    return `${message || "인증 토큰이 올바르지 않습니다."} 설정에서 확인하세요.`;
   }
   if (status === 429) {
     return `${message || "요청이 너무 많습니다."} ${retryAfterSuffix(retryAfter)}`;
