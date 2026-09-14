@@ -24,12 +24,15 @@ chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 const MUSIC_TAB_URL_PATTERN = "https://music.youtube.com/*";
 const YOUTUBE_API_BASE_URL = "https://www.googleapis.com/youtube/v3";
+const YOUTUBE_OAUTH_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl";
 const YOUTUBE_EXPORT_STORAGE_KEY = "youtubeExport";
+const YOUTUBE_DESTINATION_KEY = "youtubeLastDestination";
 const MAX_YOUTUBE_RETRIES = 2;
 const MAX_YOUTUBE_RETRY_DELAY_MS = 30_000;
 const ACTIVE_YOUTUBE_EXPORT_STATES = new Set([
   "awaiting_auth",
   "creating_playlist",
+  "checking_playlist",
   "adding_items",
 ]);
 const YOUTUBE_QUOTA_REASONS = new Set([
@@ -133,6 +136,7 @@ async function getYouTubeAuthToken() {
   const result = await chrome.identity.getAuthToken({
     interactive: true,
     enableGranularPermissions: true,
+    scopes: [YOUTUBE_OAUTH_SCOPE],
   });
   const token = typeof result === "string" ? result : result?.token;
   if (!token) {
@@ -187,41 +191,58 @@ async function youtubeApiRequest(
   retryCount = 0,
   authRetried = false,
 ) {
-  if (!auth.token) {
-    auth.token = await getYouTubeAuthToken();
-  }
+  const controller = auth.deadline ? new AbortController() : null;
+  const budget = controller ? Math.min(20_000, auth.deadline - Date.now()) : 0;
+  if (controller && budget <= 0) throw new Error("YouTube 요청 시간이 초과되었습니다. 다시 시도하세요.");
+  const timer = controller ? setTimeout(() => controller.abort(), budget) : null;
+  try {
+    if (!auth.token) {
+      auth.token = await getYouTubeAuthToken();
+    }
 
-  const response = await fetch(`${YOUTUBE_API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init.headers,
-      Authorization: `Bearer ${auth.token}`,
-    },
-  });
+    const response = await fetch(`${YOUTUBE_API_BASE_URL}${path}`, {
+      ...init,
+      ...(controller ? { signal: controller.signal } : {}),
+      headers: {
+        "Content-Type": "application/json",
+        ...init.headers,
+        Authorization: `Bearer ${auth.token}`,
+      },
+    });
 
-  if (response.status === 401 && !authRetried) {
-    await chrome.identity.removeCachedAuthToken({ token: auth.token });
-    auth.token = null;
-    return youtubeApiRequest(path, init, auth, retryCount, true);
-  }
+    if (response.status === 401 && !authRetried) {
+      await chrome.identity.removeCachedAuthToken({ token: auth.token });
+      auth.token = await getYouTubeAuthToken();
+      if (auth.channelId && await youtubeChannelId({ token: auth.token, deadline: auth.deadline }) !== auth.channelId) {
+        throw new Error("Google 계정이 변경되었습니다. 저장 위치를 다시 선택하세요.");
+      }
+      return youtubeApiRequest(path, init, auth, retryCount, true);
+    }
 
-  if (
-    (response.status === 429 || response.status >= 500) &&
-    retryCount < MAX_YOUTUBE_RETRIES
-  ) {
-    const retryDelay = retryDelayMilliseconds(response, retryCount);
-    if (retryDelay > MAX_YOUTUBE_RETRY_DELAY_MS) {
+    // An append may have committed despite a failed response. Do not blindly repeat writes.
+    if (
+      (response.status === 429 || response.status >= 500) &&
+      retryCount < MAX_YOUTUBE_RETRIES &&
+      !(auth.append && init.method === "POST")
+    ) {
+      const retryDelay = retryDelayMilliseconds(response, retryCount);
+      if (retryDelay > MAX_YOUTUBE_RETRY_DELAY_MS) {
+        throw await readYouTubeError(response);
+      }
+      await sleep(retryDelay);
+      return youtubeApiRequest(path, init, auth, retryCount + 1, authRetried);
+    }
+
+    if (!response.ok) {
       throw await readYouTubeError(response);
     }
-    await sleep(retryDelay);
-    return youtubeApiRequest(path, init, auth, retryCount + 1, authRetried);
+    return await response.json();
+  } catch (error) {
+    if (controller?.signal.aborted) throw new Error("YouTube 요청 시간이 초과되었습니다. 다시 시도하세요.");
+    throw error;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
-
-  if (!response.ok) {
-    throw await readYouTubeError(response);
-  }
-  return response.json();
 }
 
 async function storeYouTubeExportState(state) {
@@ -247,6 +268,15 @@ async function getYouTubeExportState() {
 }
 
 function normalizeExportPayload(payload) {
+  const destination = payload?.destination || { mode: "create" };
+  if (!["create", "append"].includes(destination.mode)) {
+    throw new Error("저장 방식을 다시 선택하세요.");
+  }
+  if (destination.mode === "append" &&
+      (!/^PL[A-Za-z0-9_-]+$/.test(destination.playlistId || "") ||
+       !/^[A-Za-z0-9_-]+$/.test(destination.channelId || ""))) {
+    throw new Error("내 플레이리스트에서 저장 위치를 선택하세요.");
+  }
   const title = String(payload?.title || "").trim().slice(0, 150);
   const description = String(payload?.description || "").trim().slice(0, 5000);
   const bucket = String(payload?.bucket || "").trim();
@@ -285,6 +315,7 @@ function normalizeExportPayload(payload) {
     throw new Error("플레이리스트에 추가할 곡이 없습니다.");
   }
   return {
+    destination,
     title,
     operationId,
     description,
@@ -295,6 +326,68 @@ function normalizeExportPayload(payload) {
     skipped,
     items: normalizedItems,
   };
+}
+
+async function youtubeChannelId(auth) {
+  const result = await youtubeApiRequest("/channels?part=id&mine=true", { method: "GET" }, auth);
+  const id = result.items?.[0]?.id;
+  if (!id) throw new Error("YouTube 채널을 확인할 수 없습니다. Google 계정을 확인하세요.");
+  return id;
+}
+
+async function listYouTubePlaylists() {
+  const auth = { token: await getYouTubeAuthToken(), deadline: Date.now() + 90_000 };
+  auth.channelId = await youtubeChannelId(auth);
+  const playlists = [];
+  const seenPages = new Set();
+  let pageToken = "";
+  do {
+    if (seenPages.has(pageToken) || seenPages.size >= 100) {
+      throw new Error("플레이리스트 목록을 모두 불러오지 못했습니다. 다시 시도하세요.");
+    }
+    seenPages.add(pageToken);
+    const result = await youtubeApiRequest(
+      `/playlists?part=snippet,contentDetails&mine=true&maxResults=50&pageToken=${encodeURIComponent(pageToken)}`,
+      { method: "GET" }, auth,
+    );
+    if (!Array.isArray(result.items)) throw new Error("플레이리스트 목록 응답이 올바르지 않습니다.");
+    for (const item of result.items) {
+      if (/^PL[A-Za-z0-9_-]+$/.test(item.id || "") && item.snippet?.channelId === auth.channelId) {
+        playlists.push({ id: item.id, title: String(item.snippet.title || "제목 없음"), count: item.contentDetails?.itemCount || 0 });
+      }
+    }
+    pageToken = result.nextPageToken || "";
+  } while (pageToken);
+  const stored = (await chrome.storage.local.get(YOUTUBE_DESTINATION_KEY))[YOUTUBE_DESTINATION_KEY];
+  return {
+    ok: true, channelId: auth.channelId, playlists,
+    recentId: stored?.channelId === auth.channelId && playlists.some((p) => p.id === stored.playlistId)
+      ? stored.playlistId : null,
+  };
+}
+
+async function confirmAppendPlaylist(auth, destination) {
+  auth.channelId = await youtubeChannelId(auth);
+  if (auth.channelId !== destination.channelId) {
+    throw new Error("Google 계정이 변경되었습니다. 저장 위치를 다시 선택하세요.");
+  }
+  const result = await youtubeApiRequest(
+    `/playlists?part=snippet&id=${encodeURIComponent(destination.playlistId)}`, { method: "GET" }, auth,
+  );
+  const playlist = result.items?.find((item) => item.id === destination.playlistId);
+  if (!playlist || playlist.snippet?.channelId !== auth.channelId) {
+    throw new Error("플레이리스트가 삭제되었거나 내 계정의 목록이 아닙니다. 저장 위치를 다시 선택하세요.");
+  }
+  return playlist;
+}
+
+async function playlistContainsVideo(auth, playlistId, videoId) {
+  const result = await youtubeApiRequest(
+    `/playlistItems?part=id&playlistId=${encodeURIComponent(playlistId)}&videoId=${encodeURIComponent(videoId)}&maxResults=1`,
+    { method: "GET" }, auth,
+  );
+  if (!Array.isArray(result.items)) throw new Error("기존 곡을 확인하지 못했습니다. 다시 시도하세요.");
+  return result.items.length > 0;
 }
 
 async function insertYouTubePlaylist(auth, title, description) {
@@ -332,13 +425,13 @@ async function insertYouTubePlaylistItem(auth, playlistId, videoId) {
 
 function publicYouTubeError(error) {
   if (!(error instanceof YouTubeApiError)) {
-    return error?.message || "YouTube 플레이리스트 생성에 실패했습니다.";
+    return error?.message || "YouTube 플레이리스트 저장에 실패했습니다.";
   }
   if (YOUTUBE_QUOTA_REASONS.has(error.reason) || error.status === 429) {
     return "YouTube API 할당량이 소진되었습니다.";
   }
   if (error.reason === "playlistForbidden") {
-    return "이 계정에서는 YouTube 플레이리스트를 만들 수 없습니다.";
+    return "이 계정에서는 해당 플레이리스트를 변경할 수 없습니다.";
   }
   return error.message;
 }
@@ -358,12 +451,14 @@ function shouldStopAddingItems(error) {
 
 async function createYouTubePlaylist(payload) {
   if (youtubeExportInProgress) {
-    throw new Error("이미 YouTube 플레이리스트를 생성하고 있습니다.");
+    throw new Error("이미 YouTube 플레이리스트를 저장하고 있습니다.");
   }
 
   const input = normalizeExportPayload(payload);
   youtubeExportInProgress = true;
   const auth = { token: null };
+  const appending = input.destination.mode === "append";
+  auth.append = appending;
   let state = {
     status: "awaiting_auth",
     operationId: input.operationId,
@@ -375,6 +470,8 @@ async function createYouTubePlaylist(payload) {
     toAdd: input.items.length,
     skipped: input.skipped,
     added: 0,
+    existing: 0,
+    destinationMode: input.destination.mode,
     failed: [],
     playlistId: null,
     youtubeUrl: null,
@@ -384,16 +481,15 @@ async function createYouTubePlaylist(payload) {
   try {
     await storeYouTubeExportState(state);
     auth.token = await getYouTubeAuthToken();
+    if (appending) auth.deadline = Date.now() + 180_000;
     state = await storeYouTubeExportState({
       ...state,
-      status: "creating_playlist",
+      status: appending ? "checking_playlist" : "creating_playlist",
     });
 
-    const playlist = await insertYouTubePlaylist(
-      auth,
-      input.title,
-      input.description,
-    );
+    const playlist = appending
+      ? await confirmAppendPlaylist(auth, input.destination)
+      : await insertYouTubePlaylist(auth, input.title, input.description);
     const playlistId = String(playlist?.id || "");
     if (!playlistId) {
       throw new Error("YouTube가 플레이리스트 ID를 반환하지 않았습니다.");
@@ -401,13 +497,30 @@ async function createYouTubePlaylist(payload) {
 
     state = await storeYouTubeExportState({
       ...state,
-      status: "adding_items",
+      status: appending ? "checking_playlist" : "adding_items",
+      title: appending ? playlist.snippet.title : input.title,
       playlistId,
       youtubeUrl: `https://www.youtube.com/playlist?list=${playlistId}`,
       youtubeMusicUrl: `https://music.youtube.com/playlist?list=${playlistId}`,
     });
 
-    for (const [index, item] of input.items.entries()) {
+    const items = [];
+    for (const item of input.items) {
+      if (appending && input.destination.skipExisting !== false &&
+          await playlistContainsVideo(auth, playlistId, item.videoId)) state.existing += 1;
+      else items.push(item);
+    }
+    state.toAdd = items.length;
+    state.status = "adding_items";
+    await storeYouTubeExportState(state);
+    if (appending) {
+      await chrome.storage.local.set({ [YOUTUBE_DESTINATION_KEY]: {
+        mode: "append", playlistId, channelId: auth.channelId,
+      } });
+    } else {
+      await chrome.storage.local.set({ [YOUTUBE_DESTINATION_KEY]: { mode: "create" } });
+    }
+    for (const [index, item] of items.entries()) {
       try {
         await insertYouTubePlaylistItem(auth, playlistId, item.videoId);
         state.added += 1;
@@ -419,8 +532,8 @@ async function createYouTubePlaylist(payload) {
           artist: item.artist,
           error: message,
         });
-        if (shouldStopAddingItems(error)) {
-          for (const remaining of input.items.slice(index + 1)) {
+        if (shouldStopAddingItems(error) || (appending && !(error instanceof YouTubeApiError))) {
+          for (const remaining of items.slice(index + 1)) {
             state.failed.push({
               videoId: remaining.videoId,
               name: remaining.name,
@@ -435,7 +548,7 @@ async function createYouTubePlaylist(payload) {
       state = await storeYouTubeExportState(state);
     }
 
-    if (state.added === 0) {
+    if (state.added === 0 && (state.existing === 0 || state.failed.length > 0)) {
       state = await storeYouTubeExportState({
         ...state,
         status: "error",
@@ -495,6 +608,9 @@ async function handleMessage(message, sender) {
 
     case "CREATE_YOUTUBE_PLAYLIST":
       return createYouTubePlaylist(message.payload);
+
+    case "LIST_YOUTUBE_PLAYLISTS":
+      return listYouTubePlaylists();
 
     case "GET_YOUTUBE_EXPORT_STATE":
       return {

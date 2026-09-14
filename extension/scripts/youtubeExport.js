@@ -18,6 +18,10 @@ export async function createYouTubePlaylist(payload) {
   });
 }
 
+export async function listYouTubePlaylists() {
+  return sendYouTubeExportMessage({ type: "LIST_YOUTUBE_PLAYLISTS" });
+}
+
 export async function getYouTubeExportState() {
   const response = await sendYouTubeExportMessage({
     type: "GET_YOUTUBE_EXPORT_STATE",

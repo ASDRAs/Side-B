@@ -1180,6 +1180,19 @@ label,
   padding: 12px 14px;
 }
 
+.match-review-actions:has(#youtubeMatchBack:not([hidden])) { grid-template-columns: auto auto minmax(0, 1fr); }
+.match-review-actions button { height: auto; min-height: 36px; padding: 8px 10px; overflow-wrap: anywhere; }
+.playlist-destination { flex: 1; overflow-y: auto; padding: 16px 14px; min-height: 0; }
+.destination-modes { display: flex; margin: 0 0 20px; padding: 0; border: 1px solid var(--border-strong); border-radius: 6px; }
+.destination-modes label { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 4px; cursor: pointer; }
+.destination-modes label:has(:checked) { background: var(--surface-sunken); color: var(--accent); font-weight: 700; }
+.playlist-search { display: grid; grid-template-columns: minmax(0, 1fr) 36px; gap: 6px; }
+.playlist-option { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.playlist-option span { overflow-wrap: anywhere; }
+.playlist-option small { color: var(--text-muted); }
+.playlist-skip { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+.playlist-destination input[type="radio"], .playlist-destination input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+
 .empty-description, .discovery-caption, .bucket-description {
   font-size: 12px;
   line-height: 1.6;

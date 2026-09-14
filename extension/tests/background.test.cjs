@@ -99,11 +99,12 @@ function loadBackground(responses, options = {}) {
     setTimeout: options.setTimeout || setTimeout,
     clearTimeout,
     URL,
+    AbortController,
     fetch: async (url, init) => {
       fetchCalls.push({ url, init });
       const next = responses.shift();
       assert.ok(next, `Unexpected fetch: ${url}`);
-      return next;
+      return typeof next === "function" ? next(url, init) : next;
     },
   });
   context.importScripts = (...files) => {
@@ -146,6 +147,143 @@ function exportPayload(items = [
     items,
   };
 }
+
+function appendPayload(skipExisting = true) {
+  return { ...exportPayload(), destination: {
+    mode: "append", playlistId: "PLfixture", channelId: "UCfixture", skipExisting,
+  } };
+}
+const ownerResponse = (id = "UCfixture") => response(200, { items: [{ id }] });
+const targetPlaylist = { id: "PLfixture", snippet: { channelId: "UCfixture", title: "Saved tracks" } };
+const targetResponse = () => response(200, { items: [targetPlaylist] });
+
+test("append checks ownership, skips existing videos and never creates a playlist", async () => {
+  const h = loadBackground([ownerResponse(), targetResponse(),
+    response(200, { items: [{ id: "existing" }] }), response(200, { items: [] }),
+    response(200, { id: "inserted" }),
+  ]);
+  const { state, ok } = await h.context.createYouTubePlaylist(appendPayload());
+  assert.equal(ok, true);
+  assert.equal(state.status, "completed");
+  assert.equal(state.existing, 1);
+  assert.equal(state.added, 1);
+  assert.equal(state.toAdd, 1);
+  assert.equal(state.title, "Saved tracks");
+  const writes = h.fetchCalls.filter((c) => c.init.method === "POST");
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].url, /\/playlistItems\?/);
+  assert.equal(JSON.parse(writes[0].init.body).snippet.resourceId.videoId, "video-2");
+  assert.match(h.fetchCalls[2].url, /videoId=video-1&maxResults=1/);
+  assert.equal(h.storage.youtubeLastDestination.channelId, "UCfixture");
+});
+
+test("all existing videos complete successfully without any writes", async () => {
+  const h = loadBackground([ownerResponse(), targetResponse(),
+    response(200, { items: [{ id: "a" }] }), response(200, { items: [{ id: "b" }] }),
+  ]);
+  const result = await h.context.createYouTubePlaylist(appendPayload());
+  assert.equal(result.ok, true);
+  assert.equal(result.state.status, "completed");
+  assert.deepEqual(Array.from(h.authCalls[0].scopes), ["https://www.googleapis.com/auth/youtube.force-ssl"]);
+  assert.equal(result.state.added, 0);
+  assert.equal(result.state.existing, 2);
+  assert.equal(h.fetchCalls.filter((c) => c.init.method === "POST").length, 0);
+});
+
+test("explicitly allowing repeats bypasses existing-video queries", async () => {
+  const h = loadBackground([ownerResponse(), targetResponse(), response(200, { id: "a" }), response(200, { id: "b" })]);
+  const { state } = await h.context.createYouTubePlaylist(appendPayload(false));
+  assert.equal(state.added, 2);
+  assert.equal(state.existing, 0);
+  assert.equal(h.fetchCalls.length, 4);
+});
+
+test("changed account, deleted and foreign playlists fail before any writes", async () => {
+  for (const responses of [
+    [ownerResponse("UCother")],
+    [ownerResponse(), response(200, { items: [] })],
+    [ownerResponse(), response(200, { items: [{ ...targetPlaylist, snippet: { channelId: "UCother" } }] })],
+  ]) {
+    const h = loadBackground(responses);
+    await assert.rejects(h.context.createYouTubePlaylist(appendPayload()));
+    assert.equal(h.fetchCalls.filter((c) => c.init.method === "POST").length, 0);
+    assert.equal(h.storage.youtubeLastDestination, undefined);
+  }
+});
+
+test("unusable duplicate-check response never means an empty playlist", async () => {
+  const h = loadBackground([ownerResponse(), targetResponse(), response(200, {})]);
+  await assert.rejects(h.context.createYouTubePlaylist(appendPayload()));
+  assert.equal(h.fetchCalls.filter((c) => c.init.method === "POST").length, 0);
+});
+
+test("playlist catalog paginates, filters ownership and restores channel-scoped destination", async () => {
+  const h = loadBackground([ownerResponse(), response(200, {
+    items: [targetPlaylist, { id: "LLspecial", snippet: { channelId: "UCfixture" } }], nextPageToken: "next page",
+  }), response(200, { items: [
+    { id: "PLsecond", snippet: { title: "Second", channelId: "UCfixture" }, contentDetails: { itemCount: 5000 } },
+    { id: "PLforeign", snippet: { channelId: "UCother" } },
+  ] })], { storage: { youtubeLastDestination: { mode: "append", channelId: "UCfixture", playlistId: "PLfixture" } } });
+  const result = await h.context.listYouTubePlaylists();
+  assert.equal(result.playlists.length, 2);
+  assert.equal(result.playlists[1].count, 5000);
+  assert.equal(result.recentId, "PLfixture");
+  assert.match(h.fetchCalls[2].url, /pageToken=next%20page/);
+  const other = loadBackground([ownerResponse(), targetResponse()], {
+    storage: { youtubeLastDestination: { channelId: "UCother", playlistId: "PLfixture" } },
+  });
+  assert.equal((await other.context.listYouTubePlaylists()).recentId, null);
+});
+
+test("catalog rejects repeated page tokens instead of returning a partial catalog", async () => {
+  const h = loadBackground([ownerResponse(), response(200, { items: [], nextPageToken: "a" }), response(200, { items: [], nextPageToken: "a" })]);
+  await assert.rejects(h.context.listYouTubePlaylists());
+  assert.equal(h.fetchCalls.length, 3);
+});
+
+test("append does not retry ambiguous inserts and preserves partial success", async () => {
+  const h = loadBackground([ownerResponse(), targetResponse(),
+    response(200, { id: "a" }), response(503, { error: { message: "Unavailable" } }),
+  ]);
+  const { state } = await h.context.createYouTubePlaylist(appendPayload(false));
+  assert.equal(state.status, "partial");
+  assert.equal(state.added, 1);
+  assert.equal(state.failed.length, 1);
+  assert.equal(h.fetchCalls.filter((c) => c.init.method === "POST").length, 2);
+});
+
+test("account change during token refresh stops all remaining append writes", async () => {
+  const h = loadBackground([ownerResponse(), targetResponse(), response(401, {}), ownerResponse("UCother")]);
+  const { state } = await h.context.createYouTubePlaylist(appendPayload(false));
+  assert.equal(state.status, "error");
+  assert.equal(state.failed.length, 2);
+  assert.match(state.failed[0].error, /계정이 변경/);
+  assert.equal(h.fetchCalls.filter((c) => c.init.method === "POST").length, 1);
+  assert.equal(h.removedTokens.length, 1);
+});
+
+test("invalid append destination is rejected before OAuth", async () => {
+  const h = loadBackground([]);
+  await assert.rejects(h.context.createYouTubePlaylist({ ...appendPayload(), destination: { mode: "append", playlistId: "https://example.com" } }));
+  assert.equal(h.authCalls.length, 0);
+});
+
+test("catalog HTTP requests abort at the per-request budget", async () => {
+  const delays = [];
+  const h = loadBackground([(_url, init) => new Promise((resolve, reject) => {
+    init.signal.addEventListener("abort", () => reject(new Error("Aborted")), { once: true });
+  })], { setTimeout(callback, delay) { delays.push(delay); return setTimeout(callback, 0); } });
+  await assert.rejects(h.context.listYouTubePlaylists(), /요청 시간이 초과/);
+  assert.deepEqual(delays, [20_000]);
+});
+
+test("append network failure stops without sending remaining writes", async () => {
+  const h = loadBackground([ownerResponse(), targetResponse(), () => { throw new Error("Network disconnected"); }]);
+  const { state } = await h.context.createYouTubePlaylist(appendPayload(false));
+  assert.equal(state.status, "error");
+  assert.equal(state.failed.length, 2);
+  assert.equal(h.fetchCalls.filter((c) => c.init.method === "POST").length, 1);
+});
 
 test("creates a private playlist and inserts items serially", async () => {
   const harness = loadBackground([
