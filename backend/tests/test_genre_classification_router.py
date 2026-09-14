@@ -5,7 +5,11 @@ import pytest
 from fastapi import FastAPI
 
 from app.routers.genre_classification import router
-from app.services.access import BackendAccess
+from app.services.auth import (
+    AuthenticationService,
+    FeatureRateLimiter,
+    FirebaseTokenVerifier,
+)
 from app.services.inference_client import InferenceClient
 from app.utils.preview_audio import PreviewBytes, PreviewNotFoundError
 
@@ -59,8 +63,15 @@ def make_app(http, url="http://localhost:8082", limit=6):
         gemini_api_key="test-key", gemini_model="gemini-2.5-flash"
     )
     app.state.genre_inference = InferenceClient(http, url, use_iam=False)
-    app.state.recommend_access = BackendAccess("team-token")
-    app.state.genre_access = BackendAccess("team-token", requests_per_minute=limit)
+    app.state.auth_service = AuthenticationService(
+        mode="legacy",
+        legacy_token="team-token",
+        firebase_verifier=FirebaseTokenVerifier(""),
+    )
+    app.state.feature_rate_limiter = FeatureRateLimiter(
+        user_limits={"recommend": 6, "genre": limit, "youtube_export": 6},
+        aggregate_limits={"recommend": 30, "genre": 30, "youtube_export": 30},
+    )
     return app
 
 
@@ -103,7 +114,6 @@ async def test_genre_rate_limit_does_not_consume_the_recommend_budget(monkeypatc
         "app.services.genre_classification_service.load_track_preview_bytes", miss
     )
     async with main.app.router.lifespan_context(main.app):
-        assert main.app.state.genre_access is not main.app.state.recommend_access
         assert (await _post(main.app)).status_code == 404
         assert (await _post(main.app)).status_code == 429
         async with httpx.AsyncClient(

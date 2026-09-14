@@ -11,7 +11,12 @@ from app.llm.llm_response import (
     MusicQueryAnalysis,
 )
 from app.routers.recommend import RecommendRequest, RecommendResponse, recommend
-from app.services.access import BackendAccess
+from app.services.auth import (
+    AuthenticationService,
+    FeatureRateLimiter,
+    FirebaseTokenVerifier,
+    authorize_recommend,
+)
 from app.services.recommend_service import (
     _pick_representative_track,
     _run_direct_recommendations,
@@ -35,11 +40,23 @@ def test_http_client_request_urls_are_not_logged_at_info_level():
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
 
 
-def _recommend_request(access):
+def _recommend_request(token="team-token", limit=6, unauthenticated=False):
+    auth_service = AuthenticationService(
+        mode="legacy",
+        legacy_token=token,
+        firebase_verifier=FirebaseTokenVerifier(""),
+        unauthenticated_legacy_features=(
+            frozenset({"recommend"}) if unauthenticated else frozenset()
+        ),
+    )
     return SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(
-                recommend_access=access,
+                auth_service=auth_service,
+                feature_rate_limiter=FeatureRateLimiter(
+                    user_limits={"recommend": limit},
+                    aggregate_limits={"recommend": max(limit, 10)},
+                ),
                 http=None,
                 lastfm_pylast=None,
             )
@@ -49,13 +66,13 @@ def _recommend_request(access):
 
 async def test_recommend_requires_valid_team_token(monkeypatch):
     monkeypatch.setattr("app.routers.recommend.get_settings", lambda: SimpleNamespace())
-    request = _recommend_request(BackendAccess("team-token"))
+    request = _recommend_request()
 
     with pytest.raises(HTTPException) as exc_info:
-        await recommend(RecommendRequest(query="Radiohead Creep"), request, None)
+        await authorize_recommend(request, None, None)
 
     assert exc_info.value.status_code == 401
-    assert exc_info.value.detail["code"] == "recommend_unauthorized"
+    assert exc_info.value.detail["code"] == "auth_unauthorized"
 
 
 async def test_recommend_uses_separate_request_limit(monkeypatch):
@@ -69,13 +86,12 @@ async def test_recommend_uses_separate_request_limit(monkeypatch):
 
     monkeypatch.setattr("app.routers.recommend.run_recommend", fake_run_recommend)
     monkeypatch.setattr("app.routers.recommend.get_settings", lambda: SimpleNamespace())
-    request = _recommend_request(BackendAccess("team-token", requests_per_minute=1))
+    request = _recommend_request(limit=1)
 
-    await recommend(RecommendRequest(query="Radiohead Creep"), request, "team-token")
+    user = await authorize_recommend(request, None, "team-token")
+    await recommend(RecommendRequest(query="Radiohead Creep"), request, user)
     with pytest.raises(HTTPException) as exc_info:
-        await recommend(
-            RecommendRequest(query="Radiohead Creep"), request, "team-token"
-        )
+        await authorize_recommend(request, None, "team-token")
 
     assert exc_info.value.status_code == 429
     assert exc_info.value.headers == {"Retry-After": "60"}
@@ -95,7 +111,7 @@ async def test_local_recommend_can_explicitly_bypass_access_gate(monkeypatch):
 
     response = await recommend(
         RecommendRequest(query="Radiohead Creep"),
-        _recommend_request(None),
+        _recommend_request(token=None, unauthenticated=True),
         None,
     )
 

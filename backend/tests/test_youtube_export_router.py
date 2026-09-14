@@ -7,7 +7,12 @@ from pydantic import ValidationError
 
 from app.routers.youtube_export import match_youtube_tracks
 from app.schemas.youtube_export import YouTubeMatchRequest
-from app.services.access import BackendAccess
+from app.services.auth import (
+    AuthenticationService,
+    FeatureRateLimiter,
+    FirebaseTokenVerifier,
+    authorize_youtube_export,
+)
 from app.services.youtube.client import (
     YouTubeConfigurationError,
     YouTubeQuotaExceededError,
@@ -30,11 +35,20 @@ class _Matcher:
 
 
 def _request(matcher):
+    auth_service = AuthenticationService(
+        mode="legacy",
+        legacy_token="test-token",
+        firebase_verifier=FirebaseTokenVerifier(""),
+    )
     return SimpleNamespace(
         app=SimpleNamespace(
             state=SimpleNamespace(
                 youtube_matcher=matcher,
-                youtube_export_access=BackendAccess("test-token"),
+                auth_service=auth_service,
+                feature_rate_limiter=FeatureRateLimiter(
+                    user_limits={"youtube_export": 6},
+                    aggregate_limits={"youtube_export": 30},
+                ),
             )
         )
     )
@@ -227,27 +241,30 @@ async def test_router_rejects_missing_or_invalid_export_token():
 
     for token in (None, "wrong-token"):
         with pytest.raises(HTTPException) as exc_info:
-            await match_youtube_tracks(req, _request(matcher), token)
+            await authorize_youtube_export(_request(matcher), None, token)
         assert exc_info.value.status_code == 401
-        assert exc_info.value.detail["code"] == "youtube_export_unauthorized"
+        assert exc_info.value.detail["code"] == "auth_unauthorized"
     assert matcher.calls == []
 
 
 async def test_router_rate_limits_authenticated_export_requests():
-    access = BackendAccess("test-token", requests_per_minute=1)
     matcher = _Matcher(
         {("Hello", "Adele"): MatchOutcome(match=None, reason="not_found")}
     )
     request = _request(matcher)
-    request.app.state.youtube_export_access = access
+    request.app.state.feature_rate_limiter = FeatureRateLimiter(
+        user_limits={"youtube_export": 1},
+        aggregate_limits={"youtube_export": 10},
+    )
     req = YouTubeMatchRequest(
         bucket="hidden",
         tracks=[{"name": "Hello", "artist": "Adele"}],
     )
 
-    await match_youtube_tracks(req, request, "test-token")
+    user = await authorize_youtube_export(request, None, "test-token")
+    await match_youtube_tracks(req, request, user)
     with pytest.raises(HTTPException) as exc_info:
-        await match_youtube_tracks(req, request, "test-token")
+        await authorize_youtube_export(request, None, "test-token")
 
     assert exc_info.value.status_code == 429
     assert exc_info.value.headers["Retry-After"] == "60"

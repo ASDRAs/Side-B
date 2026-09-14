@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,17 +41,63 @@ class Settings(BaseSettings):
             "YOUTUBE_EXPORT_TOKEN",
         ),
     )
+    auth_mode: Literal["legacy", "dual", "firebase"] = Field(
+        default="legacy",
+        validation_alias="SIDE_B_AUTH_MODE",
+    )
+    firebase_project_id: str = Field(
+        default="",
+        validation_alias="FIREBASE_PROJECT_ID",
+    )
+    firebase_allowed_uids: str = Field(
+        default="",
+        validation_alias="FIREBASE_ALLOWED_UIDS",
+    )
+    firebase_allowed_emails: str = Field(
+        default="",
+        validation_alias="FIREBASE_ALLOWED_EMAILS",
+    )
+    firebase_verify_timeout_seconds: float = Field(
+        default=8.0,
+        ge=1.0,
+        le=30.0,
+        validation_alias="FIREBASE_VERIFY_TIMEOUT_SECONDS",
+    )
+    firebase_http_timeout_seconds: float = Field(
+        default=5.0,
+        ge=1.0,
+        le=30.0,
+        validation_alias="FIREBASE_HTTP_TIMEOUT_SECONDS",
+    )
+    firebase_verify_concurrency: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        validation_alias="FIREBASE_VERIFY_CONCURRENCY",
+    )
     recommend_requests_per_minute: int = Field(
         default=6,
         ge=1,
         le=60,
         validation_alias="RECOMMEND_REQUESTS_PER_MINUTE",
     )
+    recommend_aggregate_requests_per_minute: int = Field(
+        default=30,
+        ge=1,
+        le=1_000,
+        validation_alias="RECOMMEND_AGGREGATE_REQUESTS_PER_MINUTE",
+    )
     genre_requests_per_minute: int = Field(
         default=6,
         ge=1,
         le=60,
         validation_alias="GENRE_REQUESTS_PER_MINUTE",
+    )
+    genre_aggregate_requests_per_minute: int = Field(
+        default=30,
+        ge=1,
+        le=1_000,
+        validation_alias="GENRE_AGGREGATE_REQUESTS_PER_MINUTE",
     )
     allow_unauthenticated_recommend: bool = Field(
         default=False,
@@ -61,6 +108,24 @@ class Settings(BaseSettings):
         ge=1,
         le=60,
         validation_alias="YOUTUBE_EXPORT_REQUESTS_PER_MINUTE",
+    )
+    youtube_export_aggregate_requests_per_minute: int = Field(
+        default=30,
+        ge=1,
+        le=1_000,
+        validation_alias="YOUTUBE_EXPORT_AGGREGATE_REQUESTS_PER_MINUTE",
+    )
+    authenticated_user_bucket_limit: int = Field(
+        default=1_000,
+        ge=1,
+        le=100_000,
+        validation_alias="AUTHENTICATED_USER_BUCKET_LIMIT",
+    )
+    authenticated_user_bucket_ttl_seconds: float = Field(
+        default=600.0,
+        ge=60.0,
+        le=86_400.0,
+        validation_alias="AUTHENTICATED_USER_BUCKET_TTL_SECONDS",
     )
     youtube_search_daily_budget: int = Field(
         default=80,
@@ -110,6 +175,22 @@ class Settings(BaseSettings):
     @property
     def cors_origin_allowlist(self) -> list[str]:
         return self.cors_allowed_origins.split(",")
+
+    @property
+    def firebase_uid_allowlist(self) -> frozenset[str]:
+        return frozenset(
+            value.strip()
+            for value in self.firebase_allowed_uids.split(",")
+            if value.strip()
+        )
+
+    @property
+    def firebase_email_allowlist(self) -> frozenset[str]:
+        return frozenset(
+            value.strip().casefold()
+            for value in self.firebase_allowed_emails.split(",")
+            if value.strip()
+        )
 
 
 @lru_cache

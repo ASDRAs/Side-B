@@ -1,7 +1,7 @@
 import asyncio
 from typing import NoReturn
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.schemas.youtube_export import (
     YouTubeMatchedTrack,
@@ -10,11 +10,7 @@ from app.schemas.youtube_export import (
     YouTubeTrackRequest,
     YouTubeUnmatchedTrack,
 )
-from app.services.access import (
-    BackendAccessConfigurationError,
-    BackendAccessRateLimitError,
-    BackendAccessUnauthorizedError,
-)
+from app.services.auth import AuthenticatedUser, authorize_youtube_export
 from app.services.youtube import (
     YouTubeAPIUnavailableError,
     YouTubeConfigurationError,
@@ -48,33 +44,8 @@ async def _match_all(matcher, tracks: list[tuple[int, YouTubeTrackRequest]]):
 async def match_youtube_tracks(
     req: YouTubeMatchRequest,
     request: Request,
-    export_token: str | None = Header(default=None, alias="X-Side-B-Export-Token"),
+    _user: AuthenticatedUser = Depends(authorize_youtube_export),
 ):
-    try:
-        await request.app.state.youtube_export_access.authorize(export_token)
-    except BackendAccessConfigurationError:
-        _service_unavailable(
-            "youtube_export_configuration_error",
-            "백엔드에 SIDE_B_ACCESS_TOKEN이 설정되지 않았습니다.",
-        )
-    except BackendAccessUnauthorizedError as exc:
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "code": "youtube_export_unauthorized",
-                "message": "YouTube 내보내기 토큰이 올바르지 않습니다.",
-            },
-        ) from exc
-    except BackendAccessRateLimitError as exc:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "code": "youtube_export_rate_limited",
-                "message": "YouTube 내보내기 요청이 너무 많습니다.",
-            },
-            headers={"Retry-After": str(exc.retry_after)},
-        ) from exc
-
     matcher = request.app.state.youtube_matcher
     unique: list[tuple[int, YouTubeTrackRequest]] = []
     seen: set[tuple[str, str]] = set()

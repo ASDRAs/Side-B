@@ -85,4 +85,4 @@ def test_invalid_inference_url_disables_genre_only_and_still_boots(monkeypatch):
         assert client.get("/api/health").status_code == 200
         assert main.app.state.genre_inference is None
         # 추천 경로는 계속 살아 있어야 한다.
-        assert main.app.state.recommend_access is not None
+        assert main.app.state.auth_service is not None
