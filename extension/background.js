@@ -1,5 +1,12 @@
 console.log("Background service worker loaded.");
-importScripts("scripts/musicTrack.js", "scripts/eqCoordinator.js");
+importScripts(
+  "scripts/musicTrack.js",
+  "scripts/eqCoordinator.js",
+  "auth.config.js",
+  "dist/authWorker.js",
+);
+
+const authManager = SideBAuthBundle.createAuthManager();
 
 // Use the actual action event so the tab that grants activeTab is also the
 // capture target. Opening a global panel is not itself a capture permission.
@@ -461,6 +468,7 @@ async function createYouTubePlaylist(payload) {
   auth.append = appending;
   let state = {
     status: "awaiting_auth",
+    ownerUid: authManager.state().account?.uid || null,
     operationId: input.operationId,
     title: input.title,
     bucket: input.bucket,
@@ -599,9 +607,53 @@ async function handleMessage(message, sender) {
       if (sender?.url !== chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH)) {
         throw new Error("EQ 설정 요청을 허용하지 않습니다.");
       }
-      return { ok: true, settings: await chrome.storage.local.get([
+      {
+        const settings = await chrome.storage.local.get([
         "apiBaseUrl", "apiBaseUrlStorageVersion", "backendAccessToken",
-      ]) };
+        ]);
+        const { apiBaseUrl } = SideBAuthBundle.resolveApiBaseUrlSetting(
+          settings.apiBaseUrl, settings.apiBaseUrlStorageVersion,
+        );
+        if (authManager.state().apiOrigin !== new URL(apiBaseUrl).origin) {
+          await authManager.configure(apiBaseUrl);
+        }
+        const credential = await authManager.credential({
+          apiBaseUrl,
+          legacyToken: settings.backendAccessToken,
+        });
+        return { ok: true, settings: { ...settings, backendAccessToken: undefined }, credential };
+      }
+
+    case "AUTH_CONFIGURE":
+    case "AUTH_GET_STATE":
+    case "AUTH_SIGN_IN":
+    case "AUTH_SIGN_OUT":
+    case "AUTH_GET_CREDENTIAL":
+      if (![chrome.runtime.getURL("sidepanel.html"), chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH)]
+        .includes(sender?.url)) {
+        throw new Error("이 페이지에는 로그인 정보 접근을 허용하지 않습니다.");
+      }
+      if (message.type === "AUTH_CONFIGURE") {
+        if (sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("설정은 사이드 패널에서 변경하세요.");
+        return { ok: true, state: await authManager.configure(message.apiBaseUrl) };
+      }
+      if (message.type === "AUTH_GET_STATE") {
+        return { ok: true, state: authManager.state() };
+      }
+      if (message.type === "AUTH_SIGN_IN") {
+        if (sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("로그인은 사이드 패널에서 진행하세요.");
+        return { ok: true, state: await authManager.signIn() };
+      }
+      if (message.type === "AUTH_SIGN_OUT") {
+        if (sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("로그아웃은 사이드 패널에서 진행하세요.");
+        try {
+          return { ok: true, state: await authManager.signOut() };
+        } finally {
+          void SideBEq.stop().catch(() => {});
+          await chrome.storage.local.remove(["youtubeLastDestination", "youtubeExport"]);
+        }
+      }
+      return { ok: true, credential: await authManager.credential(message) };
 
     case "GET_MUSIC_TAB":
       return getMusicTab();
@@ -627,12 +679,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== "background") {
     return false;
   }
-  if (message.type !== "READ_EQ_TRACK") console.log("Background received:", message);
+  if (message.type !== "READ_EQ_TRACK") console.log("Background message:", message.type);
 
   handleMessage(message, sender)
     .then(sendResponse)
     .catch((error) => {
-      console.error("Background message error:", error);
+      console.error("Background message error:", message.type?.startsWith("AUTH_")
+        ? "Authentication request failed" : error);
 
       sendResponse({
         ok: false,

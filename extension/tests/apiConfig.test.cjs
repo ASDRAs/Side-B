@@ -52,9 +52,9 @@ test("adds the access token header only when a token exists", async () => {
 test("maps backend failures to actionable messages", async () => {
   const { backendErrorMessage } = await loadModule();
 
-  assert.match(backendErrorMessage(401, ""), /팀 백엔드 토큰/);
+  assert.match(backendErrorMessage(401, ""), /인증 토큰/);
   assert.match(backendErrorMessage(401, ""), /설정에서 확인/);
-  assert.match(backendErrorMessage(403, ""), /팀 백엔드 토큰/);
+  assert.match(backendErrorMessage(403, ""), /인증 토큰/);
   assert.match(backendErrorMessage(429, ""), /잠시 후/);
   assert.match(backendErrorMessage(500, ""), /백엔드에 문제/);
   assert.match(backendErrorMessage(422, "query too long"), /query too long/);

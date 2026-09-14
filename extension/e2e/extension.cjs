@@ -17,7 +17,7 @@ function assertApiOriginIsAllowed(apiBaseUrl) {
   }
 }
 
-async function launchExtensionPage(testInfo) {
+async function launchExtensionPage(testInfo, { setupWorker } = {}) {
   // Every test gets an explicit empty profile under its own output directory.
   // Reusing a profile would leak chrome.storage state between scenarios.
   const context = await chromium.launchPersistentContext(
@@ -40,11 +40,27 @@ async function launchExtensionPage(testInfo) {
     const extensionId = new URL(serviceWorker.url()).host;
     expect(extensionId).toBe(EXPECTED_EXTENSION_ID);
 
+    // Existing UI scenarios explicitly exercise legacy mode, not production auth.
+    // Live scenarios leave discovery untouched. Worker requests bypass page routes.
+    if (!testInfo.file.endsWith(".live.e2e.cjs")) {
+      await serviceWorker.evaluate(() => {
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = (url, init) => String(url).endsWith("/auth/config")
+          ? Promise.resolve(new Response(JSON.stringify({ mode: "legacy" }), {
+            headers: { "Content-Type": "application/json" },
+          })) : originalFetch(url, init);
+      });
+    }
+    if (setupWorker) await setupWorker(serviceWorker);
+
     const page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     // Navigation does not wait for chrome.storage restoration. Tests that read
     // the API address immediately must wait for that asynchronous UI state.
     await expect(page.locator("#apiBaseUrl")).not.toHaveValue("");
+    if (!testInfo.file.endsWith(".live.e2e.cjs")) {
+      await expect.poll(() => serviceWorker.evaluate(() => authManager.state().status)).not.toBe("initializing");
+    }
     return { context, page };
   } catch (error) {
     await context.close();

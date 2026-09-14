@@ -16,6 +16,7 @@ let presetGenre = null;
 let presetError = null;
 let automation = null;
 let commandQueue = Promise.resolve();
+let authSessionGeneration = null;
 
 function dbToGain(db) {
   return 10 ** (db / 20);
@@ -388,6 +389,23 @@ function queueCommand(action) {
 
 async function handleMessage(message) {
   switch (message.type) {
+    case "AUTH_STATE_CHANGED":
+      if (["signed_out", "denied", "error", "signing_in"].includes(message.state?.status)) {
+        authSessionGeneration = message.state.sessionGeneration;
+        SideBEqProvider.resetCache();
+        return stopEq();
+      }
+      if (authSessionGeneration === null) {
+        authSessionGeneration = message.state?.sessionGeneration ?? 0;
+        return getState();
+      }
+      if (authSessionGeneration !== message.state?.sessionGeneration) {
+        authSessionGeneration = message.state?.sessionGeneration ?? 0;
+        SideBEqProvider.resetCache();
+        return stopEq();
+      }
+      return getState();
+
     case "START_EQ":
       return startEq(message);
 

@@ -12,6 +12,7 @@ const track = { title: "Girls On Top", artist: "BoA", videoId: "youtube-only-id"
 const result = { genre: "dance", score: -0.1, model_version: "fixture" };
 
 async function harness(options = {}) {
+  const api = await moduleOf("apiConfig.js");
   const calls = [];
   let settings = options.settings ?? { backendAccessToken: "fixture-team-token" };
   let now = Date.now();
@@ -19,8 +20,14 @@ async function harness(options = {}) {
     Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, ms) => setTimeout(fn, options.timeoutMs ?? ms),
     chrome: { runtime: { async sendMessage(message) {
+      if (options.message) return options.message(message);
       assert.equal(message.type, "GET_EQ_SETTINGS");
-      return { ok: true, settings };
+      const { apiBaseUrl } = api.resolveApiBaseUrlSetting(settings.apiBaseUrl, settings.apiBaseUrlStorageVersion);
+      if (api.requiresBackendAccessToken(apiBaseUrl) && !settings.backendAccessToken) {
+        return { ok: false, error: "팀 백엔드 토큰이 필요합니다." };
+      }
+      return { ok: true, settings, credential: { mode: "legacy", sessionGeneration: "fixture",
+        headers: settings.backendAccessToken ? { "X-Side-B-Access-Token": settings.backendAccessToken } : {} } };
     } } },
     async fetch(url, init) {
       calls.push({ url, init });
@@ -77,6 +84,41 @@ test("explicit local settings are preserved", async () => {
   const h = await harness({ settings: { apiBaseUrl: "http://127.0.0.1:8000", apiBaseUrlStorageVersion: 1 } });
   await h.run();
   assert.equal(h.calls[0].url, "http://127.0.0.1:8000/genre-classification");
+});
+
+test("managed EQ refreshes once, without forwarding a legacy token", async () => {
+  const messages = [];
+  let calls = 0;
+  const h = await harness({
+    message: async (message) => {
+      messages.push(message);
+      if (message.type === "GET_EQ_SETTINGS") return { ok: true, settings: {}, credential: {
+        mode: "firebase", sessionGeneration: "a", headers: { Authorization: "Bearer old" },
+      } };
+      assert.equal(message.type, "AUTH_GET_CREDENTIAL");
+      assert.equal(message.rejectedToken, "old");
+      assert.equal(message.legacyToken, undefined);
+      return { ok: true, credential: { mode: "firebase", sessionGeneration: "a", headers: { Authorization: "Bearer new" } } };
+    },
+    fetch: async (_url, init) => {
+      calls++;
+      assert.equal(init.headers["X-Side-B-Access-Token"], undefined);
+      assert.equal(init.headers.Authorization, calls === 1 ? "Bearer old" : "Bearer new");
+      return new Response(JSON.stringify(result), { status: calls === 1 ? 401 : 200 });
+    },
+  });
+  assert.equal((await h.run()).genre, "dance");
+  assert.equal(messages.length, 2);
+  assert.equal(calls, 2);
+});
+
+test("managed EQ never retries a request using a different account generation", async () => {
+  const h = await harness({ status: 401, message: async (message) => ({ ok: true, settings: {}, credential: {
+    mode: "firebase", sessionGeneration: message.type === "GET_EQ_SETTINGS" ? "a" : "b",
+    headers: { Authorization: "Bearer fixture" },
+  } }) });
+  await assert.rejects(h.run(), /계정이 변경/);
+  assert.equal(h.calls.length, 1);
 });
 
 for (const status of [401, 404, 422, 429, 503, 504]) test(`HTTP ${status} remains an error, never an applied preset`, async () => {

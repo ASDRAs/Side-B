@@ -24,13 +24,17 @@
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*",
     "https://side-b-backend-7hmhv6htsa-du.a.run.app/*",
+    "https://identitytoolkit.googleapis.com/*",
+    "https://securetoken.googleapis.com/*",
     "https://www.googleapis.com/*",
     "https://music.youtube.com/*"
   ],
   "oauth2": {
     "client_id": "1073342688292-vrnnhbs5vhi6llpbhpd4174pedcsp7ld.apps.googleusercontent.com",
     "scopes": [
-      "https://www.googleapis.com/auth/youtube.force-ssl"
+      "openid",
+      "email",
+      "profile"
     ]
   },
   "background": {

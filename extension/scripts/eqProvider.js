@@ -60,7 +60,7 @@ globalThis.SideBEqProvider = (() => {
     // own the long fetch here so worker suspension cannot kill the request.
     const result = await chrome.runtime.sendMessage({ target: "background", type: "GET_EQ_SETTINGS" });
     signal.throwIfAborted();
-    if (!result?.ok) throw new Error("백엔드 설정을 읽지 못했습니다.");
+    if (!result?.ok) throw new Error(result?.error || "백엔드 설정을 읽지 못했습니다.");
     const stored = result.settings || {};
     const { apiBaseUrl } = api.resolveApiBaseUrlSetting(stored.apiBaseUrl, stored.apiBaseUrlStorageVersion);
     let url;
@@ -70,23 +70,41 @@ globalThis.SideBEqProvider = (() => {
         url.username || url.password || url.search || url.hash) {
       throw new Error("백엔드 주소는 HTTPS 또는 로컬 HTTP 주소여야 합니다.");
     }
-    const token = String(stored.backendAccessToken || "").trim();
-    if (api.requiresBackendAccessToken(apiBaseUrl) && !token) throw new Error("설정에서 팀 백엔드 토큰을 입력하세요.");
+    const credential = result.credential;
+    if (!credential?.headers) throw new Error("백엔드 로그인 정보를 받지 못했습니다.");
     // 백엔드 주소가 바뀌면 이전 결과는 다른 서버의 것이다.
-    if (cacheScope !== apiBaseUrl) { resetCache(); cacheScope = apiBaseUrl; retryUntil = 0; }
+    const nextScope = `${apiBaseUrl}:${credential.sessionGeneration ?? 0}`;
+    if (cacheScope !== nextScope) { resetCache(); cacheScope = nextScope; retryUntil = 0; }
     const key = SideBEqPresets.trackKey(track);
     if (key && genres.has(key)) return presetFor(genres.get(key));
     if (Date.now() < retryUntil) {
       throw new Error(api.backendErrorMessage(429, "", String(Math.ceil((retryUntil - Date.now()) / 1000))));
     }
-    const response = await fetch(`${apiBaseUrl}/genre-classification`, {
-      method: "POST", headers: api.recommendationHeaders(token),
+    const request = (headers) => fetch(`${apiBaseUrl}/genre-classification`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify({ track_name: title, artist }), signal, redirect: "error",
     });
+    let response = await request(credential.headers);
+    if (response.status === 401 && credential.mode === "firebase") {
+      const refreshed = await chrome.runtime.sendMessage({
+        target: "background",
+        type: "AUTH_GET_CREDENTIAL",
+        apiBaseUrl,
+        forceRefresh: true,
+        rejectedToken: credential.headers.Authorization?.replace(/^Bearer /, ""),
+      });
+      signal.throwIfAborted();
+      if (!refreshed?.ok) throw new Error(refreshed?.error || "로그인을 갱신하지 못했습니다.");
+      if (refreshed.credential?.sessionGeneration !== credential.sessionGeneration) {
+        throw new Error("로그인 계정이 변경되었습니다. EQ를 다시 적용하세요.");
+      }
+      response = await request(refreshed.credential.headers);
+    }
     let payload;
     try { payload = await response.json(); } catch { payload = null; }
     signal.throwIfAborted();
-    if (response.status === 429 && cacheScope === apiBaseUrl) {
+    if (cacheScope !== nextScope) throw new Error("로그인 또는 백엔드 설정이 변경되었습니다.");
+    if (response.status === 429 && cacheScope === nextScope) {
       retryUntil = Math.max(retryUntil, Date.now() + retryDelay(response.headers.get("Retry-After")));
     }
     if (!response.ok) throw new Error(api.backendErrorMessage(response.status,

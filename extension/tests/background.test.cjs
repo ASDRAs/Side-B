@@ -123,13 +123,15 @@ function loadBackground(responses, options = {}) {
 }
 
 test("EQ configuration bridge only returns settings to the extension offscreen document", async () => {
-  const h = loadBackground([], { storage: { backendAccessToken: "fixture-team-token" } });
+  const h = loadBackground([response(200, { mode: "legacy" })], { storage: { backendAccessToken: "fixture-team-token" } });
   const message = { type: "GET_EQ_SETTINGS" };
   await assert.rejects(h.context.handleMessage(message, { url: "https://music.youtube.com/" }));
   await assert.rejects(h.context.handleMessage(message, { url: "chrome-extension://other/offscreen.html" }));
   const result = await h.context.handleMessage(message, { url: "chrome-extension://test/offscreen.html" });
-  assert.equal(result.settings.backendAccessToken, "fixture-team-token");
-  assert.equal(h.fetchCalls.length, 0);
+  assert.equal(result.settings.backendAccessToken, undefined);
+  assert.equal(result.credential.headers["X-Side-B-Access-Token"], "fixture-team-token");
+  assert.equal(h.fetchCalls.length, 1);
+  assert.equal(h.fetchCalls[0].url, "https://side-b-backend-7hmhv6htsa-du.a.run.app/auth/config");
 });
 
 function exportPayload(items = [
