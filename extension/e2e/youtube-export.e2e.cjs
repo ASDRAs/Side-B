@@ -221,6 +221,7 @@ test("side panel reaches YouTube match review before OAuth", async ({}, testInfo
       .click();
     await expect(page.locator("#youtubeMatchReview")).toBeVisible();
     await page.locator("#youtubeMatchConfirm").click();
+    await page.locator("#youtubeDestinationConfirm").click();
     await expect(page.locator("#youtubeMatchReview")).toBeHidden();
     // 이 시점에는 생성이 아직 진행 중이라 내보내기 버튼이 비활성이다.
     // 이 상태가 바로 포커스를 잃던 조건이다.

@@ -255,11 +255,36 @@
 
       <ol id="youtubeMatchList" class="match-list"></ol>
 
+      <section id="playlistDestination" class="playlist-destination" hidden>
+        <fieldset class="destination-modes">
+          <legend class="visually-hidden">저장 방식</legend>
+          <label><input type="radio" name="playlistDestinationMode" value="create" checked />새로 만들기</label>
+          <label><input type="radio" name="playlistDestinationMode" value="append" />기존에 추가</label>
+        </fieldset>
+        <div id="newPlaylistFields">
+          <label for="playlistTitle">플레이리스트 이름</label>
+          <input id="playlistTitle" type="text" maxlength="150" required />
+          <p class="match-sub">비공개로 생성됩니다.</p>
+        </div>
+        <div id="existingPlaylistFields" hidden>
+          <div class="playlist-search">
+            <label class="visually-hidden" for="playlistSearch">내 플레이리스트 검색</label>
+            <input id="playlistSearch" type="search" placeholder="내 플레이리스트 검색" />
+            <button id="playlistReload" type="button" class="icon-button" title="목록 다시 불러오기" aria-label="목록 다시 불러오기"><span class="icon icon-restart" aria-hidden="true"></span></button>
+          </div>
+          <p id="playlistLoadStatus" role="status" class="match-sub"></p>
+          <div id="playlistOptions" role="group" aria-label="내 플레이리스트"></div>
+          <label class="playlist-skip"><input id="playlistSkipExisting" type="checkbox" checked />이미 있는 영상은 건너뛰기</label>
+        </div>
+      </section>
+
       <div class="match-review-actions">
         <button id="youtubeMatchCancel" class="secondary-button" type="button">
           취소
         </button>
-        <button id="youtubeMatchConfirm" type="button">플레이리스트 생성</button>
+        <button id="youtubeMatchBack" class="secondary-button" type="button" hidden>이전</button>
+        <button id="youtubeMatchConfirm" type="button">다음</button>
+        <button id="youtubeDestinationConfirm" type="button" hidden>저장</button>
       </div>
     </dialog>
 

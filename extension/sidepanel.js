@@ -13,6 +13,7 @@ import {
 import { requestErrorMessage, timeoutReason } from "./scripts/requestState.js";
 import { getEqState, startEq, stopEq } from "./scripts/eq.js";
 import { eqStatusText } from "./scripts/eqView.js";
+import { createPlaylistDestination } from "./scripts/playlistDestination.js";
 import {
   API_BASE_URL_STORAGE_VERSION,
   DEFAULT_API_BASE_URL,
@@ -47,6 +48,7 @@ const EXPORT_STATUS_LABELS = {
   matching: "곡 매칭 중",
   awaiting_auth: "Google 인증 대기",
   creating_playlist: "플레이리스트 생성 중",
+  checking_playlist: "기존 플레이리스트 확인 중",
   adding_items: "곡 추가 중",
   reviewing: "매칭 확인",
   cancelled: "취소됨",
@@ -59,6 +61,7 @@ const ACTIVE_EXPORT_STATUSES = new Set([
   "matching",
   "awaiting_auth",
   "creating_playlist",
+  "checking_playlist",
   "adding_items",
   "reviewing",
 ]);
@@ -121,6 +124,9 @@ const youtubeMatchReview = document.querySelector("#youtubeMatchReview");
 const youtubeMatchList = document.querySelector("#youtubeMatchList");
 const youtubeMatchConfirm = document.querySelector("#youtubeMatchConfirm");
 const youtubeMatchCancel = document.querySelector("#youtubeMatchCancel");
+const youtubeMatchBack = document.querySelector("#youtubeMatchBack");
+const youtubeDestinationConfirm = document.querySelector("#youtubeDestinationConfirm");
+const destinationPicker = createPlaylistDestination(document.querySelector("#playlistDestination"), updateDestinationSummary);
 const youtubeMatchSelectAll = document.querySelector("#youtubeMatchSelectAll");
 const matchReviewSubtitle = document.querySelector("#matchReviewSubtitle");
 
@@ -561,6 +567,7 @@ function renderYouTubeExportState(state) {
   if (state.deduplicated) {
     counts.push(`${state.deduplicated}곡 중복 제외`);
   }
+  if (state.existing) counts.push(`${state.existing}곡 이미 있음`);
   if (state.failed?.length) {
     counts.push(`${state.failed.length}곡 추가 실패`);
   }
@@ -577,7 +584,9 @@ function renderYouTubeExportState(state) {
   youtubeExportStatus.textContent =
     EXPORT_STATUS_LABELS[state.status] || state.status;
   youtubeExportTitle.textContent = state.title || "Side-B 플레이리스트";
-  youtubeExportDetail.textContent = state.error || counts.join(" · ");
+  youtubeExportDetail.textContent = state.error ||
+    (state.status === "completed" && state.added === 0 && state.existing
+      ? `${state.existing}곡 모두 이미 들어 있습니다.` : counts.join(" · "));
   youtubeExportFailures.replaceChildren();
   for (const failure of state.failed || []) {
     const item = document.createElement("li");
@@ -632,10 +641,12 @@ function updateMatchSelectionSummary() {
     selected > 0 && selected < checkboxes.length;
   youtubeMatchSelectAll.disabled = checkboxes.length === 0;
   youtubeMatchConfirm.disabled = selected === 0;
-  youtubeMatchConfirm.textContent = `${selected}곡으로 플레이리스트 만들기`;
+  youtubeMatchConfirm.textContent = `다음 · ${selected}곡`;
 }
 
-function reviewYouTubeMatches(matches) {
+function reviewYouTubeMatches(matches, title) {
+  destinationPicker.reset(title);
+  showMatchStep();
   youtubeMatchList.replaceChildren();
   for (const row of orderedMatchReviewRows(matches)) {
     const { track } = row;
@@ -730,6 +741,7 @@ function reviewYouTubeMatches(matches) {
 }
 
 function resolveMatchReview(value) {
+  destinationPicker.hide();
   const resolve = pendingMatchReview;
   pendingMatchReview = null;
   if (youtubeMatchReview.open) {
@@ -741,6 +753,7 @@ function resolveMatchReview(value) {
 // Escape로 브라우저가 닫은 경우에도 대기 중인 검토를 취소로 정리하고, 내보내기를
 // 시작한 버튼으로 포커스를 돌려준다.
 youtubeMatchReview.addEventListener("close", () => {
+  destinationPicker.hide();
   if (pendingMatchReview) {
     const resolve = pendingMatchReview;
     pendingMatchReview = null;
@@ -818,11 +831,53 @@ youtubeMatchSelectAll.addEventListener("change", () => {
   updateMatchSelectionSummary();
 });
 
-youtubeMatchConfirm.addEventListener("click", () => {
-  const selected = matchSelectionCheckboxes()
+function selectedMatchIndexes() {
+  return matchSelectionCheckboxes()
     .filter((checkbox) => checkbox.checked)
     .map((checkbox) => Number(checkbox.dataset.index));
-  resolveMatchReview(selected);
+}
+
+function updateDestinationSummary() {
+  const destination = destinationPicker.selection();
+  const count = selectedMatchIndexes().length;
+  youtubeDestinationConfirm.disabled = !destination || count === 0;
+  youtubeDestinationConfirm.textContent = destination?.mode === "append"
+    ? `${count}곡 추가` : `${count}곡으로 만들기`;
+  youtubeDestinationConfirm.title = destination?.title || "";
+}
+
+function showMatchStep() {
+  destinationPicker.hide();
+  document.querySelector("#matchReviewTitle").textContent = "매칭 확인";
+  youtubeMatchList.hidden = false;
+  youtubeMatchSelectAll.closest("label").hidden = false;
+  youtubeMatchConfirm.hidden = false;
+  youtubeMatchBack.hidden = true;
+  youtubeDestinationConfirm.hidden = true;
+}
+
+youtubeMatchBack.addEventListener("click", () => {
+  showMatchStep();
+  youtubeMatchConfirm.focus();
+});
+
+youtubeMatchConfirm.addEventListener("click", () => {
+  if (!selectedMatchIndexes().length) return;
+  document.querySelector("#matchReviewTitle").textContent = "플레이리스트에 저장";
+  youtubeMatchList.hidden = true;
+  youtubeMatchSelectAll.closest("label").hidden = true;
+  youtubeMatchConfirm.hidden = true;
+  youtubeMatchBack.hidden = false;
+  youtubeDestinationConfirm.hidden = false;
+  void destinationPicker.show();
+});
+
+youtubeDestinationConfirm.addEventListener("click", () => {
+  const destination = destinationPicker.selection();
+  if (!destination) return;
+  const selected = selectedMatchIndexes();
+  if (!selected.length) return;
+  resolveMatchReview({ selected, destination });
 });
 
 youtubeMatchCancel.addEventListener("click", () => resolveMatchReview(null));
@@ -882,7 +937,8 @@ async function exportBucket(bucketName, tracks) {
       openSettings();
       throw new Error("설정에서 팀 백엔드 토큰을 입력하세요.");
     }
-    await storeBackendAccessToken(exportToken);
+    if (exportToken) await storeBackendAccessToken(exportToken);
+    if (!isCurrentExport()) return;
     const matches = await requestYouTubeMatches(
       apiBaseUrl,
       bucketName,
@@ -911,23 +967,24 @@ async function exportBucket(bucketName, tracks) {
       }),
       failed: [],
     });
-    const selectedIndexes = await reviewYouTubeMatches(matches);
-    if (!isCurrentExport() || selectedIndexes === undefined) {
+    const review = await reviewYouTubeMatches(matches, title);
+    if (!isCurrentExport() || review === undefined) {
       return;
     }
-    if (selectedIndexes === null) {
+    if (review === null) {
       renderYouTubeExportState({ status: "cancelled", operationId, title });
       return;
     }
-    const selectedTracks = selectedIndexes.map((index) => matches.matched[index]);
+    const selectedTracks = review.selected.map((index) => matches.matched[index]);
     if (selectedTracks.length === 0) {
       throw new Error("플레이리스트에 추가할 곡을 하나 이상 선택하세요.");
     }
 
     const response = await createYouTubePlaylist({
+      destination: review.destination,
       operation_id: operationId,
       bucket: bucketName,
-      title,
+      title: review.destination.title,
       description: `Side-B 추천 결과로 생성됨. 방향: ${bucketLabel}`,
       requested: exportable.requested,
       matched: matches.matched.length,
