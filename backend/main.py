@@ -11,12 +11,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.routers.auth import router as auth_router
 from app.routers.genre_classification import (
     router as genre_classification_router,
 )
 from app.routers.recommend import router as recommend_router
 from app.routers.youtube_export import router as youtube_export_router
-from app.services.access import BackendAccess
+from app.services.auth import (
+    AuthenticationService,
+    FeatureRateLimiter,
+    FirebaseTokenVerifier,
+)
 from app.services.inference_client import InferenceClient, InferenceConfigurationError
 from app.services.youtube import YouTubeMatcher, YouTubeSearchClient
 from preview import router as preview_router
@@ -51,30 +56,39 @@ async def lifespan(app: FastAPI):
         threshold=settings.youtube_match_threshold,
         concurrency=settings.youtube_search_concurrency,
     )
-    app.state.youtube_export_access = BackendAccess(
-        settings.backend_access_token,
-        requests_per_minute=settings.youtube_export_requests_per_minute,
-    )
     unauthenticated = (
-        settings.allow_unauthenticated_recommend and not settings.backend_access_token
+        settings.auth_mode == "legacy"
+        and settings.allow_unauthenticated_recommend
+        and not settings.backend_access_token
     )
-    app.state.recommend_access = (
-        None
-        if unauthenticated
-        else BackendAccess(
-            settings.backend_access_token,
-            requests_per_minute=settings.recommend_requests_per_minute,
-        )
+    app.state.auth_service = AuthenticationService(
+        mode=settings.auth_mode,
+        legacy_token=settings.backend_access_token,
+        firebase_verifier=FirebaseTokenVerifier(
+            settings.firebase_project_id,
+            verify_timeout_seconds=settings.firebase_verify_timeout_seconds,
+            http_timeout_seconds=settings.firebase_http_timeout_seconds,
+            max_concurrency=settings.firebase_verify_concurrency,
+        ),
+        allowed_uids=settings.firebase_uid_allowlist,
+        allowed_emails=settings.firebase_email_allowlist,
+        unauthenticated_legacy_features=(
+            frozenset({"recommend", "genre"}) if unauthenticated else frozenset()
+        ),
     )
-    # 자동 EQ는 곡이 바뀔 때마다 한 번씩 호출한다. 버킷을 분리하지 않으면 곡을
-    # 여러 번 넘기는 것만으로 /recommend가 429로 막힌다.
-    app.state.genre_access = (
-        None
-        if unauthenticated
-        else BackendAccess(
-            settings.backend_access_token,
-            requests_per_minute=settings.genre_requests_per_minute,
-        )
+    app.state.feature_rate_limiter = FeatureRateLimiter(
+        user_limits={
+            "recommend": settings.recommend_requests_per_minute,
+            "genre": settings.genre_requests_per_minute,
+            "youtube_export": settings.youtube_export_requests_per_minute,
+        },
+        aggregate_limits={
+            "recommend": settings.recommend_aggregate_requests_per_minute,
+            "genre": settings.genre_aggregate_requests_per_minute,
+            "youtube_export": settings.youtube_export_aggregate_requests_per_minute,
+        },
+        inactive_ttl_seconds=settings.authenticated_user_bucket_ttl_seconds,
+        max_user_buckets=settings.authenticated_user_bucket_limit,
     )
     app.state.lastfm_pylast = pylast.LastFMNetwork(
         api_key=settings.lastfm_api_key or "",
@@ -106,9 +120,13 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "ALLOW_UNAUTHENTICATED_RECOMMEND enabled — use local development only."
         )
-    if not settings.backend_access_token:
+    if settings.auth_mode in {"dual", "firebase"} and not settings.firebase_project_id:
         logger.warning(
-            "SIDE_B_ACCESS_TOKEN not set — protected endpoints are disabled."
+            "FIREBASE_PROJECT_ID not set - Firebase authentication fails closed."
+        )
+    if settings.auth_mode in {"legacy", "dual"} and not settings.backend_access_token:
+        logger.warning(
+            "SIDE_B_ACCESS_TOKEN not set - legacy protected access is disabled."
         )
 
     logger.info("Startup complete (model=%s)", settings.gemini_model)
@@ -128,11 +146,13 @@ app.add_middleware(
         "Content-Type",
         "X-Side-B-Access-Token",
         "X-Side-B-Export-Token",
+        "Authorization",
     ],
 )
 
 # router 설정 fetch하면 아래의 기능들 불러옴. 실제 기능들이 수행되는 곳
 app.include_router(preview_router)
+app.include_router(auth_router)
 app.include_router(recommend_router)
 app.include_router(youtube_export_router)
 app.include_router(genre_classification_router)

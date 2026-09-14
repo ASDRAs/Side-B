@@ -1,17 +1,13 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.schemas.genre_classification import (
     GenreClassificationRequest,
     GenreClassificationResponse,
 )
-from app.services.access import (
-    BackendAccessConfigurationError,
-    BackendAccessRateLimitError,
-    BackendAccessUnauthorizedError,
-)
+from app.services.auth import AuthenticatedUser, authorize_genre
 from app.services.genre_classification_service import (
     GenreClassificationConfigurationError,
     run_genre_classification,
@@ -38,48 +34,8 @@ router = APIRouter(
 async def classify_genre(
     req: GenreClassificationRequest,
     request: Request,
-    access_token: str | None = Header(
-        default=None,
-        alias="X-Side-B-Access-Token",
-    ),
+    _user: AuthenticatedUser = Depends(authorize_genre),
 ) -> GenreClassificationResponse:
-    # 인증 토큰은 recommend와 공유하되, rate limit 버킷은 분리한다.
-    access = request.app.state.genre_access
-
-    if access is not None:
-        try:
-            await access.authorize(access_token)
-
-        except BackendAccessConfigurationError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "genre_access_configuration_error",
-                    "message": "백엔드 access token이 설정되지 않았습니다.",
-                },
-            ) from exc
-
-        except BackendAccessUnauthorizedError as exc:
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "code": "genre_unauthorized",
-                    "message": "팀 백엔드 토큰이 올바르지 않습니다.",
-                },
-            ) from exc
-
-        except BackendAccessRateLimitError as exc:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "code": "genre_rate_limited",
-                    "message": "장르 분류 요청이 너무 많습니다.",
-                },
-                headers={
-                    "Retry-After": str(exc.retry_after),
-                },
-            ) from exc
-
     try:
         result = await asyncio.wait_for(
             run_genre_classification(
