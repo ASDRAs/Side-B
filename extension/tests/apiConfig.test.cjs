@@ -11,13 +11,37 @@ async function loadModule() {
   return import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 }
 
-test("migrates the legacy localhost default to the deployed backend", async () => {
+test("migrates historical defaults to the authenticated backend", async () => {
   const { DEFAULT_API_BASE_URL, resolveApiBaseUrlSetting } = await loadModule();
 
+  assert.equal(
+    DEFAULT_API_BASE_URL,
+    "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app",
+  );
   assert.deepEqual(resolveApiBaseUrlSetting("http://127.0.0.1:8000", null), {
     apiBaseUrl: DEFAULT_API_BASE_URL,
     shouldPersist: true,
   });
+  assert.deepEqual(
+    resolveApiBaseUrlSetting(
+      "https://side-b-backend-7hmhv6htsa-du.a.run.app",
+      1,
+    ),
+    {
+      apiBaseUrl: DEFAULT_API_BASE_URL,
+      shouldPersist: true,
+    },
+  );
+  assert.deepEqual(
+    resolveApiBaseUrlSetting(
+      "https://side-b-backend-7hmhv6htsa-du.a.run.app",
+      null,
+    ),
+    {
+      apiBaseUrl: DEFAULT_API_BASE_URL,
+      shouldPersist: true,
+    },
+  );
 });
 
 test("preserves an explicitly versioned localhost override", async () => {
@@ -25,7 +49,7 @@ test("preserves an explicitly versioned localhost override", async () => {
 
   assert.deepEqual(resolveApiBaseUrlSetting("http://127.0.0.1:8000", 1), {
     apiBaseUrl: "http://127.0.0.1:8000",
-    shouldPersist: false,
+    shouldPersist: true,
   });
 });
 
