@@ -1891,19 +1891,27 @@ var SideBAuthBundle = (() => {
   registerVersion(name2, version2, "app");
 
   // scripts/apiConfig.js
-  var DEFAULT_API_BASE_URL = "https://side-b-backend-7hmhv6htsa-du.a.run.app";
-  var API_BASE_URL_STORAGE_VERSION = 1;
-  var LEGACY_DEFAULT_API_BASE_URLS = /* @__PURE__ */ new Set([
-    "http://127.0.0.1:8000"
+  var DEFAULT_API_BASE_URL = "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app";
+  var API_BASE_URL_STORAGE_VERSION = 2;
+  var DEFAULT_API_BASE_URLS_BY_VERSION = /* @__PURE__ */ new Map([
+    [
+      0,
+      /* @__PURE__ */ new Set([
+        "http://127.0.0.1:8000",
+        "https://side-b-backend-7hmhv6htsa-du.a.run.app"
+      ])
+    ],
+    [1, /* @__PURE__ */ new Set(["https://side-b-backend-7hmhv6htsa-du.a.run.app"])]
   ]);
   function trimTrailingSlashes(value) {
     return String(value || "").trim().replace(/\/+$/, "");
   }
   function resolveApiBaseUrlSetting(storedUrl, storedVersion) {
     const apiBaseUrl = trimTrailingSlashes(storedUrl);
-    const version4 = Number(storedVersion);
+    const version4 = storedVersion == null ? 0 : Number(storedVersion);
     const isCurrentVersion = version4 === API_BASE_URL_STORAGE_VERSION;
-    if (!apiBaseUrl || !isCurrentVersion && LEGACY_DEFAULT_API_BASE_URLS.has(apiBaseUrl)) {
+    const wasVersionDefault = DEFAULT_API_BASE_URLS_BY_VERSION.get(version4)?.has(apiBaseUrl);
+    if (!apiBaseUrl || !isCurrentVersion && wasVersionDefault) {
       return {
         apiBaseUrl: DEFAULT_API_BASE_URL,
         shouldPersist: true

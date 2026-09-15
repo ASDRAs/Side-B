@@ -51,7 +51,7 @@ test("real provider sends the track and saved team token, never a YouTube ID as 
   const preset = await h.run();
   assert.equal(preset.genre, "dance");
   assert.equal(preset.bands[0].gain, 2);
-  assert.equal(h.calls[0].url, "https://side-b-backend-7hmhv6htsa-du.a.run.app/genre-classification");
+  assert.equal(h.calls[0].url, "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app/genre-classification");
   assert.deepEqual(JSON.parse(h.calls[0].init.body), { track_name: track.title, artist: track.artist });
   assert.equal(h.calls[0].init.headers["X-Side-B-Access-Token"], "fixture-team-token");
   assert.equal(h.calls[0].init.signal, h.controller.signal);

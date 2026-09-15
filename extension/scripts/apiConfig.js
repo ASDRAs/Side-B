@@ -1,9 +1,16 @@
 export const DEFAULT_API_BASE_URL =
-  "https://side-b-backend-7hmhv6htsa-du.a.run.app";
-export const API_BASE_URL_STORAGE_VERSION = 1;
+  "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app";
+export const API_BASE_URL_STORAGE_VERSION = 2;
 
-const LEGACY_DEFAULT_API_BASE_URLS = new Set([
-  "http://127.0.0.1:8000",
+const DEFAULT_API_BASE_URLS_BY_VERSION = new Map([
+  [
+    0,
+    new Set([
+      "http://127.0.0.1:8000",
+      "https://side-b-backend-7hmhv6htsa-du.a.run.app",
+    ]),
+  ],
+  [1, new Set(["https://side-b-backend-7hmhv6htsa-du.a.run.app"])],
 ]);
 const LOCAL_API_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
@@ -13,10 +20,12 @@ function trimTrailingSlashes(value) {
 
 export function resolveApiBaseUrlSetting(storedUrl, storedVersion) {
   const apiBaseUrl = trimTrailingSlashes(storedUrl);
-  const version = Number(storedVersion);
+  const version = storedVersion == null ? 0 : Number(storedVersion);
   const isCurrentVersion = version === API_BASE_URL_STORAGE_VERSION;
+  const wasVersionDefault = DEFAULT_API_BASE_URLS_BY_VERSION
+    .get(version)?.has(apiBaseUrl);
 
-  if (!apiBaseUrl || (!isCurrentVersion && LEGACY_DEFAULT_API_BASE_URLS.has(apiBaseUrl))) {
+  if (!apiBaseUrl || (!isCurrentVersion && wasVersionDefault)) {
     return {
       apiBaseUrl: DEFAULT_API_BASE_URL,
       shouldPersist: true,

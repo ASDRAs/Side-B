@@ -131,7 +131,7 @@ test("EQ configuration bridge only returns settings to the extension offscreen d
   assert.equal(result.settings.backendAccessToken, undefined);
   assert.equal(result.credential.headers["X-Side-B-Access-Token"], "fixture-team-token");
   assert.equal(h.fetchCalls.length, 1);
-  assert.equal(h.fetchCalls[0].url, "https://side-b-backend-7hmhv6htsa-du.a.run.app/auth/config");
+  assert.equal(h.fetchCalls[0].url, "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app/auth/config");
 });
 
 function exportPayload(items = [

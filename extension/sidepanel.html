@@ -161,16 +161,23 @@
         <button id="settingsBack" class="secondary-button" type="button">추천으로 돌아가기</button>
 
         <div class="settings-body">
-          <section id="accountSettings" class="account-settings" hidden>
-            <span class="settings-label">Side-B 계정</span>
+          <section id="accountSettings" class="settings-group account-settings" hidden>
+            <div class="settings-group-heading">
+              <h2>계정</h2>
+            </div>
             <p id="authStatus" class="token-state">로그인 상태 확인 중</p>
             <p id="accountLabel" class="account-label" hidden></p>
-            <button id="signInButton" type="button">Google로 로그인</button>
-            <button id="signOutButton" class="secondary-button" type="button" hidden>로그아웃</button>
+            <div class="settings-actions">
+              <button id="signInButton" type="button">Google로 로그인</button>
+              <button id="signOutButton" class="secondary-button" type="button" hidden>로그아웃</button>
+            </div>
           </section>
 
-          <section id="legacyAuthSettings">
-            <label for="backendAccessToken">팀 백엔드 토큰</label>
+          <section id="legacyAuthSettings" class="settings-group" hidden>
+            <div class="settings-group-heading">
+              <h2>이전 서버 인증</h2>
+            </div>
+            <label for="backendAccessToken">접근 토큰</label>
             <div class="token-row">
               <input
                 id="backendAccessToken"
@@ -178,7 +185,7 @@
                 type="password"
                 autocomplete="off"
                 aria-describedby="backendAccessTokenHelp"
-                placeholder="운영자에게 받은 토큰"
+                placeholder="이전 서버의 접근 토큰"
               />
               <button
                 id="tokenRevealButton"
@@ -206,25 +213,35 @@
             </details>
           </section>
 
-          <p class="token-state">
-            <span id="historyStatus">검색 기록 없음</span>
-            <button id="historyClearButton" class="link-button" type="button" hidden>
-              지우기
-            </button>
-          </p>
+          <section class="settings-group">
+            <div class="settings-group-heading">
+              <h2>검색 기록</h2>
+              <button id="historyClearButton" class="link-button" type="button" hidden>
+                지우기
+              </button>
+            </div>
+            <p id="historyStatus" class="settings-value">검색 기록 없음</p>
+          </section>
 
-          <details class="field-help advanced-settings">
-            <summary>고급 설정</summary>
-            <label for="apiBaseUrl">백엔드 주소</label>
-            <input
-              id="apiBaseUrl"
-              name="apiBaseUrl"
-              type="url"
-              placeholder="https://api.example.com"
-              autocomplete="url"
-              required
-            />
-          </details>
+          <section class="settings-group connection-settings">
+            <div class="settings-group-heading">
+              <h2>연결</h2>
+            </div>
+            <details class="field-help advanced-settings">
+              <summary>백엔드 연결 설정</summary>
+              <div class="advanced-settings-body">
+                <label for="apiBaseUrl">백엔드 주소</label>
+                <input
+                  id="apiBaseUrl"
+                  name="apiBaseUrl"
+                  type="url"
+                  placeholder="https://api.example.com"
+                  autocomplete="url"
+                  required
+                />
+              </div>
+            </details>
+          </section>
         </div>
       </details>
     </main>

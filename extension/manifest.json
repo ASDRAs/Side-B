@@ -23,6 +23,7 @@
   "host_permissions": [
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*",
+    "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app/*",
     "https://side-b-backend-7hmhv6htsa-du.a.run.app/*",
     "https://identitytoolkit.googleapis.com/*",
     "https://securetoken.googleapis.com/*",

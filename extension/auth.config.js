@@ -6,6 +6,7 @@ globalThis.SideBAuthConfig = Object.freeze({
     appId: "1:1073342688292:web:a6ce9aaf5269c41d87fcb1",
   }),
   trustedBackendOrigins: Object.freeze([
+    "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app",
     "https://side-b-backend-7hmhv6htsa-du.a.run.app",
     "http://127.0.0.1:8000",
     "http://localhost:8000",
