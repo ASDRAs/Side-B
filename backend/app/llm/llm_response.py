@@ -2,9 +2,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-# 만약 None이 올 수 있는 경우는 아래와 같이
-# specific_song: Optional[str] = Field( default=None, description="desc.." )
-
 
 class AlternativeQuery(BaseModel):
     track_title: str = Field(description="대체 표기의 곡 제목")

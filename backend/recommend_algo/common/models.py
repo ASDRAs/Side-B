@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, get_args
 
 ProviderName = Literal["itunes", "lastfm", "deezer"]
-MatchBasis = Literal["provider_id", "isrc", "strict_text"]
 
 _PROVIDER_NAMES: frozenset[str] = frozenset(get_args(ProviderName))
 
@@ -23,7 +22,6 @@ class ProviderBinding:
     resolved_title: str = ""
     resolved_artist: str = ""
     isrc: str | None = None
-    match_basis: MatchBasis = "strict_text"
 
     @property
     def source_id(self) -> str:
@@ -44,7 +42,6 @@ def binding_from_source_id(
         provider_track_id=track_id,
         resolved_title=resolved_title,
         resolved_artist=resolved_artist,
-        match_basis="provider_id",
     )
 
 
@@ -95,8 +92,6 @@ class TrackInfo:
     algo: str = ""
     label: str = ""
     reason_tags: list[str] = field(default_factory=list)
-    # remix/live/acoustic 등 다른 recording은 별도 곡으로 유지하기 위한 자리.
-    recording_variant: str | None = None
     bindings: dict[ProviderName, ProviderBinding] = field(default_factory=dict)
     # 이 후보를 발견한 Last.fm 응답의 원시 증거. 아직 점수에 쓰지 않는다.
     signals: DiscoverySignals | None = None
@@ -122,7 +117,7 @@ class TrackInfo:
 def track_to_api_dict(track: TrackInfo) -> dict[str, Any]:
     """외부 응답 형식.
 
-    `bindings`와 `recording_variant`는 내부 표현이라 공개하지 않는다. provider별
+    `bindings`는 내부 표현이라 공개하지 않는다. provider별
     ID 공개는 Chrome extension과의 계약이 정해질 때 typed schema로 따로 다룬다.
     """
     return {
