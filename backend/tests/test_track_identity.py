@@ -53,17 +53,16 @@ def test_api_dict_keeps_legacy_key_set():
 
 
 def test_api_dict_does_not_leak_internal_identity_fields():
-    """bindings와 recording_variant는 내부 표현이라 응답에 나오면 안 된다.
+    """bindings는 내부 표현이라 응답에 나오면 안 된다.
 
     provider별 ID 공개는 extension과의 계약이 정해진 뒤 별도로 다룬다.
     """
-    track = TrackInfo(name="Lilac", artist="IU", recording_variant="acoustic")
+    track = TrackInfo(name="Lilac", artist="IU")
     track.bind(_itunes_binding(ITUNES_ITEM))
 
     payload = track_to_api_dict(track)
 
     assert "bindings" not in payload
-    assert "recording_variant" not in payload
     assert payload["source_id"] == "itunes:1229073406"
 
 

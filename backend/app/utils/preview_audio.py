@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import io
-import subprocess
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import httpx
-
-if TYPE_CHECKING:
-    import numpy as np
 
 from app.llm.llm_response import TrackSearchAnalysis
 from app.llm.llm_wrapper import GeminiWrapper
@@ -24,9 +19,6 @@ Provider = Literal["itunes", "deezer"]
 
 MAX_PREVIEW_BYTES = 10 * 1024 * 1024
 
-# 동시에 너무 많은 오디오를 디코딩하지 않도록 제한
-_DECODE_SEMAPHORE = asyncio.Semaphore(4)
-
 
 class PreviewNotFoundError(Exception):
     pass
@@ -36,23 +28,10 @@ class PreviewDownloadError(Exception):
     pass
 
 
-class PreviewDecodeError(Exception):
-    pass
-
-
 @dataclass(frozen=True)
 class PreviewCandidate:
     provider: Provider
     preview_url: str
-    track_name: str
-    artist: str
-
-
-@dataclass(frozen=True)
-class LoadedPreview:
-    audio: np.ndarray
-    sample_rate: int
-    provider: Provider
     track_name: str
     artist: str
 
@@ -84,69 +63,6 @@ async def analyze_track_search(
         return result
 
     return TrackSearchAnalysis.model_validate_json(result)
-
-
-async def _search_itunes(
-    catalog: CatalogClient,
-    track_name: str,
-    artist: str,
-) -> PreviewCandidate | None:
-    result = await catalog.itunes_search_best(
-        track_name=track_name,
-        artist=artist,
-        limit=10,
-        min_score=0.72,
-        min_artist_score=0.7,
-    )
-
-    if not result:
-        return None
-
-    preview_url = str(result.get("previewUrl") or "")
-
-    if not preview_url:
-        return None
-
-    return PreviewCandidate(
-        provider="itunes",
-        preview_url=preview_url,
-        track_name=str(result.get("trackName") or track_name),
-        artist=str(result.get("artistName") or artist),
-    )
-
-
-async def _search_deezer(
-    catalog: CatalogClient,
-    track_name: str,
-    artist: str,
-) -> PreviewCandidate | None:
-    result = await catalog.deezer_search_best(
-        track_name=track_name,
-        artist=artist,
-    )
-
-    if not result:
-        return None
-
-    preview_url = str(result.get("preview") or "")
-
-    if not preview_url:
-        return None
-
-    artist_payload = result.get("artist")
-
-    resolved_artist = (
-        str(artist_payload.get("name") or artist)
-        if isinstance(artist_payload, dict)
-        else artist
-    )
-
-    return PreviewCandidate(
-        provider="deezer",
-        preview_url=preview_url,
-        track_name=str(result.get("title") or track_name),
-        artist=resolved_artist,
-    )
 
 
 async def _get_preview_bytes(
@@ -181,92 +97,6 @@ async def _get_preview_bytes(
         )
 
     return audio_bytes
-
-
-def _convert_to_wav(
-    audio_bytes: bytes,
-    sample_rate: int,
-) -> bytes:
-    """M4A/AAC같이 librosa가 BytesIO에서 읽지 못하는 형식을 WAV로 변환."""
-
-    try:
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-nostdin",
-                "-loglevel",
-                "error",
-                "-i",
-                "pipe:0",
-                "-f",
-                "wav",
-                "-ac",
-                "1",
-                "-ar",
-                str(sample_rate),
-                "pipe:1",
-            ],
-            input=audio_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-            timeout=30,
-        )
-    except FileNotFoundError as exc:
-        raise PreviewDecodeError(
-            "ffmpeg is required to decode iTunes preview audio"
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise PreviewDecodeError("ffmpeg decoding timed out") from exc
-    except subprocess.CalledProcessError as exc:
-        error_message = exc.stderr.decode(
-            "utf-8",
-            errors="replace",
-        )
-
-        raise PreviewDecodeError(f"ffmpeg decoding failed: {error_message}") from exc
-
-    return result.stdout
-
-
-def _load_audio(
-    audio_bytes: bytes,
-    sample_rate: int,
-) -> tuple[np.ndarray, int]:
-    """오디오 bytes를 디스크에 저장하지 않고 np.ndarray로 변환합니다."""
-    import librosa
-    import numpy as np
-
-    try:
-        audio, loaded_sample_rate = librosa.load(
-            io.BytesIO(audio_bytes),
-            sr=sample_rate,
-            mono=True,
-            dtype=np.float32,
-        )
-    except Exception:
-        # iTunes preview는 WAV로 변경
-        wav_bytes = _convert_to_wav(
-            audio_bytes,
-            sample_rate,
-        )
-
-        try:
-            audio, loaded_sample_rate = librosa.load(
-                io.BytesIO(wav_bytes),
-                sr=sample_rate,
-                mono=True,
-                dtype=np.float32,
-            )
-        except Exception as exc:
-            raise PreviewDecodeError("failed to load preview audio") from exc
-
-    audio = np.asarray(audio, dtype=np.float32)
-
-    if audio.size == 0:
-        raise PreviewDecodeError("decoded preview audio is empty")
-
-    return audio, loaded_sample_rate
 
 
 async def _search_preview_candidate(
@@ -395,18 +225,4 @@ async def load_track_preview_bytes(
 
     raise PreviewNotFoundError(
         f"preview unavailable for {artist} - {track_name}: " + "; ".join(errors)
-    )
-
-
-async def load_track_preview(
-    track_name, artist, http, gemini_wrapper, sample_rate=48_000
-) -> LoadedPreview:
-    """Local analysis helper; production forwards compressed bytes to inference."""
-    preview = await load_track_preview_bytes(track_name, artist, http, gemini_wrapper)
-    async with _DECODE_SEMAPHORE:
-        audio, rate = await asyncio.to_thread(
-            _load_audio, preview.audio_bytes, sample_rate
-        )
-    return LoadedPreview(
-        audio, rate, preview.provider, preview.track_name, preview.artist
     )

@@ -144,12 +144,6 @@ async def _seed_tags(
         except Exception as exc:
             logger.info("[opposite_emotion] artist tags unavailable: %s", exc)
 
-    # if compact_text(artist) in {compact_text(name) for name in _KNOWN_KOREAN_ARTISTS}:
-    #    tags.extend(["k-pop", "pop", "female vocalists"])
-
-    # if not tags:
-    #    tags.extend(["pop", "indie", "alternative"])
-
     return seeds._unique_preserve_order(tags)
 
 
