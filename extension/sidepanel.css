@@ -1,22 +1,31 @@
+@font-face {
+  font-family: "SideB Pretendard";
+  src: url("fonts/PretendardVariable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light dark;
 
-  --bg: #fafbfa;
+  --bg: #f7f7f5;
   --surface: #ffffff;
-  --surface-sunken: #eff2f0;
-  --border: #e0e5e1;
-  --border-strong: #bdc8c0;
-  --text: #202522;
-  --text-muted: #606c64;
-  --accent: #18724f;
-  --accent-hover: #10563b;
+  --surface-sunken: #edf0ee;
+  --border: #dddfdc;
+  --border-strong: #b9c0bc;
+  --text: #252726;
+  --text-muted: #69706d;
+  --accent: #765136;
+  --accent-hover: #5f3f2b;
   --accent-text: #ffffff;
-  --focus: #18724f;
+  --focus: #456b7b;
+  --oak: #9a7049;
 
   --font-sm: 12px;
   --font-xs: 12px;
 
-  --info-border: #24728c;
+  --info-border: #456b7b;
   --danger: #a12622;
   --danger-bg: #f7dcda;
   --success: #19603e;
@@ -25,7 +34,7 @@
   --warn-bg: #fff0c2;
 
   font-family:
-    Inter, Pretendard, "Noto Sans KR", system-ui, -apple-system,
+    "SideB Pretendard", Pretendard, "Noto Sans KR", system-ui, -apple-system,
     BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--bg);
@@ -33,19 +42,20 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #181a19;
-    --surface: #202321;
-    --surface-sunken: #2a302c;
-    --border: #343b36;
-    --border-strong: #515e55;
-    --text: #f0f3f1;
-    --text-muted: #a6b2aa;
-    --accent: #86d4ad;
-    --accent-hover: #a5e3c4;
-    --accent-text: #15271d;
-    --focus: #86d4ad;
+    --bg: #1d2021;
+    --surface: #242829;
+    --surface-sunken: #2b3031;
+    --border: #383e3f;
+    --border-strong: #596163;
+    --text: #f0f1ed;
+    --text-muted: #afb6b3;
+    --accent: #c49a70;
+    --accent-hover: #d6ae86;
+    --accent-text: #241d16;
+    --focus: #9ac2d2;
+    --oak: #c79f77;
 
-    --info-border: #3d90b0;
+    --info-border: #9ac2d2;
     --danger: #ff9a94;
     --danger-bg: #40201e;
     --success: #8fe0b4;
@@ -99,6 +109,7 @@
 .brand-mark {
   flex: none;
   object-fit: contain;
+  filter: saturate(0.82);
 }
 
 /* 사이드 패널은 폭이 가변이므로 고정 width를 쓰지 않는다. */
@@ -129,7 +140,7 @@ input {
   flex: none;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
-  padding: 12px 14px 0;
+  padding: 14px 18px 0;
 }
 
 .header {
@@ -143,8 +154,9 @@ input {
 h1 {
   flex: 1;
   margin: 0;
-  font-size: 18px;
+  font-size: 19px;
   line-height: 1.1;
+  font-weight: 720;
 }
 
 .badge {
@@ -750,12 +762,15 @@ label,
   background: var(--accent);
   color: var(--accent-text);
   font-size: 13px;
+  font-weight: 720;
   line-height: 1.4;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
 .export-button:hover:not(:disabled) {
   border-color: var(--accent-hover);
   background: var(--accent-hover);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .export-button:disabled {
@@ -763,6 +778,7 @@ label,
   background: var(--surface-sunken);
   color: var(--text-muted);
   opacity: 1;
+  box-shadow: none;
 }
 
 .track-list {
