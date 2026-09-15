@@ -66,6 +66,10 @@ test("intro yields to the sign-in gate and reduced motion skips it", async ({}, 
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath("sign-in-gate-280.png"), fullPage: true });
 
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(page.locator("#introOverlay")).toBeVisible();
+    await expect(page.locator("#introOverlay")).toBeHidden({ timeout: 4_000 });
+
     const reduced = await context.newPage();
     await reduced.emulateMedia({ reducedMotion: "reduce" });
     await reduced.goto(page.url());

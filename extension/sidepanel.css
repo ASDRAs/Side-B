@@ -132,6 +132,9 @@ body {
   overflow: hidden;
   background: var(--bg);
   pointer-events: none;
+}
+
+.intro-overlay.is-playing {
   animation: intro-veil 2400ms ease forwards;
 }
 
@@ -139,6 +142,9 @@ body {
   width: 96px;
   height: 96px;
   transform-origin: center;
+}
+
+.intro-overlay.is-playing .intro-mark {
   animation: intro-mark-arrive 2400ms cubic-bezier(0.22, 0.8, 0.25, 1) forwards;
 }
 
@@ -147,6 +153,9 @@ body {
   top: calc(50% + 70px);
   font-size: 22px;
   font-weight: 680;
+}
+
+.intro-overlay.is-playing .intro-name {
   animation: intro-name-arrive 2400ms ease forwards;
 }
 
@@ -864,12 +873,12 @@ label,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .intro-overlay {
+  .intro-overlay.is-playing {
     animation-duration: 1ms;
   }
 
-  .intro-mark,
-  .intro-name {
+  .intro-overlay.is-playing .intro-mark,
+  .intro-overlay.is-playing .intro-name {
     animation: none;
   }
 

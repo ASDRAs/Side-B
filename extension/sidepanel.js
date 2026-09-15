@@ -172,19 +172,39 @@ let settingsUserToggled = false;
 let authState = null;
 let authStateInitialized = false;
 let matchRequest = null;
+let introFallbackTimer = null;
+const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 function finishIntro() {
-  if (introOverlay.hidden) return;
+  window.clearTimeout(introFallbackTimer);
+  introFallbackTimer = null;
+  introOverlay.classList.remove("is-playing");
   introOverlay.hidden = true;
 }
 
-if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+function playIntro() {
   finishIntro();
-} else {
-  introOverlay.addEventListener("animationend", finishIntro, { once: true });
+  if (prefersReducedMotion.matches) return;
+
+  introOverlay.hidden = false;
+  // Removing and restoring the class restarts CSS animations when Chrome keeps
+  // the side-panel document alive between closes.
+  void introOverlay.offsetWidth;
+  introOverlay.classList.add("is-playing");
   // Keep the UI recoverable if an animation event is dropped while the panel opens.
-  window.setTimeout(finishIntro, 2800);
+  introFallbackTimer = window.setTimeout(finishIntro, 2800);
 }
+
+introOverlay.addEventListener("animationend", (event) => {
+  if (event.target === introOverlay && event.animationName === "intro-veil") {
+    finishIntro();
+  }
+});
+playIntro();
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") playIntro();
+});
 
 // 요청을 보내기 전에 발견한 문제. 서버에 닿아 본 적이 없으므로 연결 배지를
 // 실패로 바꾸면 안 된다. 사용자가 고칠 곳은 입력란이지 서버가 아니다.
