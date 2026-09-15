@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from app.services.catalog import DEEZER, ITUNES, ItunesRateLimitError
 from preview import (
     MediaBinding,
     PreviewProviderUnavailable,
@@ -18,7 +19,6 @@ from preview import (
     get_preview_url,
     stream_preview,
 )
-from recommend_algo.common import sources
 
 
 def _item(track_id, title, artist, preview="https://cdn/p.mp3"):
@@ -45,16 +45,15 @@ def _itunes(track_id, title, artist, preview="https://itunes/p.m4a"):
 
 @pytest.fixture(autouse=True)
 def _isolate_provider_state():
-    """공급자 캐시와 회로차단기는 모듈 전역이라 테스트 사이에 새어 나간다."""
+    """공급자 캐시는 모듈 전역이라 테스트 사이에 새어 나간다.
+
+    회로차단기는 conftest가 테스트마다 초기화한다.
+    """
     _resolve_media.cache_clear()
     _lookup_media.cache_clear()
-    sources._ITUNES_RATE_LIMIT_UNTIL = 0.0
-    sources._DZ_RATE_LIMIT_UNTIL = 0.0
     yield
     _resolve_media.cache_clear()
     _lookup_media.cache_clear()
-    sources._ITUNES_RATE_LIMIT_UNTIL = 0.0
-    sources._DZ_RATE_LIMIT_UNTIL = 0.0
 
 
 # ── Content-Disposition ──────────────────────────────────────────
@@ -487,11 +486,11 @@ async def test_itunes_rate_limit_falls_back_instead_of_failing():
     match = await _resolve_media(http, "Creep", "Radiohead")
 
     assert match.provider == "deezer"
-    assert sources._is_itunes_rate_limited()
+    assert ITUNES.is_limited()
 
 
 async def test_itunes_circuit_breaker_skips_the_search_entirely():
-    sources._mark_itunes_rate_limited(30)
+    ITUNES.mark_limited(30)
     http = RoutingHttp(
         itunes=[_itunes(11, "Creep", "Radiohead")],
         deezer=[_item(22, "Creep", "Radiohead")],
@@ -501,6 +500,24 @@ async def test_itunes_circuit_breaker_skips_the_search_entirely():
 
     assert match.provider == "deezer"
     assert http.itunes_terms == []
+
+
+async def test_itunes_rate_limit_is_not_cached_as_a_missing_preview():
+    """iTunes를 확인하지 못한 채 Deezer에도 없으면 미수록이 아니라 일시 장애다.
+
+    None으로 돌려주면 negative cache가 제한이 풀린 뒤에도 404를 굳힌다.
+    `Through the Night / IU`처럼 iTunes에만 있는 곡이 그 경우다.
+    """
+    ITUNES.mark_limited(30)
+    http = RoutingHttp(itunes=[_itunes(11, "Through the Night", "IU")], deezer=[])
+
+    with pytest.raises(PreviewProviderUnavailable):
+        await _resolve_media(http, "Through the Night", "IU")
+
+    ITUNES.reset()  # 제한 시간이 지난 상태
+    match = await _resolve_media(http, "Through the Night", "IU")
+
+    assert (match.provider, match.provider_track_id) == ("itunes", "11")
 
 
 class BreakerOpeningHttp:
@@ -519,16 +536,16 @@ class BreakerOpeningHttp:
 
 async def test_itunes_search_stops_when_the_breaker_opens_between_terms():
     """검색어 사이에 열린 차단기를 못 보면 남은 검색어가 그대로 나간다."""
-    http = BreakerOpeningHttp(lambda: sources._mark_itunes_rate_limited(30))
+    http = BreakerOpeningHttp(lambda: ITUNES.mark_limited(30))
 
-    assert await _fetch_itunes_preview(http, "Creep (Acoustic)", "Radiohead") is None
+    # 제한은 미수록(None)이 아니라 예외다. 호출부가 둘을 구분해야 캐시하지 않는다.
+    with pytest.raises(ItunesRateLimitError):
+        await _fetch_itunes_preview(http, "Creep (Acoustic)", "Radiohead")
     assert len(http.calls) == 1
 
 
 async def test_deezer_search_stops_when_the_breaker_opens_between_queries():
-    http = BreakerOpeningHttp(
-        lambda: sources._mark_dz_rate_limited({"Retry-After": "30"})
-    )
+    http = BreakerOpeningHttp(lambda: DEEZER.mark_limited(30))
 
     with pytest.raises(PreviewProviderUnavailable):
         await _fetch_deezer_preview(http, "Creep (Acoustic)", "Radiohead")
@@ -707,11 +724,11 @@ async def test_itunes_lookup_rate_limit_opens_the_breaker():
         await _lookup_media(http, "itunes", "1")
 
     assert exc.value.retry_after == "12"
-    assert sources._is_itunes_rate_limited()
+    assert ITUNES.is_limited()
 
 
 async def test_open_breaker_skips_the_itunes_lookup():
-    sources._mark_itunes_rate_limited(30)
+    ITUNES.mark_limited(30)
     http = LookupHttp(itunes=_itunes(1, "Creep", "Radiohead"))
 
     with pytest.raises(PreviewProviderUnavailable):
@@ -737,17 +754,16 @@ async def test_open_breaker_skips_the_itunes_lookup():
 )
 async def test_deezer_lookup_records_the_shared_breaker(payload):
     """기록하지 않으면 제한 중에도 클릭마다 Deezer를 다시 부른다."""
-    sources._DZ_RATE_LIMIT_UNTIL = 0.0
     http = LookupHttp(response=payload)
 
     with pytest.raises(PreviewProviderUnavailable):
         await _lookup_media(http, "deezer", "1")
 
-    assert sources._is_dz_rate_limited()
+    assert DEEZER.is_limited()
 
 
 async def test_open_deezer_breaker_skips_the_lookup():
-    sources._mark_dz_rate_limited({"Retry-After": "30"})
+    DEEZER.mark_limited(30)
     http = LookupHttp(deezer=DEEZER_TRACK)
 
     with pytest.raises(PreviewProviderUnavailable):
@@ -782,7 +798,7 @@ async def test_deezer_search_treats_a_quota_error_as_unavailable():
     assert exc.value.retry_after == "60"
     # 첫 응답에서 끊는다. 남은 검색어를 더 시도하지 않는다.
     assert http.calls == 1
-    assert sources._is_dz_rate_limited()
+    assert DEEZER.is_limited()
 
 
 async def test_deezer_search_still_treats_other_errors_as_no_match():
@@ -801,12 +817,12 @@ async def test_deezer_search_still_treats_other_errors_as_no_match():
     http = DataErrorHttp()
 
     assert await _fetch_deezer_preview(http, "Creep", "Radiohead") is None
-    assert not sources._is_dz_rate_limited()
+    assert not DEEZER.is_limited()
 
 
 async def test_open_deezer_breaker_skips_the_search_too():
     """조회 경로만 막으면 검색 경로가 그대로 제한을 두드린다."""
-    sources._mark_dz_rate_limited({"Retry-After": "30"})
+    DEEZER.mark_limited(30)
     http = FakeHttp([_item(1, "Creep", "Radiohead")])
 
     with pytest.raises(PreviewProviderUnavailable):

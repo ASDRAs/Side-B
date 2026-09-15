@@ -14,7 +14,11 @@ if TYPE_CHECKING:
 from app.llm.llm_response import TrackSearchAnalysis
 from app.llm.llm_wrapper import GeminiWrapper
 from app.llm.prompt import TRACK_SEARCH_ANALYSIS_PROMPT
-from app.services.catalog import CatalogClient
+from app.services.catalog import (
+    CatalogClient,
+    DeezerRateLimitError,
+    ItunesRateLimitError,
+)
 
 Provider = Literal["itunes", "deezer"]
 
@@ -374,6 +378,12 @@ async def load_track_preview_bytes(
                     track_name=candidate.track_name,
                     artist=candidate.artist,
                 )
+
+            except (ItunesRateLimitError, DeezerRateLimitError) as exc:
+                # The provider gate already blocks further calls. Skip the
+                # remaining queries for this provider and try the next one.
+                errors.append(f"{provider}: rate limited for {exc.retry_after}s")
+                break
 
             except Exception as exc:
                 errors.append(

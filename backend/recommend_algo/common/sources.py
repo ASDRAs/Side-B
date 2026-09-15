@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 ITUNES_URL = "https://itunes.apple.com/search"
 DEEZER_URL = "https://api.deezer.com"
 _API_SEMAPHORE = asyncio.Semaphore(25)
-_ITUNES_SEMAPHORE = asyncio.Semaphore(8)
 
 # Last.fm은 동기 라이브러리(pylast)를 to_thread로 호출한다. 기본 스레드풀이 32개뿐이라
 # hidden 버킷의 팬아웃(유사 아티스트 최대 30명)만으로도 풀을 점유할 수 있어 상한을 둔다.
@@ -58,10 +57,6 @@ _LASTFM_TOKENS_UPDATED: float = time.monotonic()
 _LASTFM_RATE_LIMIT_COOLDOWN = 60.0
 _LASTFM_RATE_LIMIT_UNTIL: float = 0.0
 
-# Deezer circuit breaker — 429 감지 시 해당 시각까지 모든 Deezer 호출 스킵
-_DZ_RATE_LIMIT_UNTIL: float = 0.0
-_ITUNES_RATE_LIMIT_UNTIL: float = 0.0
-
 # 후보를 곡으로 확정하는 최소 _catalog_match_score(title 0.68 / artist 0.32 가중).
 _ITUNES_CONFIRM_SCORE = 0.62
 _LASTFM_CONFIRM_SCORE = 0.5
@@ -85,17 +80,6 @@ _LASTFM_CONFIRM_SCORE = 0.5
 _ARTIST_MIN_SCORE = 0.7
 # 제목·아티스트가 모두 완전 일치. 더 나은 후보가 있을 수 없으므로 즉시 종료한다.
 _PERFECT_MATCH_SCORE = 1.0
-
-
-def _is_dz_rate_limited() -> bool:
-    return time.monotonic() < _DZ_RATE_LIMIT_UNTIL
-
-
-def _mark_dz_rate_limited(headers: dict) -> None:
-    global _DZ_RATE_LIMIT_UNTIL
-    retry_after = int(headers.get("Retry-After", 60))
-    _DZ_RATE_LIMIT_UNTIL = max(_DZ_RATE_LIMIT_UNTIL, time.monotonic() + retry_after)
-    logger.warning("[Deezer] 429 — %d초 차단", retry_after)
 
 
 class LastfmRateLimitError(Exception):
@@ -178,19 +162,6 @@ async def _await_lastfm_permission() -> None:
         wait = (1.0 - _LASTFM_TOKENS) / _LASTFM_REFILL_PER_SECOND
         logger.info("[Last.fm] 지속 호출 상한 — %.2f초 대기", wait)
         await asyncio.sleep(wait)
-
-
-def _is_itunes_rate_limited() -> bool:
-    return time.monotonic() < _ITUNES_RATE_LIMIT_UNTIL
-
-
-def _mark_itunes_rate_limited(retry_after: int) -> None:
-    global _ITUNES_RATE_LIMIT_UNTIL
-    _ITUNES_RATE_LIMIT_UNTIL = max(
-        _ITUNES_RATE_LIMIT_UNTIL,
-        time.monotonic() + retry_after,
-    )
-    logger.warning("[iTunes] 429 — %d초 차단", retry_after)
 
 
 # 만료 항목은 조회 시 버리고, 그래도 남는 증가분은 LRU로 잘라낸다.
@@ -432,22 +403,17 @@ async def _itunes_search(
     term = f"{track_name} {artist}".strip()
     if not term:
         return None
-    async with _ITUNES_SEMAPHORE:
-        if _is_itunes_rate_limited():
-            raise ItunesRateLimitError()
-        try:
-            return await CatalogClient(http).itunes_search_best(
-                track_name,
-                artist,
-                limit,
-                min_score,
-                min_artist_score,
-                title_aliases,
-                artist_aliases,
-            )
-        except ItunesRateLimitError as exc:
-            _mark_itunes_rate_limited(exc.retry_after)
-            raise
+    # 자리와 회로차단기는 CatalogClient의 공급자 게이트가 맡는다. 제한은 예외로
+    # 올라오므로 alru_cache에 결과 없음으로 남지 않는다.
+    return await CatalogClient(http).itunes_search_best(
+        track_name,
+        artist,
+        limit,
+        min_score,
+        min_artist_score,
+        title_aliases,
+        artist_aliases,
+    )
 
 
 async def _itunes_or_none(
@@ -482,14 +448,8 @@ async def _deezer_search(
     # rate-limit은 None 대신 예외로 전파한다.
     # alru_cache는 예외가 난 호출을 캐시하지 않으므로(429가 1시간 None으로 고착되는 것을 방지),
     # 회로차단기가 풀리면 다음 호출에서 곧바로 재시도된다.
-    if _is_dz_rate_limited():
-        raise DeezerRateLimitError()
-    try:
-        # TODO : Catalog 해체분석 해보기.
-        return await CatalogClient(http).deezer_search_best(track_name, artist)
-    except DeezerRateLimitError as e:
-        _mark_dz_rate_limited({"Retry-After": str(e.retry_after)})
-        raise
+    # TODO : Catalog 해체분석 해보기.
+    return await CatalogClient(http).deezer_search_best(track_name, artist)
 
 
 async def _deezer_or_none(
