@@ -82,6 +82,12 @@ const backendAccessTokenInput = document.querySelector("#backendAccessToken");
 const tokenRevealButton = document.querySelector("#tokenRevealButton");
 const tokenClearButton = document.querySelector("#tokenClearButton");
 const tokenStatus = document.querySelector("#tokenStatus");
+const introOverlay = document.querySelector("#introOverlay");
+const authGate = document.querySelector("#authGate");
+const authGateSignInButton = document.querySelector("#authGateSignInButton");
+const authGateSignOutButton = document.querySelector("#authGateSignOutButton");
+const authGateSettingsButton = document.querySelector("#authGateSettingsButton");
+const authGateStatus = document.querySelector("#authGateStatus");
 const accountSettings = document.querySelector("#accountSettings");
 const legacyAuthSettings = document.querySelector("#legacyAuthSettings");
 const authStatus = document.querySelector("#authStatus");
@@ -166,6 +172,19 @@ let settingsUserToggled = false;
 let authState = null;
 let authStateInitialized = false;
 let matchRequest = null;
+
+function finishIntro() {
+  if (introOverlay.hidden) return;
+  introOverlay.hidden = true;
+}
+
+if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  finishIntro();
+} else {
+  introOverlay.addEventListener("animationend", finishIntro, { once: true });
+  // Keep the UI recoverable if an animation event is dropped while the panel opens.
+  window.setTimeout(finishIntro, 2800);
+}
 
 // 요청을 보내기 전에 발견한 문제. 서버에 닿아 본 적이 없으므로 연결 배지를
 // 실패로 바꾸면 안 된다. 사용자가 고칠 곳은 입력란이지 서버가 아니다.
@@ -287,14 +306,9 @@ function openSettingsForOnboarding() {
   if (settingsUserToggled) {
     return;
   }
-  const needsManagedLogin = ["firebase", "dual"].includes(authState?.mode) && authState.status !== "signed_in";
   const needsLegacyToken = authState?.mode === "legacy" && !backendAccessTokenInput.value;
-  settingsAutoOpened = needsManagedLogin || needsLegacyToken ||
-    authState?.status === "configuration_unavailable";
+  settingsAutoOpened = needsLegacyToken;
   settingsPanel.open = settingsAutoOpened;
-  if (needsManagedLogin || authState?.status === "configuration_unavailable") {
-    document.body.classList.add("settings-view");
-  }
 }
 
 function showView(view) {
@@ -668,6 +682,11 @@ function updateMatchSelectionSummary() {
 function renderAuthState(state) {
   const mode = state?.mode;
   const managed = mode === "firebase" || mode === "dual";
+  const gateRequired = state?.status === "initializing" ||
+    state?.status === "configuration_unavailable" ||
+    (managed && state?.status !== "signed_in");
+  document.body.classList.toggle("auth-gated", gateRequired);
+  authGate.hidden = !gateRequired;
   accountSettings.hidden = !managed && state?.status !== "configuration_unavailable";
   legacyAuthSettings.hidden = mode !== "legacy";
   const statusText = {
@@ -682,6 +701,8 @@ function renderAuthState(state) {
   }[state?.status] || "로그인 상태 확인 중";
   authStatus.textContent = state?.error ? `${statusText}: ${state.error}` : statusText;
   authStatus.dataset.error = String(["configuration_unavailable", "denied", "error"].includes(state?.status));
+  authGateStatus.textContent = state?.error ? `${statusText}: ${state.error}` : statusText;
+  authGateStatus.dataset.error = authStatus.dataset.error;
   const account = state?.account;
   accountLabel.textContent = account
     ? [account.displayName, account.email].filter(Boolean).join(" · ")
@@ -690,6 +711,11 @@ function renderAuthState(state) {
   signInButton.hidden = !managed || state?.status === "signed_in";
   signInButton.disabled = state?.status === "signing_in" || state?.status === "initializing" ||
     state?.status === "configuration_unavailable";
+  authGateSignInButton.hidden = !managed;
+  authGateSignInButton.disabled = signInButton.disabled;
+  authGateSignInButton.querySelector("span:last-child").textContent =
+    state?.status === "signing_in" ? "로그인 중" : "Google로 계속하기";
+  authGateSignOutButton.hidden = state?.status !== "signing_in";
   signOutButton.hidden = !["signed_in", "signing_in"].includes(state?.status);
 }
 
@@ -732,15 +758,31 @@ function acceptAuthState(nextState) {
   authStateInitialized = true;
 }
 
-signInButton.addEventListener("click", async () => {
-  try { acceptAuthState(await signIn()); }
-  catch (error) { authStatus.textContent = error.message; }
+async function requestSignIn() {
+  try {
+    acceptAuthState(await signIn());
+  } catch (error) {
+    authStatus.textContent = error.message;
+    authGateStatus.textContent = error.message;
+    authGateStatus.dataset.error = "true";
+  }
+}
+
+signInButton.addEventListener("click", requestSignIn);
+authGateSignInButton.addEventListener("click", requestSignIn);
+authGateSettingsButton.addEventListener("click", () => {
+  document.body.classList.add("settings-view");
+  openSettings();
 });
-signOutButton.addEventListener("click", async () => {
+
+async function requestSignOut() {
   clearAccountScopedState();
   try { acceptAuthState(await signOut()); }
   catch (error) { authStatus.textContent = error.message; }
-});
+}
+
+signOutButton.addEventListener("click", requestSignOut);
+authGateSignOutButton.addEventListener("click", requestSignOut);
 
 function reviewYouTubeMatches(matches, title) {
   destinationPicker.reset(title);
