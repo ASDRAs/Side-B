@@ -46,11 +46,34 @@ const matches = { requested: 1, deduplicated: 0, matched: [{ ...track, position:
   video_id: "fixtureVideo", youtube_title: "Adele - Hello", channel_title: "Adele", confidence: 0.95 }], unmatched: [] };
 
 async function logIn(page) {
-  await expect(page.locator("#signInButton")).toBeVisible();
-  await page.locator("#signInButton").click();
+  await expect(page.locator("#authGateSignInButton")).toBeVisible();
+  await page.locator("#authGateSignInButton").click();
   await expect(page.locator("#authStatus")).toHaveText("로그인됨");
-  await page.locator("#settingsToggle").click();
+  await expect(page.locator("#authGate")).toBeHidden();
 }
+
+test("intro yields to the sign-in gate and reduced motion skips it", async ({}, testInfo) => {
+  const { context, page } = await launchExtensionPage(testInfo, {
+    setupWorker: installAuthFixture,
+    showIntro: true,
+  });
+  try {
+    await page.setViewportSize({ width: 280, height: 760 });
+    await expect(page.locator("#introOverlay")).toBeVisible();
+    await expect(page.locator("#introOverlay")).toBeHidden({ timeout: 4_000 });
+    await expect(page.locator("#authGate")).toBeVisible();
+    await expect(page.locator(".search-bar")).toBeHidden();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("sign-in-gate-280.png"), fullPage: true });
+
+    const reduced = await context.newPage();
+    await reduced.emulateMedia({ reducedMotion: "reduce" });
+    await reduced.goto(page.url());
+    await expect(reduced.locator("#introOverlay")).toBeHidden();
+    await expect(reduced.locator("#authGate")).toBeVisible();
+    await reduced.close();
+  } finally { await context.close(); }
+});
 
 test("managed login replaces token input, sends bearer to recommendation/matches, and logout clears both panels", async ({}, testInfo) => {
   const { context, page } = await launchExtensionPage(testInfo, { setupWorker: installAuthFixture });
@@ -109,9 +132,9 @@ test("logout during pending consent cannot restore the account", async ({}, test
   const [worker] = context.serviceWorkers();
   try {
     await worker.evaluate(() => { authFixture.pendingGoogle = true; });
-    await page.locator("#signInButton").click();
-    await expect(page.locator("#authStatus")).toHaveText("Google 로그인 중");
-    await page.locator("#signOutButton").click();
+    await page.locator("#authGateSignInButton").click();
+    await expect(page.locator("#authGateStatus")).toHaveText("Google 로그인 중");
+    await page.locator("#authGateSignOutButton").click();
     await worker.evaluate(() => authFixture.releaseGoogle());
     await expect(page.locator("#authStatus")).toHaveText("로그인되지 않음");
     expect(await worker.evaluate(() => authManager.state().account)).toBeNull();
@@ -199,9 +222,13 @@ test("logout during matching cancels its HTTP request and never opens a stale re
 test("missing Firebase setup fails visibly instead of requesting a team token", async ({}, testInfo) => {
   const { context, page } = await launchExtensionPage(testInfo, { setupWorker: (worker) => installAuthFixture(worker, { blank: true }) });
   try {
-    await expect(page.locator("#authStatus")).toContainText("로그인 설정을 사용할 수 없음");
-    await expect(page.locator("#signInButton")).toBeDisabled();
+    await expect(page.locator("#authGateStatus")).toContainText("로그인 설정을 사용할 수 없음");
+    await expect(page.locator("#authGateSignInButton")).toBeDisabled();
     await expect(page.locator("#legacyAuthSettings")).toBeHidden();
+    await page.locator("#authGateSettingsButton").click();
+    await expect(page.locator("#settingsPanel")).toBeVisible();
+    await page.locator("#settingsBack").click();
+    await expect(page.locator("#authGate")).toBeVisible();
     for (const width of [280, 480]) {
       for (const colorScheme of ["light", "dark"]) {
         await page.setViewportSize({ width, height: 900 });

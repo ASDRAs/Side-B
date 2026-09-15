@@ -17,7 +17,7 @@ function assertApiOriginIsAllowed(apiBaseUrl) {
   }
 }
 
-async function launchExtensionPage(testInfo, { setupWorker } = {}) {
+async function launchExtensionPage(testInfo, { setupWorker, showIntro = false } = {}) {
   // Every test gets an explicit empty profile under its own output directory.
   // Reusing a profile would leak chrome.storage state between scenarios.
   const context = await chromium.launchPersistentContext(
@@ -54,6 +54,7 @@ async function launchExtensionPage(testInfo, { setupWorker } = {}) {
     if (setupWorker) await setupWorker(serviceWorker);
 
     const page = await context.newPage();
+    if (!showIntro) await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     // Navigation does not wait for chrome.storage restoration. Tests that read
     // the API address immediately must wait for that asynchronous UI state.

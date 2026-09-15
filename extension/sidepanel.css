@@ -1,22 +1,31 @@
+@font-face {
+  font-family: "SideB Pretendard";
+  src: url("fonts/PretendardVariable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light dark;
 
-  --bg: #fafbfa;
+  --bg: #f7f7f5;
   --surface: #ffffff;
-  --surface-sunken: #eff2f0;
-  --border: #e0e5e1;
-  --border-strong: #bdc8c0;
-  --text: #202522;
-  --text-muted: #606c64;
-  --accent: #18724f;
-  --accent-hover: #10563b;
+  --surface-sunken: #edf0ee;
+  --border: #dddfdc;
+  --border-strong: #b9c0bc;
+  --text: #252726;
+  --text-muted: #69706d;
+  --accent: #765136;
+  --accent-hover: #5f3f2b;
   --accent-text: #ffffff;
-  --focus: #18724f;
+  --focus: #456b7b;
+  --oak: #9a7049;
 
   --font-sm: 12px;
   --font-xs: 12px;
 
-  --info-border: #24728c;
+  --info-border: #456b7b;
   --danger: #a12622;
   --danger-bg: #f7dcda;
   --success: #19603e;
@@ -25,7 +34,7 @@
   --warn-bg: #fff0c2;
 
   font-family:
-    Inter, Pretendard, "Noto Sans KR", system-ui, -apple-system,
+    "SideB Pretendard", Pretendard, "Noto Sans KR", system-ui, -apple-system,
     BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--bg);
@@ -33,19 +42,20 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #181a19;
-    --surface: #202321;
-    --surface-sunken: #2a302c;
-    --border: #343b36;
-    --border-strong: #515e55;
-    --text: #f0f3f1;
-    --text-muted: #a6b2aa;
-    --accent: #86d4ad;
-    --accent-hover: #a5e3c4;
-    --accent-text: #15271d;
-    --focus: #86d4ad;
+    --bg: #1d2021;
+    --surface: #242829;
+    --surface-sunken: #2b3031;
+    --border: #383e3f;
+    --border-strong: #596163;
+    --text: #f0f1ed;
+    --text-muted: #afb6b3;
+    --accent: #c49a70;
+    --accent-hover: #d6ae86;
+    --accent-text: #241d16;
+    --focus: #9ac2d2;
+    --oak: #c79f77;
 
-    --info-border: #3d90b0;
+    --info-border: #9ac2d2;
     --danger: #ff9a94;
     --danger-bg: #40201e;
     --success: #8fe0b4;
@@ -99,6 +109,7 @@
 .brand-mark {
   flex: none;
   object-fit: contain;
+  filter: saturate(0.82);
 }
 
 /* 사이드 패널은 폭이 가변이므로 고정 width를 쓰지 않는다. */
@@ -110,6 +121,177 @@ body {
   margin: 0;
   background: var(--bg);
   overflow: hidden;
+}
+
+.intro-overlay {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--bg);
+  pointer-events: none;
+  animation: intro-veil 2400ms ease forwards;
+}
+
+.intro-mark {
+  width: 96px;
+  height: 96px;
+  transform-origin: center;
+  animation: intro-mark-arrive 2400ms cubic-bezier(0.22, 0.8, 0.25, 1) forwards;
+}
+
+.intro-name {
+  position: absolute;
+  top: calc(50% + 70px);
+  font-size: 22px;
+  font-weight: 680;
+  animation: intro-name-arrive 2400ms ease forwards;
+}
+
+@keyframes intro-mark-arrive {
+  0% { opacity: 0; transform: scale(2.8) rotate(-25deg); }
+  22% { opacity: 1; }
+  50%, 72% { transform: scale(2.8) rotate(0deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0deg); }
+}
+
+@keyframes intro-name-arrive {
+  0%, 18% { opacity: 0; transform: translateY(6px); }
+  30%, 52% { opacity: 1; transform: translateY(0); }
+  70%, 100% { opacity: 0; transform: translateY(0); }
+}
+
+@keyframes intro-veil {
+  0%, 68% { opacity: 1; }
+  100% { opacity: 0; visibility: hidden; }
+}
+
+.auth-gate {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 28px 26px;
+}
+
+.auth-gate-body {
+  position: absolute;
+  top: 44%;
+  right: 26px;
+  left: 26px;
+  transform: translateY(-50%);
+}
+
+.auth-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 22px;
+  color: var(--info-border);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.auth-eyebrow::before {
+  width: 23px;
+  height: 1px;
+  background: var(--info-border);
+  content: "";
+}
+
+.auth-gate h2 {
+  margin: 0 0 12px;
+  font-size: 26px;
+  font-weight: 650;
+  line-height: 1.45;
+  word-break: keep-all;
+}
+
+.auth-copy {
+  margin: 0 0 30px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.75;
+  word-break: keep-all;
+}
+
+.google-sign-in {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 2px 3px rgb(0 0 0 / 4%);
+}
+
+.google-sign-in:hover {
+  border-color: var(--oak);
+  background: var(--surface-sunken);
+}
+
+.auth-cancel {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.google-mark {
+  color: var(--info-border);
+  font-family: Arial, sans-serif;
+  font-size: 20px;
+}
+
+.auth-gate-status {
+  min-height: 32px;
+  margin: 0;
+  padding-top: 12px;
+  color: var(--info-border);
+  font-size: 12px;
+}
+
+.auth-gate-status[data-error="true"] {
+  color: var(--danger);
+}
+
+.auth-gate #authGateSettingsButton {
+  height: auto;
+  padding: 2px 0;
+}
+
+.auth-gate-footer {
+  position: absolute;
+  right: 26px;
+  bottom: 28px;
+  left: 26px;
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.auth-gated .scroll-area,
+.auth-gated .eq-bar,
+.auth-gated .search-bar,
+.auth-gated #statusMessage {
+  display: none;
+}
+
+.auth-gated .topbar {
+  padding-bottom: 14px;
+}
+
+.auth-gated.settings-view .auth-gate {
+  display: none;
+}
+
+.auth-gated.settings-view .scroll-area {
+  display: block;
 }
 
 button,
@@ -129,7 +311,7 @@ input {
   flex: none;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
-  padding: 12px 14px 0;
+  padding: 14px 18px 0;
 }
 
 .header {
@@ -143,8 +325,9 @@ input {
 h1 {
   flex: 1;
   margin: 0;
-  font-size: 18px;
+  font-size: 19px;
   line-height: 1.1;
+  font-weight: 720;
 }
 
 .badge {
@@ -634,6 +817,15 @@ label,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .intro-overlay {
+    animation-duration: 1ms;
+  }
+
+  .intro-mark,
+  .intro-name {
+    animation: none;
+  }
+
   .skeleton-heading,
   .skeleton-row {
     animation: none;
@@ -750,12 +942,15 @@ label,
   background: var(--accent);
   color: var(--accent-text);
   font-size: 13px;
+  font-weight: 720;
   line-height: 1.4;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
 .export-button:hover:not(:disabled) {
   border-color: var(--accent-hover);
   background: var(--accent-hover);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .export-button:disabled {
@@ -763,6 +958,7 @@ label,
   background: var(--surface-sunken);
   color: var(--text-muted);
   opacity: 1;
+  box-shadow: none;
 }
 
 .track-list {
@@ -1253,6 +1449,16 @@ label,
 .match-columns { display: none; }
 .match-target { grid-column: 2; margin-top: 5px; border-left: 2px solid var(--border); padding-left: 10px; }
 @media (max-width: 359px) {
+  .auth-gate {
+    padding-right: 20px;
+    padding-left: 20px;
+  }
+  .auth-gate-body,
+  .auth-gate-footer {
+    right: 20px;
+    left: 20px;
+  }
+  .auth-gate h2 { font-size: 23px; }
   .track-actions { flex-direction: column; }
   .track-open > span:last-child { display: none; }
   .track-open { width: 30px; padding: 0; }
