@@ -502,9 +502,46 @@ label,
 
 .settings-body {
   display: grid;
-  gap: 6px;
+  gap: 0;
   border-top: 1px solid var(--border);
-  padding: 12px 0;
+  padding: 0;
+}
+
+.settings-group {
+  display: grid;
+  gap: 8px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-group:last-child {
+  border-bottom: 0;
+}
+
+.settings-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-group-heading h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-value {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
 }
 
 .field-help {
@@ -519,6 +556,16 @@ label,
 .field-help p {
   margin: 5px 0 0;
   line-height: 1.5;
+}
+
+.advanced-settings > summary {
+  font-weight: 700;
+}
+
+.advanced-settings-body {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
 }
 
 .token-row {
@@ -1374,12 +1421,6 @@ label,
   flex: none;
   border-top: 1px solid var(--border);
   padding: 12px 14px;
-}
-
-.account-settings,
-#legacyAuthSettings {
-  display: grid;
-  gap: 6px;
 }
 
 .account-settings[hidden],
