@@ -2,6 +2,7 @@ import time
 
 import pytest
 
+from app.services import catalog
 from recommend_algo.common import sources
 
 
@@ -30,6 +31,21 @@ def _reset_lastfm_rate_state():
     _reset_lastfm_state()
     yield
     _reset_lastfm_state()
+
+
+@pytest.fixture(autouse=True)
+def _reset_provider_gates():
+    """iTunes·Deezer 게이트도 모듈 전역이다.
+
+    429를 재현한 테스트가 차단기를 열어 두면 뒤 테스트의 공급자 호출이 전부
+    건너뛰어진다. 세마포어는 처음 대기가 생긴 이벤트 루프에 묶이므로 루프가
+    바뀌는 테스트마다 새로 만든다.
+    """
+    catalog.ITUNES.reset()
+    catalog.DEEZER.reset()
+    yield
+    catalog.ITUNES.reset()
+    catalog.DEEZER.reset()
 
 
 def _reset_lastfm_state():

@@ -26,18 +26,20 @@ from async_lru import alru_cache
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.services.catalog import _alias_artist_score, _looks_like_bad_version
-from app.utils.text import compact_text
-
-# iTunes 회로차단기와 아트워크 정규화는 추천 경로와 상태를 공유해야 한다.
+# 공급자 게이트(자리·회로차단기)는 추천·장르 분석 경로와 공유한다.
 # 각자 따로 두면 한쪽이 받은 429를 다른 쪽이 모른다.
-from recommend_algo.common.sources import (
-    _is_dz_rate_limited,
-    _is_itunes_rate_limited,
-    _itunes_artwork,
-    _mark_dz_rate_limited,
-    _mark_itunes_rate_limited,
+from app.services.catalog import (
+    DEEZER,
+    ITUNES,
+    DeezerRateLimitError,
+    ItunesRateLimitError,
+    _alias_artist_score,
+    _looks_like_bad_version,
+    raise_if_deezer_quota_error,
+    retry_after_seconds,
 )
+from app.utils.text import compact_text
+from recommend_algo.common.sources import _itunes_artwork
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +55,8 @@ _ITUNES_LOOKUP = "https://itunes.apple.com/lookup"
 #   iTunes  {"resultCount": 0, "results": []}
 #   Deezer  {"error": {"type": "DataException", "code": 800, ...}}
 # Deezer는 쿼터 초과도 200 + error 본문으로 알린다. 그건 미수록이 아니라
-# 일시 장애라서 negative cache에 넣으면 안 된다(§10).
-_DEEZER_QUOTA_ERROR_CODE = 4
+# 일시 장애라서 negative cache에 넣으면 안 된다(§10). 판별은
+# `catalog.raise_if_deezer_quota_error`가 맡는다.
 
 # 공급자별 미리 듣기 미디어 형식. 실측 기준 iTunes는 audio/x-m4p(m4a),
 # Deezer는 audio/mpeg(mp3)다.
@@ -208,36 +210,14 @@ def _content_disposition(track_name: str, file_extension: str) -> str:
 
 def _retry_after_seconds(value: str | None, *, default: int) -> str:
     """공급자 Retry-After를 안전한 delta-seconds 형식으로 정규화한다."""
-    if value:
-        candidate = value.strip()
-        if candidate.isdecimal():
-            return candidate
-    return str(default)
+    return str(retry_after_seconds(value, default))
 
 
-def _raise_if_deezer_quota_error(payload: object) -> None:
-    """Deezer가 200 본문으로 알리는 쿼터 초과를 골라낸다.
-
-    검색 응답에는 `data`가 없고 `error`만 온다. 그대로 두면 빈 결과로 보여
-    남은 검색어를 계속 시도하고 끝내 404가 된다 — 제한을 미수록으로 오해하는
-    것이고, 회로차단기도 닫힌 채로 남아 다음 클릭이 또 두드린다.
-    """
-    if not isinstance(payload, dict):
-        return
-    error = payload.get("error")
-    if isinstance(error, dict) and error.get("code") == _DEEZER_QUOTA_ERROR_CODE:
-        logger.warning("[Preview] Deezer 쿼터 초과: %s", error.get("message"))
-        raise _deezer_rate_limited("60")
-
-
-def _deezer_rate_limited(retry_after: str) -> PreviewProviderUnavailable:
-    """Deezer 제한을 회로차단기에 기록하고 올릴 예외를 만든다.
-
-    차단기는 추천 경로와 공유한다. 기록하지 않으면 제한 중에도 클릭마다 Deezer를
-    다시 부른다.
-    """
-    _mark_dz_rate_limited({"Retry-After": retry_after})
-    return PreviewProviderUnavailable(retry_after=retry_after)
+def _provider_limited(
+    exc: ItunesRateLimitError | DeezerRateLimitError,
+) -> PreviewProviderUnavailable:
+    """공급자 게이트의 제한 예외를 미리 듣기의 일시 장애로 옮긴다."""
+    return PreviewProviderUnavailable(retry_after=str(exc.retry_after))
 
 
 def _provider_unavailable_http_error(
@@ -256,23 +236,22 @@ async def _fetch_itunes_preview(
     track_name: str,
     artist: str,
 ) -> MediaBinding | None:
-    """iTunes 검색으로 미리 듣기를 찾는다. 실패는 조용히 Deezer로 넘긴다.
+    """iTunes 검색으로 미리 듣기를 찾는다. 장애와 미수록은 조용히 Deezer로 넘긴다.
 
-    iTunes는 fallback이 남아 있는 1순위 공급자라, 여기서 429나 장애가 나도
-    503으로 끊지 않는다. Deezer가 같은 곡을 가지고 있을 수 있기 때문이다.
-    429는 추천 경로와 공유하는 회로차단기에 기록해 반복 호출을 막는다.
+    iTunes는 fallback이 남아 있는 1순위 공급자라, 여기서 장애가 나도 503으로
+    끊지 않는다. Deezer가 같은 곡을 가지고 있을 수 있기 때문이다. 호출 제한만은
+    `ItunesRateLimitError`로 올린다. 확인하지 못한 것과 없는 것을 호출부가
+    구분해야 미수록으로 캐시하지 않는다.
     """
     clean = _strip_version(track_name)
     wanted = _version_markers(track_name)
 
     for term in _itunes_terms(track_name, artist):
-        # 검색어마다 확인한다. 앞에서 한 번만 보면, 첫 검색어를 시도하는 사이에
-        # 다른 요청이 429를 받아 차단기를 열어도 남은 검색어가 그대로 나간다.
-        if _is_itunes_rate_limited():
-            logger.info("[Preview] iTunes 회로차단 중 — Deezer로 넘어간다")
-            return None
+        # 게이트가 호출마다 차단기를 확인하므로, 첫 검색어를 시도하는 사이에
+        # 다른 요청이 연 차단기도 남은 검색어 앞에서 본다.
         try:
-            resp = await http.get(
+            resp = await ITUNES.get(
+                http,
                 _ITUNES_SEARCH,
                 params={"term": term, "entity": "song", "limit": 10},
                 timeout=5.0,
@@ -281,13 +260,6 @@ async def _fetch_itunes_preview(
             logger.warning("[Preview] iTunes 요청 실패: %s", exc)
             return None
 
-        if resp.status_code == 429:
-            retry_after = _retry_after_seconds(
-                resp.headers.get("Retry-After"), default=60
-            )
-            logger.warning("[Preview] iTunes 429 — 회로차단 후 Deezer로 넘어간다")
-            _mark_itunes_rate_limited(int(retry_after))
-            return None
         if resp.status_code >= 400:
             logger.warning("[Preview] iTunes HTTP %s: %s", resp.status_code, term)
             continue
@@ -328,24 +300,20 @@ async def _fetch_deezer_preview(
     queries = _search_queries(track_name, artist)
 
     for query in queries:
-        # 검색어마다 확인한다. iTunes 쪽과 같은 이유다 — 검색어 사이에 다른
-        # 요청이 차단기를 열 수 있고, 그때 남은 검색어를 계속 보내면 제한이
-        # 길어진다.
-        if _is_dz_rate_limited():
-            raise PreviewProviderUnavailable(retry_after="30")
+        # 게이트가 호출마다 차단기를 확인한다. 검색어 사이에 다른 요청이 연
+        # 차단기도 보므로 남은 검색어를 계속 보내 제한을 늘리지 않는다.
         try:
-            resp = await http.get(_DEEZER_SEARCH, params={"q": query}, timeout=8.0)
+            resp = await DEEZER.get(
+                http, _DEEZER_SEARCH, params={"q": query}, timeout=8.0
+            )
+        except DeezerRateLimitError as exc:
+            raise _provider_limited(exc) from exc
         except httpx.RequestError as exc:
             logger.warning(
                 "[Preview] Deezer 요청 실패 (%s): %s", type(exc).__name__, exc
             )
             raise PreviewProviderUnavailable(retry_after="30") from exc
 
-        if resp.status_code == 429:
-            logger.warning("[Preview] Deezer 429 — 미리 듣기 불가")
-            raise _deezer_rate_limited(
-                _retry_after_seconds(resp.headers.get("Retry-After"), default=60)
-            )
         if resp.status_code >= 500:
             logger.warning("[Preview] Deezer HTTP %s: %s", resp.status_code, query)
             raise PreviewProviderUnavailable(
@@ -363,7 +331,10 @@ async def _fetch_deezer_preview(
         except (TypeError, ValueError) as exc:
             logger.warning("[Preview] Deezer 응답 JSON 파싱 실패: %s", query)
             raise PreviewProviderUnavailable(retry_after="30") from exc
-        _raise_if_deezer_quota_error(payload)
+        try:
+            raise_if_deezer_quota_error(payload)
+        except DeezerRateLimitError as exc:
+            raise _provider_limited(exc) from exc
         items = payload.get("data", []) if isinstance(payload, dict) else []
 
         best = _best_candidate(items, clean, artist, wanted)
@@ -393,10 +364,19 @@ async def _resolve_media(
     캐시하고 예외는 캐시하지 않으므로, 없는 곡을 다시 눌러도 공급자를 또 부르지
     않는 negative cache가 여기에 걸려 있다.
     """
-    binding = await _fetch_itunes_preview(http, track_name, artist)
+    itunes_limited: ItunesRateLimitError | None = None
+    try:
+        binding = await _fetch_itunes_preview(http, track_name, artist)
+    except ItunesRateLimitError as exc:
+        logger.info("[Preview] iTunes 호출 제한 — Deezer로 넘어간다")
+        itunes_limited, binding = exc, None
     if binding is None:
         binding = await _fetch_deezer_preview(http, track_name, artist)
 
+    if binding is None and itunes_limited is not None:
+        # iTunes를 확인하지 못했으니 없다고 확정할 수 없다. None을 돌려주면 위
+        # negative cache가 제한이 풀린 뒤에도 404를 TTL 동안 굳힌다.
+        raise _provider_limited(itunes_limited)
     if binding is None:
         logger.info("[Preview] 일치하는 미리 듣기 없음: %s - %s", track_name, artist)
         return None
@@ -415,24 +395,19 @@ async def _lookup_itunes(
     http: httpx.AsyncClient, provider_track_id: str
 ) -> MediaBinding | None:
     """iTunes ID로 곡을 조회한다. 검색이 아니므로 fallback 대상이 아니다."""
-    if _is_itunes_rate_limited():
-        raise PreviewProviderUnavailable(retry_after="30")
     try:
-        resp = await http.get(
+        resp = await ITUNES.get(
+            http,
             _ITUNES_LOOKUP,
             params={"id": provider_track_id, "entity": "song"},
             timeout=5.0,
         )
+    except ItunesRateLimitError as exc:
+        raise _provider_limited(exc) from exc
     except httpx.RequestError as exc:
         logger.warning("[Preview] iTunes lookup 요청 실패: %s", exc)
         raise PreviewProviderUnavailable(retry_after="30") from exc
 
-    if resp.status_code == 429:
-        retry_after = _retry_after_seconds(
-            resp.headers.get("Retry-After"), default=60
-        )
-        _mark_itunes_rate_limited(int(retry_after))
-        raise PreviewProviderUnavailable(retry_after=retry_after)
     if resp.status_code >= 500:
         raise PreviewProviderUnavailable(
             retry_after=_retry_after_seconds(
@@ -474,20 +449,16 @@ async def _lookup_deezer(
     http: httpx.AsyncClient, provider_track_id: str
 ) -> MediaBinding | None:
     """Deezer ID로 곡을 조회한다."""
-    if _is_dz_rate_limited():
-        raise PreviewProviderUnavailable(retry_after="30")
     try:
-        resp = await http.get(
-            f"{_DEEZER_TRACK}/{provider_track_id}", timeout=8.0
+        resp = await DEEZER.get(
+            http, f"{_DEEZER_TRACK}/{provider_track_id}", timeout=8.0
         )
+    except DeezerRateLimitError as exc:
+        raise _provider_limited(exc) from exc
     except httpx.RequestError as exc:
         logger.warning("[Preview] Deezer lookup 요청 실패: %s", exc)
         raise PreviewProviderUnavailable(retry_after="30") from exc
 
-    if resp.status_code == 429:
-        raise _deezer_rate_limited(
-            _retry_after_seconds(resp.headers.get("Retry-After"), default=60)
-        )
     if resp.status_code >= 500:
         raise PreviewProviderUnavailable(
             retry_after=_retry_after_seconds(
@@ -504,7 +475,10 @@ async def _lookup_deezer(
     if not isinstance(payload, dict):
         raise PreviewProviderUnavailable(retry_after="30")
 
-    _raise_if_deezer_quota_error(payload)
+    try:
+        raise_if_deezer_quota_error(payload)
+    except DeezerRateLimitError as exc:
+        raise _provider_limited(exc) from exc
     if isinstance(payload.get("error"), dict):
         # 쿼터가 아닌 error는 없는 곡이다(DataException 800 등).
         return None

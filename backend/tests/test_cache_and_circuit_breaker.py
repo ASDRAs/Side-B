@@ -7,11 +7,14 @@ from unittest.mock import AsyncMock
 import pylast
 import pytest
 
+import preview
+from app.services import catalog
 from app.services.catalog import (
     CatalogClient,
     DeezerRateLimitError,
     ItunesRateLimitError,
 )
+from app.utils import preview_audio
 from recommend_algo import similar_listening_pattern
 from recommend_algo.common import sources
 from tests.test_api_call_counts import EmptyHttp
@@ -45,7 +48,12 @@ async def test_itunes_429_propagates_rate_limit_error():
     assert exc_info.value.retry_after == 45
 
 
-async def test_itunes_search_limits_concurrent_requests():
+async def test_itunes_callers_share_one_concurrency_limit():
+    """추천·미리 듣기 조회·장르 분석이 iTunes 자리 8개를 함께 나눈다.
+
+    경로마다 세마포어를 따로 두거나 우회하면 동시 호출이 경로 수만큼 곱해진다.
+    """
+
     class EmptyResponse:
         status_code = 200
 
@@ -68,6 +76,7 @@ async def test_itunes_search_limits_concurrent_requests():
             return EmptyResponse()
 
     http = CountingHttp()
+    catalog_client = CatalogClient(http)
     await asyncio.gather(
         *[
             sources._itunes_search(
@@ -76,8 +85,18 @@ async def test_itunes_search_limits_concurrent_requests():
                 "artist",
                 limit=5,
             )
-            for index in range(16)
-        ]
+            for index in range(8)
+        ],
+        *[
+            preview._lookup_media(http, "itunes", f"concurrency-{index}")
+            for index in range(8)
+        ],
+        *[
+            preview_audio._search_preview_candidate(
+                catalog_client, "itunes", f"genre-{index}", "artist"
+            )
+            for index in range(8)
+        ],
     )
 
     assert http.max_active <= 8
@@ -103,7 +122,6 @@ async def test_itunes_429_opens_circuit_and_skips_followup_request(monkeypatch):
             return RateLimitedResponse()
 
     http = CountingHttp()
-    monkeypatch.setattr(sources, "_ITUNES_RATE_LIMIT_UNTIL", 0.0)
 
     first = await sources._itunes_or_none(
         http,
@@ -119,6 +137,104 @@ async def test_itunes_429_opens_circuit_and_skips_followup_request(monkeypatch):
     assert first is None
     assert second is None
     assert http.calls == 1
+
+
+class _Response:
+    def __init__(self, payload, status_code=200, headers=None):
+        self._payload = payload
+        self.status_code = status_code
+        self.headers = headers or {}
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+async def test_no_itunes_call_starts_after_a_429_is_recorded():
+    """429가 기록된 뒤에는 어느 경로도 새 iTunes 호출을 보내지 않는다.
+
+    이미 나간 호출(동시 8)은 되돌릴 수 없으므로 세지 않는다. 기록 이후에 시작된
+    호출만 센다. 자리를 기다리던 추천 요청과, 기록 뒤에 들어온 미리 듣기 조회·
+    장르 분석 검색이 모두 대상이다.
+    """
+
+    class FirstCallRateLimited:
+        def __init__(self):
+            self.calls = 0
+            self.calls_after_429 = 0
+            self.rate_limited = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            if self.rate_limited.is_set():
+                self.calls_after_429 += 1
+            if self.calls == 1:
+                await asyncio.sleep(0)
+                self.rate_limited.set()
+                return _Response({}, status_code=429, headers={"Retry-After": "30"})
+            await self.release.wait()
+            return _Response({"resultCount": 0, "results": []})
+
+    http = FirstCallRateLimited()
+    waiting = [
+        asyncio.create_task(sources._itunes_or_none(http, f"recommend-{i}", "artist"))
+        for i in range(12)
+    ]
+    await http.rate_limited.wait()
+    late = [
+        asyncio.create_task(preview._lookup_media(http, "itunes", f"late-{i}"))
+        for i in range(4)
+    ] + [
+        asyncio.create_task(
+            preview_audio._search_preview_candidate(
+                CatalogClient(http), "itunes", f"late-{i}", "artist"
+            )
+        )
+        for i in range(4)
+    ]
+    http.release.set()
+    await asyncio.gather(*waiting, *late, return_exceptions=True)
+
+    assert http.calls_after_429 == 0
+    assert http.calls == 8  # 429 전에 자리를 얻은 호출만 나갔다
+    assert catalog.ITUNES.is_limited()
+
+
+async def test_deezer_quota_body_is_not_cached_as_a_missing_track():
+    """쿼터 초과는 HTTP 200 + error 본문으로 온다.
+
+    빈 결과로 보면 남은 검색어를 계속 보내고, `_deezer_search`의 alru_cache에
+    1시간 동안 미수록으로 남는다.
+    """
+
+    class QuotaThenData:
+        def __init__(self):
+            self.calls = 0
+
+        async def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                return _Response(
+                    {"error": {"type": "Exception", "message": "Quota", "code": 4}}
+                )
+            return _Response(
+                {"data": [{"title": "Creep", "artist": {"name": "Radiohead"}}]}
+            )
+
+    http = QuotaThenData()
+
+    assert await sources._deezer_or_none(http, "Creep", "Radiohead") is None
+    assert catalog.DEEZER.is_limited()
+    assert http.calls == 1  # 남은 검색어를 보내지 않는다
+
+    catalog.DEEZER.reset()  # 제한 시간이 지난 상태
+    item = await sources._deezer_or_none(http, "Creep", "Radiohead")
+
+    assert item is not None and item["title"] == "Creep"
+    assert http.calls == 2
 
 
 def test_cache_evicts_oldest_entries_beyond_limit(monkeypatch):
