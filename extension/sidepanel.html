@@ -18,10 +18,13 @@
       <header class="header">
         <img class="brand-mark" src="icons/side-b-mark.svg" width="24" height="24" alt="" />
         <h1>Side-B</h1>
-        <span id="connectionBadge" class="badge badge-idle">서버 대기</span>
-        <button id="settingsToggle" class="icon-button" type="button" aria-label="설정" title="설정" aria-expanded="false" aria-controls="settingsPanel">
-          <span class="icon icon-settings" aria-hidden="true"></span>
-        </button>
+        <div class="header-actions">
+          <span id="connectionBadge" class="badge badge-idle">서버 대기</span>
+          <span id="headerAccount" class="header-account" hidden></span>
+          <button id="settingsToggle" class="icon-button" type="button" aria-label="설정" title="설정" aria-expanded="false" aria-controls="settingsPanel">
+            <span class="icon icon-settings" aria-hidden="true"></span>
+          </button>
+        </div>
       </header>
 
       <form id="recommendForm" class="search-bar">

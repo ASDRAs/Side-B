@@ -56,6 +56,7 @@ async function launchExtensionPage(testInfo, { setupWorker, showIntro = false } 
     const page = await context.newPage();
     if (!showIntro) await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+    if (!showIntro) await expect(page.locator("#introOverlay")).toBeHidden();
     // Navigation does not wait for chrome.storage restoration. Tests that read
     // the API address immediately must wait for that asynchronous UI state.
     await expect(page.locator("#apiBaseUrl")).not.toHaveValue("");

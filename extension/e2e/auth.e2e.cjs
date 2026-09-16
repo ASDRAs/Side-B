@@ -52,7 +52,7 @@ async function logIn(page) {
   await expect(page.locator("#authGate")).toBeHidden();
 }
 
-test("intro yields to the sign-in gate and reduced motion skips it", async ({}, testInfo) => {
+test("intro yields to the sign-in gate and reduced motion uses a static splash", async ({}, testInfo) => {
   const { context, page } = await launchExtensionPage(testInfo, {
     setupWorker: installAuthFixture,
     showIntro: true,
@@ -73,7 +73,8 @@ test("intro yields to the sign-in gate and reduced motion skips it", async ({}, 
     const reduced = await context.newPage();
     await reduced.emulateMedia({ reducedMotion: "reduce" });
     await reduced.goto(page.url());
-    await expect(reduced.locator("#introOverlay")).toBeHidden();
+    await expect(reduced.locator("#introOverlay")).toBeVisible();
+    await expect(reduced.locator("#introOverlay")).toBeHidden({ timeout: 2_000 });
     await expect(reduced.locator("#authGate")).toBeVisible();
     await reduced.close();
   } finally { await context.close(); }
@@ -84,7 +85,13 @@ test("managed login replaces token input, sends bearer to recommendation/matches
   const [worker] = context.serviceWorkers();
   try {
     await expect(page.locator("#legacyAuthSettings")).toBeHidden();
+    await expect(page.locator("#headerAccount")).toBeHidden();
     await logIn(page);
+    await expect(page.locator("#headerAccount")).toHaveText("Listener");
+    await expect(page.locator("#headerAccount")).toHaveAttribute(
+      "title",
+      "Listener · listener@example.com",
+    );
     await page.locator("#settingsToggle").click();
     for (const width of [280, 480]) {
       for (const colorScheme of ["light", "dark"]) {
@@ -121,6 +128,7 @@ test("managed login replaces token input, sends bearer to recommendation/matches
     await other.locator("#settingsToggle").click();
     await expect(other.locator("#accountLabel")).toContainText("listener@example.com");
     await other.locator("#signOutButton").click();
+    await expect(page.locator("#headerAccount")).toBeHidden();
     await expect(page.locator("#youtubeMatchReview")).toBeHidden();
     await expect(page.locator(".track-item")).toHaveCount(0);
     await expect(other.locator("#authStatus")).toContainText("로그인되지 않음");

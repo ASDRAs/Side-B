@@ -83,6 +83,7 @@ const tokenRevealButton = document.querySelector("#tokenRevealButton");
 const tokenClearButton = document.querySelector("#tokenClearButton");
 const tokenStatus = document.querySelector("#tokenStatus");
 const introOverlay = document.querySelector("#introOverlay");
+const headerAccount = document.querySelector("#headerAccount");
 const authGate = document.querySelector("#authGate");
 const authGateSignInButton = document.querySelector("#authGateSignInButton");
 const authGateSignOutButton = document.querySelector("#authGateSignOutButton");
@@ -178,15 +179,19 @@ const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)
 function finishIntro() {
   window.clearTimeout(introFallbackTimer);
   introFallbackTimer = null;
-  introOverlay.classList.remove("is-playing");
+  introOverlay.classList.remove("is-playing", "is-reduced");
   introOverlay.hidden = true;
 }
 
 function playIntro() {
   finishIntro();
-  if (prefersReducedMotion.matches) return;
-
   introOverlay.hidden = false;
+  if (prefersReducedMotion.matches) {
+    introOverlay.classList.add("is-reduced");
+    introFallbackTimer = window.setTimeout(finishIntro, 700);
+    return;
+  }
+
   // Removing and restoring the class restarts CSS animations when Chrome keeps
   // the side-panel document alive between closes.
   void introOverlay.offsetWidth;
@@ -724,6 +729,10 @@ function renderAuthState(state) {
   authGateStatus.textContent = state?.error ? `${statusText}: ${state.error}` : statusText;
   authGateStatus.dataset.error = authStatus.dataset.error;
   const account = state?.account;
+  const accountSummary = account?.displayName || account?.email || "";
+  headerAccount.textContent = accountSummary;
+  headerAccount.title = [account?.displayName, account?.email].filter(Boolean).join(" · ");
+  headerAccount.hidden = state?.status !== "signed_in" || !accountSummary;
   accountLabel.textContent = account
     ? [account.displayName, account.email].filter(Boolean).join(" · ")
     : "";
