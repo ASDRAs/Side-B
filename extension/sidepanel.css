@@ -138,6 +138,10 @@ body {
   animation: intro-veil 2400ms ease forwards;
 }
 
+.intro-overlay.is-reduced {
+  animation: none;
+}
+
 .intro-mark {
   width: 96px;
   height: 96px;
@@ -331,6 +335,28 @@ input {
   margin-bottom: 10px;
 }
 
+.header-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.header-account {
+  max-width: 110px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-account[hidden] {
+  display: none;
+}
+
 h1 {
   flex: 1;
   margin: 0;
@@ -362,6 +388,12 @@ h1 {
 .badge-error {
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+@media (max-width: 320px) {
+  .header-account {
+    max-width: 76px;
+  }
 }
 
 .visually-hidden {
