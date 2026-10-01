@@ -9,7 +9,7 @@ async function moduleOf(name) {
   return import(`data:text/javascript;base64,${Buffer.from(fs.readFileSync(path.join(scripts, name), "utf8")).toString("base64")}`);
 }
 const track = { title: "Girls On Top", artist: "BoA", videoId: "youtube-only-id" };
-const result = { genre: "dance", score: -0.1, model_version: "fixture" };
+const result = { genre: "댄스", score: -0.1, model_version: "fixture" };
 
 async function harness(options = {}) {
   const api = await moduleOf("apiConfig.js");
@@ -49,7 +49,7 @@ async function harness(options = {}) {
 test("real provider sends the track and saved team token, never a YouTube ID as catalog ID", async () => {
   const h = await harness();
   const preset = await h.run();
-  assert.equal(preset.genre, "dance");
+  assert.equal(preset.genre, "댄스");
   assert.equal(preset.bands[0].gain, 2);
   assert.equal(h.calls[0].url, "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app/genre-classification");
   assert.deepEqual(JSON.parse(h.calls[0].init.body), { track_name: track.title, artist: track.artist });
@@ -58,11 +58,22 @@ test("real provider sends the track and saved team token, never a YouTube ID as 
   assert.equal(h.calls[0].init.redirect, "error");
 });
 
-test("all nine genres have valid independently owned presets; unknown genres stay flat", async () => {
+test("all ten genres have valid independently owned presets; unknown genres stay flat", async () => {
   const h = await harness();
   const presets = h.context.SideBEqPresets;
-  const genres = ["ballad", "dance", "folk_blues_country", "hiphop", "jazz", "jpop", "pop", "rnb_soul", "rock_metal"];
-  assert.equal(new Set(genres.map((genre) => JSON.stringify(presets.forGenre(genre)))).size, 9);
+  const genres = [
+    "POP",
+    "R&B/Soul",
+    "댄스",
+    "랩/힙합",
+    "록/메탈",
+    "발라드",
+    "블루스",
+    "재즈",
+    "컨트리",
+    "포크",
+  ];
+  assert.equal(new Set(genres.map((genre) => JSON.stringify(presets.forGenre(genre)))).size, 10);
   for (const genre of genres) assert.equal(presets.validate(presets.forGenre(genre)).bands.length, 5);
   const changed = presets.forGenre("dance"); changed.bands[0].gain = 12;
   assert.equal(presets.forGenre("dance").bands[0].gain, 2);

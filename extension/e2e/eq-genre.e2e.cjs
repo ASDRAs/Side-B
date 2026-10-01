@@ -19,7 +19,7 @@ test("saved settings, real HTTP provider and Web Audio apply genre EQ and recove
       requests.push(route.request().postDataJSON());
       expect(route.request().headers()["x-side-b-access-token"]).toBe("fixture-team-token");
       await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(status === 200 ?
-        { genre: "dance", score: -0.1, model_version: "fixture-v1" } : { detail: { code: "genre_unauthorized", message: "Fixture invalid token" } }) });
+        { genre: "댄스", score: -0.1, model_version: "fixture-v1" } : { detail: { code: "genre_unauthorized", message: "Fixture invalid token" } }) });
     });
     audio = await context.newPage();
     await audio.goto(new URL("offscreen.html", page.url()).href);
@@ -33,7 +33,7 @@ test("saved settings, real HTTP provider and Web Audio apply genre EQ and recove
     }, tabId);
     await expect.poll(() => audio.evaluate(() => getState().status)).toBe("applied");
     expect(await audio.evaluate(() => ({ genre: getState().genre, bands: filterNodes.map(({ node }) => node.gain.value) })))
-      .toEqual({ genre: "dance", bands: [2, 0, -1, 1, 1] });
+      .toEqual({ genre: "댄스", bands: [2, 0, -1, 1, 1] });
     expect(requests).toEqual([{ track_name: "Girls On Top", artist: "BoA" }]);
     await expect(page.locator("#eqTestStatus")).toHaveText("dance EQ 적용 중");
     const liveBands = await audio.evaluate(() => getState().bands);

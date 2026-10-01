@@ -266,9 +266,9 @@ test("one AI request per observed track, independent of repeated polling", async
 });
 
 test("genre metadata belongs only to the applied song and clears with its filters", async () => {
-  const options = { track: song("A"), provider: async () => ({ ...cut(1000), genre: "ballad" }) };
+  const options = { track: song("A"), provider: async () => ({ ...cut(1000), genre: "발라드" }) };
   const h = await startAuto(options);
-  assert.equal(h.context.getState().genre, "ballad");
+  assert.equal(h.context.getState().genre, "발라드");
   await h.context.setEqMode("test");
   assert.equal(h.context.getState().genre, null);
   assert.equal(h.context.getState().error, null);
