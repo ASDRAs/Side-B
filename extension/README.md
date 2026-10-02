@@ -34,8 +34,9 @@ Side-B 백엔드의 `/recommend` 응답을 확인하는 개발용 Chrome MV3 익
 배포 URL은 클라이언트가 호출해야 하므로 비밀값이 아닙니다. 기본 배포는 Firebase
 ID 토큰으로 `/recommend`, `/genre-classification`, `/exports/youtube/matches`를
 보호합니다. ID 토큰은 확장 프로그램에 하드코딩하거나 사용자가 복사하지 않으며,
-Google 로그인 뒤 Firebase SDK가 발급하고 갱신합니다. 설정의 `이전 서버 인증`은
-`legacy` 또는 `dual` 모드로 운영되는 별도 서버와 연결할 때만 나타납니다.
+Google 로그인 뒤 Firebase SDK가 발급하고 갱신합니다. `dual`도 확장 프로그램에서는
+Firebase 로그인만 사용합니다. 설정의 `이전 서버 인증`은 `legacy` 모드로 운영되는
+별도 서버와 연결할 때만 나타납니다.
 
 ### 로컬 백엔드 연결
 
@@ -53,7 +54,8 @@ Google 로그인 뒤 Firebase SDK가 발급하고 갱신합니다. 설정의 `�
 docker compose up --build
 ```
 
-사이드 패널 `설정` 안 `고급 설정`의 `백엔드 주소`를 `http://127.0.0.1:8000`
+사이드 패널 `설정 > 연결 > 백엔드 연결 설정`의 `백엔드 주소`를
+`http://127.0.0.1:8000`
 또는 `http://localhost:8000`으로 변경합니다. 두 로컬 주소는 개발용
 `host_permissions`에 포함되어 있으며, 선택한 주소는 다음에 패널을 열 때도
 유지됩니다.
@@ -107,9 +109,9 @@ npm run test:e2e:headed
 ```
 
 배포된 `/recommend` 실호출은 별도 smoke test입니다. 현재 자동화는 Google 로그인
-UI를 거치지 않으므로 `dual` 모드 배포의 레거시 토큰을 테스트 프로세스에만
-전달해야 실행됩니다. Firebase 전용 배포는 수동 로그인 또는 별도의 테스트 사용자
-토큰 발급 장치가 필요합니다.
+UI를 거치지 않으므로 `SIDE_B_E2E_ACCESS_TOKEN` 방식은 `legacy` 모드 배포에서만
+사용할 수 있습니다. `dual`과 `firebase` 모드 배포는 Firebase ID 토큰을 사용하므로
+수동 로그인 또는 별도의 테스트 사용자 토큰 발급 장치가 필요합니다.
 
 ```powershell
 $env:SIDE_B_E2E_ACCESS_TOKEN = "<팀 백엔드 토큰>"
