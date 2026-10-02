@@ -12,9 +12,13 @@ const track = { title: "Girls On Top", artist: "BoA", videoId: "youtube-only-id"
 const result = { genre: "dance", score: -0.1, model_version: "fixture" };
 
 async function harness(options = {}) {
-  const api = await moduleOf("apiConfig.js");
   const calls = [];
-  let settings = options.settings ?? { backendAccessToken: "fixture-team-token" };
+  let settings = options.settings ?? {};
+  const defaultCredential = {
+    mode: "firebase",
+    sessionGeneration: "fixture",
+    headers: { Authorization: "Bearer fixture-id-token" },
+  };
   let now = Date.now();
   const context = vm.createContext({ URL, console, AbortController, clearTimeout,
     Date: class extends Date { static now() { return now; } },
@@ -22,12 +26,7 @@ async function harness(options = {}) {
     chrome: { runtime: { async sendMessage(message) {
       if (options.message) return options.message(message);
       assert.equal(message.type, "GET_EQ_SETTINGS");
-      const { apiBaseUrl } = api.resolveApiBaseUrlSetting(settings.apiBaseUrl, settings.apiBaseUrlStorageVersion);
-      if (api.requiresBackendAccessToken(apiBaseUrl) && !settings.backendAccessToken) {
-        return { ok: false, error: "팀 백엔드 토큰이 필요합니다." };
-      }
-      return { ok: true, settings, credential: { mode: "legacy", sessionGeneration: "fixture",
-        headers: settings.backendAccessToken ? { "X-Side-B-Access-Token": settings.backendAccessToken } : {} } };
+      return { ok: true, settings, credential: options.credential ?? defaultCredential };
     } } },
     async fetch(url, init) {
       calls.push({ url, init });
@@ -46,14 +45,15 @@ async function harness(options = {}) {
     run: (value = track) => context.SideBEqProvider.getPreset(value, { signal: controller.signal }) };
 }
 
-test("real provider sends the track and saved team token, never a YouTube ID as catalog ID", async () => {
+test("real provider sends the track with its managed credential, never a YouTube ID as catalog ID", async () => {
   const h = await harness();
   const preset = await h.run();
   assert.equal(preset.genre, "dance");
   assert.equal(preset.bands[0].gain, 2);
   assert.equal(h.calls[0].url, "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app/genre-classification");
   assert.deepEqual(JSON.parse(h.calls[0].init.body), { track_name: track.title, artist: track.artist });
-  assert.equal(h.calls[0].init.headers["X-Side-B-Access-Token"], "fixture-team-token");
+  assert.equal(h.calls[0].init.headers.Authorization, "Bearer fixture-id-token");
+  assert.equal(h.calls[0].init.headers["X-Side-B-Access-Token"], undefined);
   assert.equal(h.calls[0].init.signal, h.controller.signal);
   assert.equal(h.calls[0].init.redirect, "error");
 });
@@ -71,17 +71,20 @@ test("all nine genres have valid independently owned presets; unknown genres sta
 });
 
 for (const [name, options, input] of [
-  ["missing token", { settings: {} }, track],
+  ["missing credential", { message: async () => ({ ok: false, error: "Google 로그인이 필요합니다." }) }, track],
   ["missing artist", {}, { title: "A" }],
-  ["remote HTTP", { settings: { apiBaseUrl: "http://example.com", apiBaseUrlStorageVersion: 1, backendAccessToken: "secret" } }, track],
+  ["remote HTTP", { settings: { apiBaseUrl: "http://example.com", apiBaseUrlStorageVersion: 1 } }, track],
 ]) test(`${name} cannot issue an analysis request`, async () => {
   const h = await harness(options);
   await assert.rejects(h.run(input));
   assert.equal(h.calls.length, 0);
 });
 
-test("explicit local settings are preserved", async () => {
-  const h = await harness({ settings: { apiBaseUrl: "http://127.0.0.1:8000", apiBaseUrlStorageVersion: 1 } });
+test("explicit local settings and an unauthenticated legacy credential are preserved", async () => {
+  const h = await harness({
+    settings: { apiBaseUrl: "http://127.0.0.1:8000", apiBaseUrlStorageVersion: 1 },
+    credential: { mode: "legacy", sessionGeneration: "fixture", headers: {} },
+  });
   await h.run();
   assert.equal(h.calls[0].url, "http://127.0.0.1:8000/genre-classification");
 });
@@ -122,7 +125,11 @@ test("managed EQ never retries a request using a different account generation", 
 });
 
 for (const status of [401, 404, 422, 429, 503, 504]) test(`HTTP ${status} remains an error, never an applied preset`, async () => {
-  const h = await harness({ status, result: { detail: status === 422 ? [{ msg: "Invalid artist" }] : { message: "Fixture failure" } } });
+  const h = await harness({
+    status,
+    credential: { mode: "legacy", sessionGeneration: "fixture", headers: {} },
+    result: { detail: status === 422 ? [{ msg: "Invalid artist" }] : { message: "Fixture failure" } },
+  });
   await assert.rejects(h.run(), status === 422 ? /Invalid artist/ : /Fixture failure/);
 });
 

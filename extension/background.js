@@ -625,7 +625,6 @@ async function handleMessage(message, sender) {
       }
 
     case "AUTH_CONFIGURE":
-    case "AUTH_GET_STATE":
     case "AUTH_SIGN_IN":
     case "AUTH_SIGN_OUT":
     case "AUTH_GET_CREDENTIAL":
@@ -636,9 +635,6 @@ async function handleMessage(message, sender) {
       if (message.type === "AUTH_CONFIGURE") {
         if (sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("설정은 사이드 패널에서 변경하세요.");
         return { ok: true, state: await authManager.configure(message.apiBaseUrl) };
-      }
-      if (message.type === "AUTH_GET_STATE") {
-        return { ok: true, state: authManager.state() };
       }
       if (message.type === "AUTH_SIGN_IN") {
         if (sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("로그인은 사이드 패널에서 진행하세요.");

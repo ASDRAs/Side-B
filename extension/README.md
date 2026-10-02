@@ -9,9 +9,9 @@ Side-B 백엔드의 `/recommend` 응답을 확인하는 개발용 Chrome MV3 익
 3. `압축해제된 확장 프로그램을 로드합니다`를 누릅니다.
 4. 이 저장소의 `extension` 폴더를 선택합니다.
 5. 툴바의 Side-B 아이콘을 누르면 브라우저 오른쪽에 **사이드 패널**이 열립니다.
-6. 처음 열면 `설정`이 펼쳐진 상태입니다. 운영자에게 받은 `팀 백엔드 토큰`을
-   입력하세요.
-7. 검색어를 입력한 뒤 `추천 요청`을 누릅니다.
+6. 처음 열면 로그인 화면이 표시됩니다. `Google로 계속하기`를 눌러 허용된
+   계정으로 로그인합니다.
+7. 로그인이 끝나면 검색어를 입력하고 `추천 요청`을 누릅니다.
 
 팝업 대신 사이드 패널을 쓰는 이유는 팝업이 포커스를 잃는 순간 문서가 파괴되어
 진행 중이던 추천 요청(최대 90초)이 함께 취소되기 때문입니다. 사이드 패널은 다른
@@ -20,40 +20,43 @@ Side-B 백엔드의 `/recommend` 응답을 확인하는 개발용 Chrome MV3 익
 검색어는 요청에 성공하면 저장되어 다음에 패널을 열 때 복원되고, 최근 5개가
 입력란의 자동완성 목록에 뜹니다. 설정의 `지우기`로 기록을 비웁니다.
 
-`지금 재생 중인 곡 사용`은 열려 있는 YouTube Music 탭에서 재생 중인 곡을 읽어
-검색어에 채웁니다. 사이드 패널은 특정 탭에 묶이지 않으므로, 어떤 탭이 활성인지와
-무관하게 서비스 워커가 YouTube Music 탭을 찾아 사용합니다.
+`현재 곡으로 추천`은 열려 있는 YouTube Music 탭에서 재생 중인 곡을 읽어 검색어에
+채우고 곧바로 추천을 요청합니다. 채워진 검색어는 그대로 남으므로 고쳐서 다시
+요청할 수 있습니다. 사이드 패널은 특정 탭에 묶이지 않으므로, 어떤 탭이
+활성인지와 무관하게 서비스 워커가 YouTube Music 탭을 찾아 사용합니다.
 
 기본 백엔드 주소는 배포된 Cloud Run 서비스
-`https://side-b-backend-7hmhv6htsa-du.a.run.app`입니다. 다른 주소를 사용한다면
+`https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app`입니다.
+다른 주소를 사용한다면
 `manifest.json`의 `host_permissions`에도 해당 origin을 추가한 뒤 익스텐션을
 다시 로드해야 합니다.
 
-배포 URL은 클라이언트에서 호출해야 하므로 비밀값이 아닙니다. 배포 백엔드는
-`SIDE_B_ACCESS_TOKEN`으로 `/recommend`와 `/exports/youtube/matches`를 보호하며,
-사이드 패널은 입력받은 토큰을 `chrome.storage.local`에 보관합니다. 브라우저를
-다시 켜도 유지되므로 매번 다시 입력할 필요가 없습니다. 다만 이 저장소는
-암호화되지 않고 프로필 디렉터리에 평문으로 남습니다. 확장 프로그램에는 OS
-키체인에 접근하는 API가 없어 더 나은 저장소가 없으며, 팀 공용 개발 토큰이라
-이 거래를 택했습니다. 공용 PC에서는 설정의 `삭제`로 지우세요. 토큰은 저장소나
-Extension 패키지에 넣지 않습니다.
+배포 URL은 클라이언트가 호출해야 하므로 비밀값이 아닙니다. 기본 배포는 Firebase
+ID 토큰으로 `/recommend`, `/genre-classification`, `/exports/youtube/matches`를
+보호합니다. ID 토큰은 확장 프로그램에 하드코딩하거나 사용자가 복사하지 않으며,
+Google 로그인 뒤 Firebase SDK가 발급하고 갱신합니다. `dual`도 확장 프로그램에서는
+Firebase 로그인만 사용합니다. 설정의 `이전 서버 인증`은 `legacy` 모드로 운영되는
+별도 서버와 연결할 때만 나타납니다.
 
 ### 로컬 백엔드 연결
 
 프로젝트 루트에서 백엔드를 실행합니다.
 
 먼저 `.env.example`을 `.env`로 복사하고 Gemini·Last.fm·YouTube 키를 채웁니다.
-예시 파일은 `ALLOW_UNAUTHENTICATED_RECOMMEND=false`로 인증을 유지합니다. 로컬에서
-팀 토큰 없이 브라우저 요청을 테스트할 때만 복사한 `.env`에서 이 값을 `true`로
-변경합니다. 공개 배포에서는 항상 `false`로 유지하고 `SIDE_B_ACCESS_TOKEN`을
-Secret으로 설정해야 합니다.
+예시 파일은 `SIDE_B_AUTH_MODE=legacy`와
+`ALLOW_UNAUTHENTICATED_RECOMMEND=false`로 인증을 유지합니다. 로컬에서 인증 없이
+브라우저 요청을 테스트할 때만 복사한 `.env`에서
+`ALLOW_UNAUTHENTICATED_RECOMMEND=true`로 변경합니다. Firebase 흐름까지 확인하려면
+`SIDE_B_AUTH_MODE=firebase`, `FIREBASE_PROJECT_ID`, 허용 UID 또는 이메일을
+설정합니다. 공개 배포에서는 인증 우회를 활성화하지 않습니다.
 
 ```powershell
 docker compose up --build
 ```
 
-사이드 패널 `설정`의 `백엔드 주소`를 `http://127.0.0.1:8000` 또는
-`http://localhost:8000`으로 변경합니다. 두 로컬 주소는 개발용
+사이드 패널 `설정 > 연결 > 백엔드 연결 설정`의 `백엔드 주소`를
+`http://127.0.0.1:8000`
+또는 `http://localhost:8000`으로 변경합니다. 두 로컬 주소는 개발용
 `host_permissions`에 포함되어 있으며, 선택한 주소는 다음에 패널을 열 때도
 유지됩니다.
 
@@ -94,11 +97,10 @@ npm run test:e2e:export
 npm run test:e2e:persistence
 ```
 
-영속화 시나리오는 토큰과 검색어가 패널을 다시 열어도 남는지, 삭제가 되돌아오지
-않는지, 여러 패널 사이에 삭제가 전파되는지를 확인합니다. 토큰은 입력 즉시
-저장합니다. `change`는 blur에서만 발생하고 디바운스 타이머는 붙여넣고 바로
-패널을 닫으면 실행되기 전에 문서가 사라지기 때문입니다. 창마다 사이드 패널이
-따로 뜨므로 한쪽에 낡은 토큰이 남으면 그쪽 요청이 그 값을 다시 저장합니다.
+영속화 시나리오는 검색어와 이전 서버용 토큰이 패널을 다시 열어도 남는지,
+삭제가 되돌아오지 않는지, 여러 패널 사이에 변경이 전파되는지를 확인합니다.
+이전 서버용 토큰은 입력 즉시 저장합니다. 이 동작은 Firebase를 사용하는 기본
+배포의 로그인 세션과는 별개입니다.
 
 브라우저 화면을 보면서 실행하려면 다음 명령을 사용합니다.
 
@@ -106,8 +108,10 @@ npm run test:e2e:persistence
 npm run test:e2e:headed
 ```
 
-배포된 `/recommend` 실호출은 별도 smoke test입니다. Cloud Run의
-`SIDE_B_ACCESS_TOKEN`과 같은 값을 테스트 프로세스에만 전달해야 실행됩니다.
+배포된 `/recommend` 실호출은 별도 smoke test입니다. 현재 자동화는 Google 로그인
+UI를 거치지 않으므로 `SIDE_B_E2E_ACCESS_TOKEN` 방식은 `legacy` 모드 배포에서만
+사용할 수 있습니다. `dual`과 `firebase` 모드 배포는 Firebase ID 토큰을 사용하므로
+수동 로그인 또는 별도의 테스트 사용자 토큰 발급 장치가 필요합니다.
 
 ```powershell
 $env:SIDE_B_E2E_ACCESS_TOKEN = "<팀 백엔드 토큰>"
@@ -140,21 +144,6 @@ npm run test:e2e:deployed
 서비스 워커가 재시작되어 실행 중 작업이 사라진 경우, 남아 있는 진행 상태는 즉시
 중단된 작업으로 표시됩니다.
 
-`SIDE_B_ACCESS_TOKEN`은 Google에서 사용자마다 발급받는 값이 아닙니다. Side-B
-운영자가 추천과 서버 검색 API를 보호하기 위해 만드는 **팀 공용 토큰**이며,
-사용자별 Google 계정 인증은 Chrome Identity OAuth가 별도로 처리합니다. 개발용
-토큰은 다음과 같이 생성할 수 있습니다.
-
-```powershell
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-출력값을 Cloud Run의 `SIDE_B_ACCESS_TOKEN` Secret에 설정하고, 팀원에게 안전한
-채널로 전달합니다. 기존 배포의 `YOUTUBE_EXPORT_TOKEN`도 마이그레이션 기간에는
-같은 값으로 인식합니다. 팀원은 사이드 패널 `설정`의 `팀 백엔드 토큰`에 같은 값을
-입력합니다. 이 값은 저장소나 공개 문서에 커밋하면 안 됩니다. 공개 사용자 대상
-서비스로 전환할 때는 이 공용 토큰 대신 사용자 인증 기반 접근 제어로 교체해야 합니다.
-
 1. Google Cloud 프로젝트에서 YouTube Data API v3를 활성화합니다.
 2. OAuth 동의 화면을 구성하고 개발 중에는 팀원 계정을 테스트 사용자로 등록합니다.
 3. Chrome Extension 유형의 OAuth Client를 생성합니다. Item ID에는 팀에서 고정해
@@ -162,14 +151,14 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 4. `manifest.json`의 공개 `key`가 만드는 extension ID와 OAuth Client의 Item ID가
    일치하는지 확인합니다.
 5. 배포 백엔드에 서버 검색용 `YOUTUBE_API_KEY`를 설정합니다.
-6. 위 명령으로 만든 값을 Cloud Run의 `SIDE_B_ACCESS_TOKEN` Secret에 설정합니다.
-7. Chrome의 확장 프로그램 화면에서 Side-B를 다시 로드합니다.
-8. 사이드 패널 `설정`의 `팀 백엔드 토큰`에 같은 값을 입력합니다. 입력란을
-   벗어나면 바로 저장되고, 아래에 `저장됨 · ••••3f2a`처럼 마지막 네 자리가
-   표시됩니다. `보기`로 붙여넣은 값을 확인하고 `삭제`로 지울 수 있습니다.
+6. Firebase Authentication에서 Google 공급자를 활성화하고, 백엔드의
+   `FIREBASE_ALLOWED_UIDS` 또는 `FIREBASE_ALLOWED_EMAILS`에 사용자를 등록합니다.
+7. Chrome의 확장 프로그램 화면에서 Side-B를 다시 로드한 뒤 Google로 로그인합니다.
 
-OAuth scope는 `youtube.force-ssl` 하나만 사용합니다. access token은 백엔드나
-`chrome.storage`에 저장하지 않고 Chrome Identity API의 메모리 캐시에 맡깁니다.
+YouTube OAuth scope는 `youtube.force-ssl` 하나만 사용합니다. YouTube access token은
+백엔드나 `chrome.storage`에 저장하지 않고 Chrome Identity API의 메모리 캐시에
+맡깁니다. 백엔드 인증에 쓰는 Firebase ID 토큰과 플레이리스트를 생성하는 YouTube
+OAuth 토큰은 용도와 수명이 다른 별도 자격 증명입니다.
 팀원마다 unpacked extension ID가 달라지면 같은 OAuth Client를 사용할 수 없으므로,
 실계정 통합 전에 manifest의 공개 `key` 또는 Chrome Web Store Item ID로 개발용
 extension ID를 먼저 고정해야 합니다.

@@ -12,7 +12,6 @@ const DEFAULT_API_BASE_URLS_BY_VERSION = new Map([
   ],
   [1, new Set(["https://side-b-backend-7hmhv6htsa-du.a.run.app"])],
 ]);
-const LOCAL_API_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 function trimTrailingSlashes(value) {
   return String(value || "").trim().replace(/\/+$/, "");
@@ -36,10 +35,6 @@ export function resolveApiBaseUrlSetting(storedUrl, storedVersion) {
     apiBaseUrl,
     shouldPersist: !isCurrentVersion,
   };
-}
-
-export function requiresBackendAccessToken(apiBaseUrl) {
-  return !LOCAL_API_HOSTS.has(new URL(apiBaseUrl).hostname);
 }
 
 // preview가 ID로 조회할 수 있는 공급자. 백엔드 `_lookup_media`는 이 둘만
@@ -131,13 +126,4 @@ export function backendErrorMessage(status, detail, retryAfter) {
     return "백엔드에 문제가 있습니다. 잠시 후 다시 시도하세요.";
   }
   return `요청이 거부되었습니다. (HTTP ${status})`;
-}
-
-export function recommendationHeaders(accessToken) {
-  const headers = { "Content-Type": "application/json" };
-  const token = String(accessToken || "").trim();
-  if (token) {
-    headers["X-Side-B-Access-Token"] = token;
-  }
-  return headers;
 }
