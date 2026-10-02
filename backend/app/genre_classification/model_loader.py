@@ -5,6 +5,7 @@ import torch
 from sklearn.preprocessing import LabelEncoder
 from transformers import ClapModel, ClapProcessor
 
+from app.genre_classification.labels import validate_model_labels
 from app.genre_classification.schema import GenreModelLoadError, GenreModels
 
 
@@ -58,6 +59,8 @@ def load_genre_models(
 
     if not isinstance(label_encoder, LabelEncoder):
         raise GenreModelLoadError("loaded label encoder is not a LabelEncoder")
+
+    validate_model_labels(label_encoder.classes_)
 
     return GenreModels(
         clap_processor=clap_processor,

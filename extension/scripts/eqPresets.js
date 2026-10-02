@@ -4,20 +4,22 @@ globalThis.SideBEqPresets = (() => {
   const test = () => ({ preamp: 0, bands: [{ frequency: 1000, gain: -12, q: 0.7 }] });
 
   // Product-side starting values, not model output or an accuracy claim.
-  // Tune these ten curves here; the server only selects a genre.
+  // The keys are stable API IDs, independent of model label encoder strings.
   // Columns: 80 / 250 / 1000 / 4000 / 10000 Hz, gain in dB.
-  // Keys mirror the deployed model's label encoder output exactly.
   const genreGains = {
-    "POP": [1, -1, 0, 1, 1],
-    "R&B/Soul": [1, 1, 0, -1, 1],
-    "댄스": [2, 0, -1, 1, 1],
-    "랩/힙합": [2, 1, 0, -1, 0],
-    "록/메탈": [1, -1, 1, 1, 0],
-    "발라드": [-1, 0, 1, 1, 0],
-    "블루스": [1, 2, 0, 1, 0],
-    "재즈": [0, 1, 0, -1, 1],
-    "컨트리": [0, 1, -1, 1, 2],
-    "포크": [-1, 1, 1, 1, 1],
+    pop: [1, -1, 0, 1, 1],
+    rnb_soul: [1, 1, 0, -1, 1],
+    dance: [2, 0, -1, 1, 1],
+    hiphop: [2, 1, 0, -1, 0],
+    rock_metal: [1, -1, 1, 1, 0],
+    ballad: [-1, 0, 1, 1, 0],
+    blues: [1, 2, 0, 1, 0],
+    jazz: [0, 1, 0, -1, 1],
+    country: [0, 1, -1, 1, 2],
+    folk: [-1, 1, 1, 1, 1],
+    // Compatibility presets for the previous inference revision.
+    jpop: [1, -1, 0, 1, 1],
+    folk_blues_country: [0, 1, 0, 1, 1],
   };
   function forGenre(genre) {
     if (!Object.hasOwn(genreGains, genre)) return null;
@@ -53,5 +55,9 @@ globalThis.SideBEqPresets = (() => {
     return JSON.stringify([track.videoId || "", track.title.trim(), track.artist || ""]);
   }
 
-  return { flat, test, validate, trackKey, forGenre };
+  function supportedGenres() {
+    return Object.keys(genreGains);
+  }
+
+  return { flat, test, validate, trackKey, forGenre, supportedGenres };
 })();

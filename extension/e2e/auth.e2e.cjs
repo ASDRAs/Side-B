@@ -187,7 +187,7 @@ test("managed EQ uses bearer and logout stops capture and invalidates presets", 
       expect(route.request().headers().authorization).toBe("Bearer firebase-fixture-token");
       expect(route.request().headers()["x-side-b-access-token"]).toBeUndefined();
       if (hold) { pendingAnalysis = route; return; }
-      return route.fulfill({ json: { genre: "댄스", score: 0.3, model_version: "fixture" } });
+      return route.fulfill({ json: { genre: "dance", score: 0.3, model_version: "fixture" } });
     });
     const audio = await context.newPage();
     await audio.goto(new URL("offscreen.html", page.url()).href);
