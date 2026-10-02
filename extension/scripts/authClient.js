@@ -12,10 +12,6 @@ export async function configureAuth(apiBaseUrl) {
   return (await authMessage("AUTH_CONFIGURE", { apiBaseUrl })).state;
 }
 
-export async function getAuthState() {
-  return (await authMessage("AUTH_GET_STATE")).state;
-}
-
 export async function signIn() {
   return (await authMessage("AUTH_SIGN_IN")).state;
 }

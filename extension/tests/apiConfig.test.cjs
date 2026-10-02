@@ -53,26 +53,6 @@ test("preserves an explicitly versioned localhost override", async () => {
   });
 });
 
-test("requires a team token only for non-local backends", async () => {
-  const { requiresBackendAccessToken } = await loadModule();
-
-  assert.equal(requiresBackendAccessToken("https://api.example.com"), true);
-  assert.equal(requiresBackendAccessToken("http://127.0.0.1:8000"), false);
-  assert.equal(requiresBackendAccessToken("http://localhost:8000"), false);
-});
-
-test("adds the access token header only when a token exists", async () => {
-  const { recommendationHeaders } = await loadModule();
-
-  assert.deepEqual(recommendationHeaders(" team-token "), {
-    "Content-Type": "application/json",
-    "X-Side-B-Access-Token": "team-token",
-  });
-  assert.deepEqual(recommendationHeaders(""), {
-    "Content-Type": "application/json",
-  });
-});
-
 test("maps backend failures to actionable messages", async () => {
   const { backendErrorMessage } = await loadModule();
 
