@@ -1,7 +1,7 @@
 {
   "name": "side-b-chrome-extension",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "engines": {
     "node": ">=20"
   },
@@ -15,7 +15,8 @@
     "test:e2e:export": "playwright test --config=playwright.config.cjs e2e/youtube-export.e2e.cjs",
     "test:e2e:deployed": "playwright test --config=playwright.live.config.cjs",
     "test:e2e:headed": "playwright test --config=playwright.config.cjs --headed",
-    "test:e2e:persistence": "playwright test --config=playwright.config.cjs e2e/persistence.e2e.cjs"
+    "test:e2e:persistence": "playwright test --config=playwright.config.cjs e2e/persistence.e2e.cjs",
+    "release:zip": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File package-release.ps1"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
