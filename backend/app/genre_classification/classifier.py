@@ -1,5 +1,6 @@
 import numpy as np
 
+from app.genre_classification.labels import genre_id_for_model_label
 from app.genre_classification.model_loader import GenreModels
 from app.genre_classification.schema import GenrePrediction
 
@@ -11,7 +12,7 @@ def predict_by_svm(
 
     encoded_label = models.svm_model.predict(embedding)[0]
 
-    genre = models.label_encoder.inverse_transform([encoded_label])[0]
+    model_label = models.label_encoder.inverse_transform([encoded_label])[0]
 
     decision_scores = models.svm_model.decision_function(embedding)[0]
 
@@ -22,6 +23,6 @@ def predict_by_svm(
     )
 
     return {
-        "genre": str(genre),
+        "genre": genre_id_for_model_label(model_label),
         "score": score,
     }

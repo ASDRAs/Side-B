@@ -58,16 +58,30 @@ test("real provider sends the track with its managed credential, never a YouTube
   assert.equal(h.calls[0].init.redirect, "error");
 });
 
-test("all nine genres have valid independently owned presets; unknown genres stay flat", async () => {
+test("all ten genres have valid independently owned presets; unknown genres stay flat", async () => {
   const h = await harness();
   const presets = h.context.SideBEqPresets;
-  const genres = ["ballad", "dance", "folk_blues_country", "hiphop", "jazz", "jpop", "pop", "rnb_soul", "rock_metal"];
-  assert.equal(new Set(genres.map((genre) => JSON.stringify(presets.forGenre(genre)))).size, 9);
+  const genres = [
+    "pop", "rnb_soul", "dance", "hiphop", "rock_metal",
+    "ballad", "blues", "jazz", "country", "folk",
+  ];
+  assert.equal(new Set(genres.map((genre) => JSON.stringify(presets.forGenre(genre)))).size, 10);
   for (const genre of genres) assert.equal(presets.validate(presets.forGenre(genre)).bands.length, 5);
   const changed = presets.forGenre("dance"); changed.bands[0].gain = 12;
   assert.equal(presets.forGenre("dance").bands[0].gain, 2);
   assert.equal(presets.forGenre("toString"), null);
   assert.equal(await (await harness({ result: { ...result, genre: "unknown" } })).run(), null);
+});
+
+test("the extension accepts every stable API genre and previous inference-only genre", async () => {
+  const h = await harness();
+  assert.deepEqual(
+    Array.from(h.context.SideBEqPresets.supportedGenres()),
+    [
+      "pop", "rnb_soul", "dance", "hiphop", "rock_metal", "ballad",
+      "blues", "jazz", "country", "folk", "jpop", "folk_blues_country",
+    ],
+  );
 });
 
 for (const [name, options, input] of [

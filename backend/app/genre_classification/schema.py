@@ -5,14 +5,12 @@ import torch
 from sklearn.preprocessing import LabelEncoder
 from transformers import ClapModel, ClapProcessor
 
+from app.genre_classification.errors import GenreModelLoadError
+
 
 class GenrePrediction(TypedDict):
     genre: str
     score: float
-
-
-class GenreModelLoadError(Exception):
-    pass
 
 
 @dataclass(frozen=True, slots=True)

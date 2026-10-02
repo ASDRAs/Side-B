@@ -7,6 +7,13 @@ test("saved settings, real HTTP provider and Web Audio apply genre EQ and recove
   try {
     const [worker] = context.serviceWorkers();
     await worker.evaluate(() => chrome.storage.local.set({ backendAccessToken: "fixture-team-token" }));
+    await page.evaluate(() => {
+      const sendMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
+      globalThis.setFixtureEqState = (state) => { globalThis.fixtureEqState = state; };
+      chrome.runtime.sendMessage = (message) => message?.type === "GET_EQ_STATE" && globalThis.fixtureEqState
+        ? Promise.resolve(globalThis.fixtureEqState)
+        : sendMessage(message);
+    });
     await context.route("https://music.youtube.com/**", (route) => route.fulfill({
       contentType: "text/html", body: '<!doctype html><title>Music fixture</title><script>navigator.mediaSession.metadata = new MediaMetadata({title:"Girls On Top",artist:"BoA"});</script>',
     }));
@@ -32,10 +39,18 @@ test("saved settings, real HTTP provider and Web Audio apply genre EQ and recove
       await startEq({ streamId: "fixture", tabId, mode: "auto" });
     }, tabId);
     await expect.poll(() => audio.evaluate(() => getState().status)).toBe("applied");
+    await page.evaluate(() => setFixtureEqState({
+      ok: true, active: true, capturing: true, status: "applied", mode: "auto", genre: "dance",
+      track: { title: "Girls On Top", artist: "BoA" },
+      bands: [
+        { frequency: 80, gain: 2 }, { frequency: 250, gain: 0 },
+        { frequency: 1000, gain: -1 }, { frequency: 4000, gain: 1 }, { frequency: 10000, gain: 1 },
+      ],
+    }));
     expect(await audio.evaluate(() => ({ genre: getState().genre, bands: filterNodes.map(({ node }) => node.gain.value) })))
       .toEqual({ genre: "dance", bands: [2, 0, -1, 1, 1] });
     expect(requests).toEqual([{ track_name: "Girls On Top", artist: "BoA" }]);
-    await expect(page.locator("#eqTestStatus")).toHaveText("dance EQ 적용 중");
+    await expect(page.locator("#eqTestStatus")).toHaveText("댄스 EQ 적용 중");
     const liveBands = await audio.evaluate(() => getState().bands);
     expect(liveBands).toEqual([
       { frequency: 80, gain: 2 }, { frequency: 250, gain: 0 },
@@ -48,6 +63,10 @@ test("saved settings, real HTTP provider and Web Audio apply genre EQ and recove
     await expect(page.locator("#eqTrack")).toHaveText("Girls On Top - BoA");
 
     status = 401;
+    await page.evaluate(() => setFixtureEqState({
+      ok: true, active: true, capturing: true, status: "unavailable", mode: "auto",
+      error: "Fixture invalid token", bands: [],
+    }));
     await audio.evaluate(() => setEqMode("auto"));
     await expect.poll(() => audio.evaluate(() => getState().status)).toBe("unavailable");
     expect(await audio.evaluate(() => filterNodes.length)).toBe(0);
