@@ -35,7 +35,7 @@ test("saved settings, real HTTP provider and Web Audio apply genre EQ and recove
     expect(await audio.evaluate(() => ({ genre: getState().genre, bands: filterNodes.map(({ node }) => node.gain.value) })))
       .toEqual({ genre: "댄스", bands: [2, 0, -1, 1, 1] });
     expect(requests).toEqual([{ track_name: "Girls On Top", artist: "BoA" }]);
-    await expect(page.locator("#eqTestStatus")).toHaveText("dance EQ 적용 중");
+    await expect(page.locator("#eqTestStatus")).toHaveText("댄스 EQ 적용 중");
     const liveBands = await audio.evaluate(() => getState().bands);
     expect(liveBands).toEqual([
       { frequency: 80, gain: 2 }, { frequency: 250, gain: 0 },

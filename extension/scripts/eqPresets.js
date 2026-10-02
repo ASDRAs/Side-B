@@ -6,7 +6,7 @@ globalThis.SideBEqPresets = (() => {
   // Product-side starting values, not model output or an accuracy claim.
   // Tune these ten curves here; the server only selects a genre.
   // Columns: 80 / 250 / 1000 / 4000 / 10000 Hz, gain in dB.
-  // 실수로 학습할 때 한글 라벨로 설정하고 했습니다;;
+  // Keys mirror the deployed model's label encoder output exactly.
   const genreGains = {
     "POP": [1, -1, 0, 1, 1],
     "R&B/Soul": [1, 1, 0, -1, 1],

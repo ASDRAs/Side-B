@@ -75,8 +75,8 @@ test("all ten genres have valid independently owned presets; unknown genres stay
   ];
   assert.equal(new Set(genres.map((genre) => JSON.stringify(presets.forGenre(genre)))).size, 10);
   for (const genre of genres) assert.equal(presets.validate(presets.forGenre(genre)).bands.length, 5);
-  const changed = presets.forGenre("dance"); changed.bands[0].gain = 12;
-  assert.equal(presets.forGenre("dance").bands[0].gain, 2);
+  const changed = presets.forGenre("댄스"); changed.bands[0].gain = 12;
+  assert.equal(presets.forGenre("댄스").bands[0].gain, 2);
   assert.equal(presets.forGenre("toString"), null);
   assert.equal(await (await harness({ result: { ...result, genre: "unknown" } })).run(), null);
 });
@@ -118,7 +118,7 @@ test("managed EQ refreshes once, without forwarding a legacy token", async () =>
       return new Response(JSON.stringify(result), { status: calls === 1 ? 401 : 200 });
     },
   });
-  assert.equal((await h.run()).genre, "dance");
+  assert.equal((await h.run()).genre, "댄스");
   assert.equal(messages.length, 2);
   assert.equal(calls, 2);
 });
