@@ -12,8 +12,10 @@ outputs/
 /AI_HANDOFF.md
 backend/tests/quality_test_30*.py
 
-frontend/dist/
-frontend/node_modules/
+/frontend/*
+!/frontend/README.md
+/start-localhost.ps1
+/start-localhost.bat
 extension/node_modules/
 extension/test-results/
 extension/playwright-report/

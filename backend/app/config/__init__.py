@@ -155,10 +155,7 @@ class Settings(BaseSettings):
         default=6.0, validation_alias="HTTP_TIMEOUT_SECONDS"
     )
     cors_allowed_origins: str = Field(
-        default=(
-            "chrome-extension://hfcclomfoickmehgmdgjdjmiiekaciam,"
-            "http://127.0.0.1:3000,http://localhost:3000"
-        ),
+        default="chrome-extension://hfcclomfoickmehgmdgjdjmiiekaciam",
         validation_alias="CORS_ALLOWED_ORIGINS",
     )
 
