@@ -1,200 +1,67 @@
 # Side-B
 
-## Docker로 백엔드 실행
+좋아하는 곡이나 지금의 분위기에서 출발해, 닮았지만 덜 알려진 음악을 찾는 Chrome 확장 프로그램.
 
-Docker Compose를 사용하면 로컬 Python이나 Poetry 환경을 별도로 구성하지 않고
-Cloud Run과 동일한 Linux 컨테이너 환경에서 백엔드를 실행할 수 있습니다.
+현재 버전: `v1.0.0`
 
-### 준비
+## 주요 기능
 
-- Docker Desktop 또는 Docker Engine
-- Docker Compose v2 이상
+- **방향별 음악 추천**: 곡 검색은 `닮은 곡`, `덜 알려진 닮은 곡`, `숨은 발견`을, 분위기 검색은 `닮은 곡`, `반대 무드`, `숨은 발견`을 제공함.
+- **현재 곡으로 추천**: YouTube Music에서 재생 중인 곡을 검색어로 바로 사용 가능.
+- **플레이리스트 저장**: 추천 결과를 확인한 뒤 새 비공개 YouTube Music 플레이리스트를 만들거나 기존 플레이리스트에 추가 가능.
+- **자동 EQ**: 곡의 미리듣기 음원에서 분류한 장르에 맞춰 YouTube Music 탭에 5밴드 EQ 적용.
 
-최초 실행 전 예시 환경변수 파일을 복사하고 실제 API 키를 입력합니다.
+## 설치
 
-```powershell
-Copy-Item .env.example .env
-```
+Chrome 116 이상 필요.
 
-macOS와 Linux에서는 다음 명령을 사용합니다.
+1. 전달받은 `Side-B-1.0.0.zip` 압축 해제.
+2. Chrome 주소창에 `chrome://extensions` 입력.
+3. 오른쪽 위의 `개발자 모드` 활성화.
+4. `압축해제된 확장 프로그램을 로드합니다` 선택.
+5. 압축을 푼 `Side-B-1.0.0` 폴더 선택.
 
-```bash
-cp .env.example .env
-```
+저장소에서 직접 설치할 때는 `extension` 폴더 선택. 인증 번들이 저장소에 포함돼 있어 별도 빌드 없이 로드 가능.
 
-`.env`는 Git과 Docker 이미지에 포함되지 않습니다. Gemini 관련 변수는 로컬 태그
-분류 모델로 교체하기 전까지만 사용합니다.
+## 사용법
 
-예시의 `ALLOW_UNAUTHENTICATED_RECOMMEND`는 안전하게 `false`로 설정돼 있습니다.
-로컬에서 팀 토큰 없이 브라우저 요청을 테스트할 때만 복사한 `.env`에서 이 값을
-`true`로 변경합니다. 공개 환경에서는 항상 `false`로 유지하고, 임의의 긴
-`SIDE_B_ACCESS_TOKEN`을 Secret으로 설정해야 합니다. 이 토큰은 비용과 외부 API
-쿼터를 사용하는 `/recommend`와 YouTube 검색 API를 함께 보호합니다.
+1. YouTube Music 탭을 열고 Side-B 사이드 패널 실행.
+2. 처음 실행할 때 `Google로 계속하기`로 로그인. 기본 서버는 허용 목록에 등록된 계정만 사용 가능.
+3. `아티스트 - 곡명` 또는 원하는 분위기를 입력하고 `찾기` 선택. 재생 중인 곡을 기준으로 찾으려면 `현재 곡으로 추천` 선택.
+4. 추천 방향 탭에서 결과 확인. 각 곡의 `YT Music` 링크로 매칭 결과를 직접 확인 가능.
+5. `N곡 플레이리스트로 내보내기`를 눌러 새 플레이리스트를 만들거나 기존 플레이리스트에 추가.
+6. YouTube Music 탭에서 `EQ 적용` 활성화. 재생 곡이 바뀔 때 장르에 맞는 EQ가 자동 갱신됨.
 
-### 실행
+화면별 사용법과 문제 해결은 [확장 프로그램 README](extension/README.md) 참고.
 
-프로젝트 루트에서 다음 명령을 실행합니다.
+## 프로젝트 구성
 
-```bash
-docker compose up --build
-```
+| 경로 | 기술과 용도 | 문서 |
+|---|---|---|
+| `extension/` | Manifest V3 기반 Chrome 사이드 패널. 추천 조회, YouTube Music 내보내기, 자동 EQ 제공 | [확장 프로그램 README](extension/README.md) |
+| `backend/` | FastAPI 백엔드. 추천 계산, 미리듣기 탐색, YouTube 매칭, 인증과 AI 추론 중계 담당 | [백엔드 README](backend/README.md) |
+| `inference/` | CLAP 임베딩과 SVM을 사용하는 비공개 장르 분류 서비스 | 팀원 작성 예정 |
+| `frontend/` | 현재 사용하지 않는 이전 웹 클라이언트의 로컬 백업 안내 | [백업 안내](frontend/README.md) |
+| `deployment/` | Cloud Run 서비스 설정, 배포 스크립트와 배포 계약 테스트 | [백엔드 배포 안내](backend/README.md#배포) |
 
-백그라운드에서 실행하려면:
+각 하위 README에 해당 구성 요소의 구조, 실행 방법, 설정, 테스트와 운영 시 주의사항 정리.
 
-```bash
-docker compose up -d --build
-```
+## 권한과 데이터 처리
 
-기본 백엔드 주소는 `http://127.0.0.1:8000`이며 상태 확인 주소는 다음과 같습니다.
+- Google 로그인은 Side-B 백엔드 인증에 사용.
+- YouTube 권한은 사용자가 확인한 곡을 자신의 플레이리스트에 저장할 때만 사용.
+- 사용자의 YouTube OAuth 토큰과 캡처한 탭 오디오는 Side-B 백엔드로 전송하지 않음.
+- 자동 EQ는 탭 오디오 자체가 아니라 백엔드가 찾은 30초 미리듣기 음원을 분석함.
+- Chrome 권한별 사용 목적은 [확장 프로그램 권한 안내](extension/README.md#권한) 참고.
 
-```text
-http://127.0.0.1:8000/api/health
-```
+## 라이선스와 출처 표시
 
-Chrome Extension은 기본적으로 배포된 Cloud Run 백엔드를 사용합니다. 로컬 백엔드와
-연결해 개발하려면 Extension 팝업의 `백엔드 주소`를
-`http://127.0.0.1:8000` 또는 `http://localhost:8000`으로 변경합니다.
+Side-B가 직접 작성한 소스 코드와 문서는 [MIT License](LICENSE)로 배포함. 사용·수정·재배포·상업적 이용을 허용하며, 복사본 또는 주요 부분에 저작권 고지와 라이선스 전문을 포함해야 함.
 
-배포 URL은 브라우저가 호출해야 하는 공개 식별자이므로 비밀로 취급하지 않습니다.
-대신 배포에서는 토큰 인증을 fail-closed로 적용하고, 추천과 YouTube 검색에 각각
-독립적인 분당 요청 제한을 둡니다. CORS 기본값도 고정 Extension ID와 로컬 프론트엔드
-origin만 허용합니다. 다른 웹 프론트엔드를 배포한다면 그 정확한 origin을
-`CORS_ALLOWED_ORIGINS`에 추가합니다. 애플리케이션 제한은 Cloud Run 인스턴스별이므로,
-공개 서비스로 확장할 때는 API Gateway나 공유 저장소 기반 제한을 추가해야 합니다.
+서드파티 코드·글꼴·아이콘·모델에는 MIT가 아니라 각 항목의 기존 라이선스와 이용 조건이 적용됨. 해당 자산을 재배포할 때 각 라이선스와 저작권 고지 유지 필요.
 
-8000 포트를 다른 프로그램이 사용 중이면 호스트 포트만 변경할 수 있습니다.
+- **Pretendard 글꼴**: SIL Open Font License 1.1. [라이선스 전문](extension/fonts/Pretendard-LICENSE.txt)
+- **Lucide 아이콘**: ISC License. Feather에서 파생된 일부 아이콘에는 MIT License 조항 적용. [라이선스 및 저작권 고지](extension/icons/lucide/LICENSE)
 
-PowerShell:
-
-```powershell
-$env:BACKEND_PORT = "8081"
-docker compose up --build
-```
-
-macOS와 Linux:
-
-```bash
-BACKEND_PORT=8081 docker compose up --build
-```
-
-컨테이너 내부 포트는 Cloud Run과 동일하게 항상 8080을 사용합니다.
-
-### 자주 사용하는 명령
-
-```bash
-# 상태 확인
-docker compose ps
-
-# 로그 확인
-docker compose logs -f backend
-
-# 코드나 의존성 변경 후 다시 빌드
-docker compose up -d --build
-
-# 컨테이너 종료 및 제거
-docker compose down
-```
-
-Docker 이미지는 실행에 필요한 코드와 의존성만 포함합니다. `.env`, 로컬 가상환경,
-테스트 캐시와 출력물은 이미지에서 제외됩니다.
-
-## Pre-commit 설정 방법
-
-commit하기 전에 코드 검사하는 tool.
-현재 프로젝트에서는 breakpoint()같이 디버깅 코드가 올라가는게 싫어서 검사하는 용도로 사용
-`poetry install` 이후에 `poetry run pre-commit install`만 쳐주기
-디버킹 코드가 있는 경우는 커밋이 강제 취소된다!!
-
-## Poetry 설정 방법
-
-pip로 하는 것 보다 의존성 관리가 편해서 poetry로 사용하길 권장.
-
----
-
-#### 1. Poetry 설치
-
-🍏 macOS / 🐧 Linux (zsh, bash)
-```bash
-curl -sSL https://install.python-poetry.org | python3 -
-```
-
-
-> 💡 **설치 확인**: 터미널을 완전히 **종료 후 다시 열어** 아래 명령어가 잘 작동하는지 확인합니다.
-> ```bash
-> poetry --version
-> ```
-> *만약 명령어를 찾을 수 없다고 나온다면 환경 변수(PATH)에 Poetry 설치 경로(`$HOME/.local/bin` 또는 `%USERPROFILE%\AppData\Roaming\Python\Scripts`)를 추가해야 합니다.*
-
----
-
-#### ⚙️ 2. 전역 설정 (초기 1회 필수)
-
-프로젝트 루트 폴더(또는 어디서든)에서 아래 설정을 실행합니다. 이 설정은 가상환경(`.venv`)을 각 프로젝트 폴더 내부에 생성하도록 강제하여, VS Code나 PyCharm 같은 IDE가 가상환경을 자동으로 인식할 수 있게 해줍니다.
-
-```bash
-poetry config virtualenvs.in-project true
-```
-
----
-
-#### 📦 3. 의존성 설치 및 가상환경 빌드
-
-백엔드 폴더(`backend/`)로 이동한 후 `poetry install`을 실행하면 `pyproject.toml`과 `poetry.lock` 파일을 기반으로 정확한 버전의 가상환경이 자동으로 구축됩니다.
-
-```bash
-# 1. 백엔드 디렉토리로 이동
-cd backend
-
-# 2. 패키지 설치 및 가상환경 생성 (.venv 생성됨)
-poetry install
-```
-
----
-
-#### ➕ 4. 개발 중 새로운 패키지 추가하기
-
-작업 중 새로운 외부 라이브러리 설치가 필요할 때는 `pip install` 대신 반드시 **`poetry add`**를 사용해야 `pyproject.toml`과 `poetry.lock`이 함께 업데이트되어 다른 팀원들에게도 공유됩니다.
-
-```bash
-# 일반 패키지 추가 (예: 패키지명 입력)
-poetry add 패키지이름
-
-# ⚠️ [zsh 주의] 대괄호([])가 포함된 패키지(예: uvicorn[standard]) 설치 시 반드시 따옴표로 감싸기
-poetry add "uvicorn[standard]"
-
-# 개발용 패키지 추가 (테스트 툴, 린터 등)
-poetry add pytest --group dev
-```
-
----
-
-#### 🤝 5. 협업 시 주의사항 (Git)
-
-1. **`poetry.lock` 파일은 반드시 Git에 커밋**해야 합니다. 이 파일이 있어야 모든 팀원이 소수점 자리까지 완벽히 일치하는 동일한 환경에서 버그 없이 개발할 수 있습니다.
-2. 다른 팀원이 패키지를 추가하여 내가 레포지토리를 `git pull` 받았을 때는, `backend/` 폴더에서 다시 한번 **`poetry install`**만 입력해 주면 새 패키지가 내 로컬 가상환경에 즉시 반영됩니다.
-
-## Ruff 설정 방법
-
-python formatter인데 원래 isort+black으로 했었는데 poetry랑 연동 + 요즘 ruff가 좋다는 것 같아서 추가해봤음. ruff 세팅은(최대 줄 길이, 린터 등등..)은 project.toml에서 하면 됨. 기본적인건 추가해서 그냥 쓰면 될듯
-
-#### 설치방법
-1. extension에서 ruff 설치
-2. poetry init해서 ruff install
-3. setting.json에 추가
-```json
-{
-    "[python]": {
-        "editor.formatOnSave": true,
-        "editor.defaultFormatter": "charliermarsh.ruff",
-        "editor.codeActionsOnSave": {
-            "source.fixAll": "explicit",
-            "source.organizeImports": "explicit"
-        }
-    },
-    "ruff.importStrategy": "fromEnvironment"
-}
-```
-4. ctrl + s로 formatting 되는지 확인
-5. 전체 파일에 formatting 적용하고 싶은 경우에는
-`poetry run ruff check --fix . && poetry run ruff format .`
-> ruff format은 코드 스타일 전체 적용 / check --fix는 import 순서 수정 및 논리적 오류 수정
+현재 포함된 자산에서 CC BY 적용 항목 없음
+추후 CC BY 등 저작자 표시가 필요한 자산을 추가할 경우 이 절에 저작자·출처·라이선스·변경 여부를 함께 기록.
