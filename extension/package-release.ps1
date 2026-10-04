@@ -47,6 +47,7 @@ $directories = @('dist', 'fonts', 'icons', 'scripts')
 foreach ($file in $files) {
     Copy-Item -LiteralPath (Join-Path $extensionRoot $file) -Destination $stagingRoot
 }
+Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination $stagingRoot
 foreach ($directory in $directories) {
     Copy-Item -LiteralPath (Join-Path $extensionRoot $directory) -Destination $stagingRoot -Recurse
 }

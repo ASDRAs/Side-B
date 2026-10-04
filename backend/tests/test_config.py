@@ -38,7 +38,8 @@ def test_default_cors_allowlist_is_explicit():
         "chrome-extension://hfcclomfoickmehgmdgjdjmiiekaciam"
         in settings.cors_origin_allowlist
     )
-    assert "http://127.0.0.1:3000" in settings.cors_origin_allowlist
+    assert "http://127.0.0.1:3000" not in settings.cors_origin_allowlist
+    assert "http://localhost:3000" not in settings.cors_origin_allowlist
 
 
 def test_cors_allowlist_rejects_wildcard():
