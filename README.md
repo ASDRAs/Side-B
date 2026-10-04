@@ -41,7 +41,6 @@ Chrome 116 이상 필요.
 | `extension/` | Manifest V3 기반 Chrome 사이드 패널. 추천 조회, YouTube Music 내보내기, 자동 EQ 제공 | [확장 프로그램 README](extension/README.md) |
 | `backend/` | FastAPI 백엔드. 추천 계산, 미리듣기 탐색, YouTube 매칭, 인증과 AI 추론 중계 담당 | [백엔드 README](backend/README.md) |
 | `inference/` | CLAP 임베딩과 SVM을 사용하는 비공개 장르 분류 서비스 | 팀원 작성 예정 |
-| `frontend/` | 현재 사용하지 않는 이전 웹 클라이언트의 로컬 백업 안내 | [백업 안내](frontend/README.md) |
 | `deployment/` | Cloud Run 서비스 설정, 배포 스크립트와 배포 계약 테스트 | [백엔드 배포 안내](backend/README.md#배포) |
 
 각 하위 README에 해당 구성 요소의 구조, 실행 방법, 설정, 테스트와 운영 시 주의사항 정리.

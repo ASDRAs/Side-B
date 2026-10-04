@@ -12,8 +12,7 @@ outputs/
 /AI_HANDOFF.md
 backend/tests/quality_test_30*.py
 
-/frontend/*
-!/frontend/README.md
+/frontend/
 /start-localhost.ps1
 /start-localhost.bat
 extension/node_modules/
