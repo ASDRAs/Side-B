@@ -1,5 +1,3 @@
-# Extension design assets
+# 확장 프로그램 디자인 원본
 
-`side-b-logo.png` is the source artwork used to generate the Chrome Extension
-icons. Runtime-ready icon sizes live in `extension/icons`; keep source artwork
-outside that directory so it is not included in Extension packages.
+`side-b-logo.png`는 Chrome 확장 프로그램 아이콘을 만드는 데 쓰는 원본 이미지다. 실제 확장에서 사용하는 크기별 아이콘은 `extension/icons`에 둔다. 원본 이미지는 배포 패키지에 들어가지 않도록 이 디렉터리에서 따로 관리한다.
