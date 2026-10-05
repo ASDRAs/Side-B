@@ -15,7 +15,9 @@ import base64
 import binascii
 import json
 import logging
+import random
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -593,6 +595,27 @@ class FirestoreAccessStore:
 
         return firestore.transactional
 
+    def _execute_transaction(self, db: Any, body: Callable[..., T]) -> T:
+        from google.api_core.exceptions import Aborted
+
+        deadline = time.monotonic() + self._timeout
+        for attempt in range(self._attempts):
+            try:
+                # SDK 2.30 retries commit conflicts, but not Aborted raised by
+                # transactional reads. Retry the entire rolled-back transaction
+                # through its public API, with one shared attempt budget.
+                transaction = db.transaction(max_attempts=1)
+                return self._transaction_wrapper()(body)(transaction)
+            except (Aborted, ValueError) as exc:
+                if not isinstance(exc, Aborted) and not isinstance(exc.__cause__, Aborted):
+                    raise
+                remaining = deadline - time.monotonic()
+                if attempt + 1 == self._attempts or remaining <= 0:
+                    raise
+                time.sleep(min(remaining, random.uniform(0.025, 0.1) * 2**attempt))
+                if time.monotonic() >= deadline:
+                    raise
+
     @staticmethod
     def _guard(operation: Callable[[], T]) -> Callable[[], T]:
         def run() -> T:
@@ -674,8 +697,7 @@ class FirestoreAccessStore:
                     transaction.set(quota_ref, plan.quota_data)
                 return plan.result
 
-            transaction = db.transaction(max_attempts=self._attempts)
-            return self._transaction_wrapper()(body)(transaction)
+            return self._execute_transaction(db, body)
 
         return await self._run(write)
 
@@ -745,7 +767,6 @@ class FirestoreAccessStore:
                     transaction.create(audit_ref, plan.audit_data)
                 return plan.result
 
-            transaction = db.transaction(max_attempts=self._attempts)
-            return self._transaction_wrapper()(body)(transaction)
+            return self._execute_transaction(db, body)
 
         return await self._run(write)

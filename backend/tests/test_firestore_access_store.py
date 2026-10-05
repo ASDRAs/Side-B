@@ -127,6 +127,30 @@ async def test_aborted_commit_retries_without_duplicate_audit_or_double_bump():
     assert db.data[f"{USERS_COLLECTION}/listener"]["revision"] == 2
 
 
+@pytest.mark.parametrize("operation", ["request", "decision"])
+async def test_aborted_transactional_read_retries_the_whole_transaction(operation):
+    store, db = make_store()
+    if operation == "decision":
+        seed(db, "listener", "pending")
+    reads = []
+
+    def abort_read(ref, transaction):
+        if transaction is not None and len(reads) < 2:
+            reads.append(transaction)
+            raise api_exceptions.Aborted("read contention")
+
+    db.read_hook = abort_read
+    if operation == "decision":
+        result = await store.decide(decision())
+        assert result.revision == 2 and len(audits(db)) == 1
+    else:
+        result = await store.request_access(AccessIdentity(uid="listener"))
+        assert result.created is True
+        assert db.data[f"{QUOTA_COLLECTION}/{START.date().isoformat()}"]["count"] == 1
+    assert db.attempts == 3 and reads[0] is not reads[1]
+    assert len(db.commits) == 1
+
+
 async def test_concurrent_change_during_transaction_retries_into_a_conflict():
     store, db = make_store()
     seed(db, "listener", "pending")

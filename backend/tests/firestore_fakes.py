@@ -9,8 +9,10 @@ emulator suite in ``tests/integration`` does that when an emulator is present.
 
 import copy
 
+from google.api_core.exceptions import Aborted
 
-class FakeAborted(Exception):
+
+class FakeAborted(Aborted):
     pass
 
 
@@ -196,6 +198,7 @@ def fake_transactional(body):
     """Mirror of google.cloud.firestore_v1.transaction._Transactional.__call__."""
 
     def run(transaction):
+        last_exc = None
         for _attempt in range(transaction.max_attempts):
             transaction.db.attempts += 1
             transaction.writes = []
@@ -204,10 +207,11 @@ def fake_transactional(body):
             try:
                 transaction.db.commit(transaction)
                 return result
-            except FakeAborted:
+            except FakeAborted as exc:
+                last_exc = exc
                 continue
         raise ValueError(
             f"Failed to commit transaction in {transaction.max_attempts} attempts."
-        )
+        ) from last_exc
 
     return run
