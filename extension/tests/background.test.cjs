@@ -1,126 +1,50 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-const BACKGROUND_SOURCE = fs.readFileSync(
-  path.join(__dirname, "..", "background.js"),
-  "utf8",
-);
+const { loadBackground, response, managedAuthSdk } = require("./helpers/backgroundHarness.cjs");
 
-function response(status, payload, headers = {}) {
-  return {
-    status,
-    ok: status >= 200 && status < 300,
-    headers: {
-      get(name) {
-        return headers[name] || null;
-      },
-    },
-    async json() {
-      return payload;
-    },
-  };
-}
-
-function loadBackground(responses, options = {}) {
-  const fetchCalls = [];
-  const storage = JSON.parse(JSON.stringify(options.storage || {}));
-  const authTokens = ["token-1", "token-2"];
-  const authCalls = [];
-  const removedTokens = [];
-  const offscreenCalls = [];
-
-  const chrome = {
-    runtime: {
-      getURL: (value) => `chrome-extension://test/${value}`,
-      getManifest: () => ({
-        oauth2: {
-          client_id:
-            options.clientId || "client.apps.googleusercontent.com",
-        },
-      }),
-      getContexts: async () => [],
-      sendMessage: async () => ({ ok: true }),
-      onMessage: { addListener() {} },
-    },
-    offscreen: {
-      async createDocument() {
-        offscreenCalls.push("create");
-      },
-      async closeDocument() {
-        offscreenCalls.push("close");
-      },
-    },
-    sidePanel: {
-      async setPanelBehavior() {},
-    },
-    action: { onClicked: { addListener() {} } },
-    tabs: {
-      query: async () => options.musicTabs || [],
-      onRemoved: { addListener() {} },
-      onUpdated: { addListener() {} },
-    },
-    tabCapture: {
-      getMediaStreamId: async () => "stream-id",
-    },
-    identity: {
-      async getAuthToken(details) {
-        authCalls.push(details);
-        return { token: authTokens.shift() };
-      },
-      async removeCachedAuthToken({ token }) {
-        removedTokens.push(token);
-      },
-    },
-    storage: {
-      session: {
-        async get() { return {}; },
-        async remove() {},
-      },
-      local: {
-        async set(values) {
-          Object.assign(storage, JSON.parse(JSON.stringify(values)));
-        },
-        async get(key) {
-          if (Array.isArray(key)) return Object.fromEntries(key.map((name) => [name, storage[name]]));
-          return { [key]: storage[key] };
-        },
-      },
-    },
-  };
-
-  const context = vm.createContext({
-    chrome,
-    console: { log() {}, error() {} },
-    Date,
-    Promise,
-    setTimeout: options.setTimeout || setTimeout,
-    clearTimeout,
-    URL,
-    AbortController,
-    fetch: async (url, init) => {
-      fetchCalls.push({ url, init });
-      const next = responses.shift();
-      assert.ok(next, `Unexpected fetch: ${url}`);
-      return typeof next === "function" ? next(url, init) : next;
-    },
+test("sign-in from a still-open panel initializes a restarted worker before Google auth", async () => {
+  const origin = "https://side-b-backend-7hmhv6htsa-du.a.run.app";
+  const h = loadBackground([
+    response(200, { mode: "dual", firebase_project_id: "gen-lang-client-0392647514" }),
+    response(200, { uid: "approved-user", email: "approved@example.com" }),
+  ], {
+    storage: { apiBaseUrl: origin, apiBaseUrlStorageVersion: 2 },
+    authSdk: managedAuthSdk(),
   });
-  context.importScripts = (...files) => {
-    for (const file of files) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", file), "utf8"), context);
-  };
-  vm.runInContext(BACKGROUND_SOURCE, context);
+  assert.equal(vm.runInContext("authManager.state().status", h.context), "initializing");
+  const result = await h.context.handleMessage({ type: "AUTH_SIGN_IN" }, {
+    url: "chrome-extension://test/sidepanel.html",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.state.status, "signed_in");
+  assert.equal(h.fetchCalls[0].url, `${origin}/auth/config`);
+  assert.equal(h.fetchCalls[1].url, `${origin}/auth/me`);
+  assert.equal(h.authCalls.length, 1);
+});
 
-  return {
-    context,
-    fetchCalls,
-    storage,
-    authCalls,
-    removedTokens,
-    offscreenCalls,
-  };
-}
+test("cold-worker sign-in returns discovery errors without requesting Google credentials", async () => {
+  const h = loadBackground([response(503, {})], { authSdk: managedAuthSdk() });
+  const result = await h.context.handleMessage({ type: "AUTH_SIGN_IN" }, {
+    url: "chrome-extension://test/sidepanel.html",
+  });
+  assert.equal(result.state.status, "configuration_unavailable");
+  assert.match(result.state.error, /백엔드 인증 설정/);
+  assert.equal(h.authCalls.length, 0);
+});
+
+test("cold-worker sign-in rejects an untrusted saved server before network or Google auth", async () => {
+  const h = loadBackground([], {
+    storage: { apiBaseUrl: "https://untrusted.example", apiBaseUrlStorageVersion: 2 },
+    authSdk: managedAuthSdk(),
+  });
+  await assert.rejects(h.context.handleMessage({ type: "AUTH_SIGN_IN" }, {
+    url: "chrome-extension://test/sidepanel.html",
+  }), /로그인 정보를 보낼 수 없습니다/);
+  assert.equal(h.fetchCalls.length, 0);
+  assert.equal(h.authCalls.length, 0);
+});
 
 test("EQ configuration bridge only returns settings to the extension offscreen document", async () => {
   const h = loadBackground([response(200, { mode: "legacy" })], { storage: { backendAccessToken: "fixture-team-token" } });
@@ -131,7 +55,7 @@ test("EQ configuration bridge only returns settings to the extension offscreen d
   assert.equal(result.settings.backendAccessToken, undefined);
   assert.equal(result.credential.headers["X-Side-B-Access-Token"], "fixture-team-token");
   assert.equal(h.fetchCalls.length, 1);
-  assert.equal(h.fetchCalls[0].url, "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app/auth/config");
+  assert.equal(h.fetchCalls[0].url, "https://side-b-backend-1073342688292.asia-northeast3.run.app/auth/config");
 });
 
 function exportPayload(items = [
@@ -560,4 +484,63 @@ test("startEq fails clearly when no YouTube Music tab is open", async () => {
     () => harness.context.SideBEq.start({ mode: "auto" }),
     /YouTube Music 탭을 열어/,
   );
+});
+
+const PANEL = { url: "chrome-extension://test/sidepanel.html" };
+const OFFSCREEN = { url: "chrome-extension://test/offscreen.html" };
+const MANAGED_ORIGIN = "https://side-b-backend-1073342688292.asia-northeast3.run.app";
+const managedConfig = () => response(200, { mode: "firebase", firebase_project_id: "gen-lang-client-0392647514" });
+const meWith = (access, extra = {}) => response(200, {
+  uid: "approved-user", email: "approved@example.com", access_status: access,
+  access_store: "firestore", can_manage_access: false, ...extra,
+});
+
+test("access requests come only from the panel and send no identity fields", async () => {
+  const h = loadBackground([managedConfig(), meWith("unregistered"), (_url, init) => {
+    assert.equal(init.method, "POST");
+    assert.equal(init.body, "{}");
+    assert.equal(init.headers.Authorization, "Bearer fixture-firebase-token");
+    return response(200, { access_status: "pending", access_requested_at: "2026-10-05T00:00:00Z", created: true });
+  }], { authSdk: managedAuthSdk() });
+  const signedIn = await h.context.handleMessage({ type: "AUTH_SIGN_IN" }, PANEL);
+  assert.equal(signedIn.state.access.status, "unregistered");
+  await assert.rejects(h.context.handleMessage({ type: "AUTH_REQUEST_ACCESS" }, OFFSCREEN), /사이드 패널/);
+  await assert.rejects(h.context.handleMessage({ type: "AUTH_REQUEST_ACCESS" }, { url: "https://evil.example/" }));
+  const requested = await h.context.handleMessage({ type: "AUTH_REQUEST_ACCESS" }, PANEL);
+  assert.equal(requested.state.access.status, "pending");
+  assert.equal(h.fetchCalls[2].url, `${MANAGED_ORIGIN}/access/request`);
+});
+
+test("pending accounts get access credentials but no feature or admin credentials", async () => {
+  const h = loadBackground([managedConfig(), meWith("pending")], { authSdk: managedAuthSdk() });
+  await h.context.handleMessage({ type: "AUTH_SIGN_IN" }, PANEL);
+  const ask = (purpose, sender = PANEL) => h.context.handleMessage(
+    { type: "AUTH_GET_CREDENTIAL", apiBaseUrl: MANAGED_ORIGIN, purpose }, sender);
+  assert.equal((await ask("access")).credential.headers.Authorization, "Bearer fixture-firebase-token");
+  await assert.rejects(ask("feature"), /승인/);
+  await assert.rejects(ask("admin"), /관리자/);
+  await assert.rejects(ask("access", OFFSCREEN), /인증 용도/);
+  await assert.rejects(h.context.handleMessage({ type: "GET_EQ_SETTINGS" }, OFFSCREEN), /승인/);
+});
+
+test("losing approval on refresh stops EQ in the worker", async () => {
+  const h = loadBackground([managedConfig(), meWith("approved"), meWith("blocked")], { authSdk: managedAuthSdk() });
+  await h.context.handleMessage({ type: "AUTH_SIGN_IN" }, PANEL);
+  const refreshed = await h.context.handleMessage({ type: "AUTH_REFRESH_ACCESS" }, OFFSCREEN);
+  assert.equal(refreshed.state.access.status, "blocked");
+  await new Promise(setImmediate);
+  const eqUpdates = h.runtimeMessages.filter((message) => message.target === "eq-ui");
+  assert.equal(eqUpdates.at(-1)?.state.status, "inactive");
+  const broadcast = h.runtimeMessages.filter((message) => message.type === "AUTH_STATE_CHANGED");
+  assert.doesNotMatch(JSON.stringify(broadcast), /fixture-firebase-token/);
+});
+
+test("a cold worker answers a status refresh from its own discovery", async () => {
+  const h = loadBackground([managedConfig()], {
+    storage: { apiBaseUrl: MANAGED_ORIGIN, apiBaseUrlStorageVersion: 3 },
+    authSdk: managedAuthSdk(),
+  });
+  const result = await h.context.handleMessage({ type: "AUTH_REFRESH_ACCESS" }, PANEL);
+  assert.equal(result.state.status, "signed_out");
+  assert.equal(h.fetchCalls.length, 1);
 });

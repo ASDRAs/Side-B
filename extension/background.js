@@ -6,7 +6,16 @@ importScripts(
   "dist/authWorker.js",
 );
 
-const authManager = SideBAuthBundle.createAuthManager();
+const authManager = SideBAuthBundle.createAuthManager({ onChange: handleAuthChange });
+
+// Approval can be lost without a logout (block, or a 403 from any feature).
+// Stop EQ here too so a pending toolbar activation cannot resume it.
+function handleAuthChange(next, previous) {
+  const approved = (state) => state?.status === "signed_in" && state.access?.status === "approved";
+  if (approved(previous) && !approved(next)) {
+    SideBEq.stop().catch((error) => console.error("Failed to stop EQ after access change:", error));
+  }
+}
 
 // Use the actual action event so the tab that grants activeTab is also the
 // capture target. Opening a global panel is not itself a capture permission.
@@ -583,6 +592,20 @@ async function createYouTubePlaylist(payload) {
   }
 }
 
+// The panel may outlive an idle service worker and still display its old auth
+// state. Restore discovery from storage before acting on its next request.
+async function restoreAuthConfiguration() {
+  const current = authManager.state();
+  if (current.apiOrigin && !["initializing", "configuration_unavailable"].includes(current.status)) {
+    return { state: current, restored: false };
+  }
+  const settings = await chrome.storage.local.get(["apiBaseUrl", "apiBaseUrlStorageVersion"]);
+  const { apiBaseUrl } = SideBAuthBundle.resolveApiBaseUrlSetting(
+    settings.apiBaseUrl, settings.apiBaseUrlStorageVersion,
+  );
+  return { state: await authManager.configure(current.apiOrigin || apiBaseUrl), restored: true };
+}
+
 async function handleMessage(message, sender) {
   switch (message.type) {
     case "START_EQ":
@@ -627,9 +650,12 @@ async function handleMessage(message, sender) {
     case "AUTH_CONFIGURE":
     case "AUTH_SIGN_IN":
     case "AUTH_SIGN_OUT":
+    case "AUTH_REFRESH_ACCESS":
+    case "AUTH_REQUEST_ACCESS":
+    case "AUTH_REPORT_DENIAL":
     case "AUTH_GET_CREDENTIAL":
       if (![chrome.runtime.getURL("sidepanel.html"), chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH)]
-        .includes(sender?.url)) {
+        .includes(sender?.url) || (sender?.id && sender.id !== chrome.runtime.id)) {
         throw new Error("이 페이지에는 로그인 정보 접근을 허용하지 않습니다.");
       }
       if (message.type === "AUTH_CONFIGURE") {
@@ -638,7 +664,30 @@ async function handleMessage(message, sender) {
       }
       if (message.type === "AUTH_SIGN_IN") {
         if (sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("로그인은 사이드 패널에서 진행하세요.");
+        const { state } = await restoreAuthConfiguration();
+        if (state.status === "configuration_unavailable") return { ok: true, state };
         return { ok: true, state: await authManager.signIn() };
+      }
+      if (message.type === "AUTH_REFRESH_ACCESS") {
+        const { state, restored } = await restoreAuthConfiguration();
+        // A cold worker has just re-read /auth/me while restoring; reuse that.
+        if (restored || state.status !== "signed_in") return { ok: true, state };
+        return { ok: true, state: await authManager.refreshAccess() };
+      }
+      if (message.type === "AUTH_REQUEST_ACCESS") {
+        if (sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("사용 신청은 사이드 패널에서 진행하세요.");
+        await restoreAuthConfiguration();
+        return { ok: true, state: await authManager.requestAccess() };
+      }
+      if (message.type === "AUTH_REPORT_DENIAL") {
+        if (sender.url !== chrome.runtime.getURL("sidepanel.html") && message.purpose !== "feature") {
+          throw new Error("이 문서에는 해당 인증 용도를 허용하지 않습니다.");
+        }
+        // Do not restore a cold worker for a report from an old credential.
+        // Revoke synchronously before starting a newer, scoped status check.
+        const result = authManager.reportDenial(message);
+        if (result.applied) void authManager.refreshAccess().catch(() => {});
+        return { ok: true, ...result };
       }
       if (message.type === "AUTH_SIGN_OUT") {
         if (sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("로그아웃은 사이드 패널에서 진행하세요.");
@@ -648,6 +697,10 @@ async function handleMessage(message, sender) {
           void SideBEq.stop().catch(() => {});
           await chrome.storage.local.remove(["youtubeLastDestination", "youtubeExport"]);
         }
+      }
+      // The offscreen document only runs feature requests (EQ analysis).
+      if (sender.url !== chrome.runtime.getURL("sidepanel.html") && (message.purpose ?? "feature") !== "feature") {
+        throw new Error("이 문서에는 해당 인증 용도를 허용하지 않습니다.");
       }
       return { ok: true, credential: await authManager.credential(message) };
 

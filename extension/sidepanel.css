@@ -1535,3 +1535,117 @@ label,
   .track-open > span:last-child { display: none; }
   .track-open { width: 30px; padding: 0; }
 }
+
+/* ---------- 사용 승인 ---------- */
+
+.access-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.access-panel[hidden],
+#accessRequestedRow[hidden],
+.admin-settings[hidden] {
+  display: none;
+}
+
+/* 승인 화면은 안내가 길어 세로 중앙 고정 대신 위에서부터 흐르게 둔다. */
+.auth-gate.is-access .auth-gate-body {
+  position: static;
+  transform: none;
+  padding-bottom: 72px;
+}
+
+.access-facts {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  font-size: var(--font-sm);
+}
+
+.access-facts > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.access-facts dt {
+  color: var(--text-muted);
+}
+
+.access-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.admin-tabs button {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-sm);
+}
+
+.admin-tabs button[aria-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.admin-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-item {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  background: var(--surface);
+}
+
+.admin-item-name {
+  font-size: 13px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.admin-item-meta {
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  overflow-wrap: anywhere;
+}
+
+.admin-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.admin-item-actions button {
+  min-height: 30px;
+  font-size: var(--font-sm);
+}
+
+#adminStatus[data-error="true"] {
+  color: var(--danger);
+}

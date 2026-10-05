@@ -12,6 +12,7 @@ from app.routers.genre_classification import router as genre_router
 from app.routers.recommend import router as recommend_router
 from app.routers.youtube_export import router as youtube_router
 from app.services.auth import (
+    RATE_LIMITED_FEATURES,
     AuthenticationError,
     AuthenticationService,
     AuthenticationUnavailableError,
@@ -76,16 +77,8 @@ def auth_service(
 
 def limiter(user_limit=10, aggregate_limit=100, **kwargs):
     return FeatureRateLimiter(
-        user_limits={
-            "recommend": user_limit,
-            "genre": user_limit,
-            "youtube_export": user_limit,
-        },
-        aggregate_limits={
-            "recommend": aggregate_limit,
-            "genre": aggregate_limit,
-            "youtube_export": aggregate_limit,
-        },
+        user_limits=dict.fromkeys(RATE_LIMITED_FEATURES, user_limit),
+        aggregate_limits=dict.fromkeys(RATE_LIMITED_FEATURES, aggregate_limit),
         **kwargs,
     )
 
@@ -127,10 +120,16 @@ async def test_auth_me_returns_only_minimal_verified_identity():
     response = await get(make_auth_app(), "/auth/me", {"Authorization": "Bearer valid"})
 
     assert response.status_code == 200
+    # Environment-allowlist mode: a 200 still means "allowlisted", reported in
+    # the same access contract the Firestore store uses.
     assert response.json() == {
         "uid": "allowed-uid",
         "email": "allowed@example.com",
         "display_name": "Allowed User",
+        "access_status": "approved",
+        "access_requested_at": None,
+        "access_store": "env",
+        "can_manage_access": False,
     }
 
 
@@ -166,14 +165,22 @@ async def test_wrong_project_token_is_rejected_after_verification_boundary():
     assert response.status_code == 401
 
 
-@pytest.mark.parametrize("token", ["wrong-provider", "unverified", "disallowed"])
-async def test_google_provider_verified_email_and_allowlist_are_required(token):
+@pytest.mark.parametrize(
+    ("token", "code"),
+    [
+        ("wrong-provider", "auth_identity_unverified"),
+        ("unverified", "auth_identity_unverified"),
+        ("disallowed", "auth_account_denied"),
+    ],
+)
+async def test_google_provider_verified_email_and_allowlist_are_required(token, code):
     response = await get(
         make_auth_app(), "/auth/me", {"Authorization": f"Bearer {token}"}
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "auth_account_denied"
+    # Identity rejection and allowlist rejection are distinguishable.
+    assert response.json()["detail"]["code"] == code
 
 
 async def test_empty_allowlist_denies_every_verified_account():
@@ -327,6 +334,23 @@ async def test_explicit_legacy_mode_remains_available():
 
     assert response.status_code == 200
     assert response.json()["uid"] == "legacy-shared"
+
+
+async def test_local_anonymous_legacy_mode_still_answers_auth_me():
+    service = AuthenticationService(
+        mode="legacy",
+        legacy_token=None,
+        firebase_verifier=FirebaseTokenVerifier(
+            PROJECT_ID, verify_transport=verifier_transport
+        ),
+        unauthenticated_legacy_features=frozenset({"recommend", "genre"}),
+    )
+
+    response = await get(make_auth_app(service), "/auth/me")
+
+    assert response.status_code == 200
+    assert response.json()["uid"] == "legacy-anonymous"
+    assert response.json()["access_status"] == "approved"
 
 
 async def test_user_feature_limits_are_isolated_with_aggregate_capacity():

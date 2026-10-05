@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, Request
 
+from app.services.access import isoformat
 from app.services.auth import (
-    AuthenticationConfigurationError,
-    AuthenticationDeniedError,
-    AuthenticationError,
-    AuthenticationUnavailableError,
+    AUTHORIZATION_ERRORS,
+    access_store,
+    authenticate_identity,
+    http_error,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -21,38 +22,42 @@ async def auth_me(
     authorization: str | None = Header(default=None, alias="Authorization"),
     legacy_token: str | None = Header(default=None, alias="X-Side-B-Access-Token"),
 ):
+    """Return the verified identity and, separately, its approval state.
+
+    With the Firestore store, an unapproved account is still a valid login:
+    this returns 200 with ``access_status`` so the extension can keep the
+    session and offer the request/status screen. Only identity failures are
+    401/403. Environment-allowlist mode keeps its historical 403 for accounts
+    outside the allowlist.
+    """
     try:
-        user = await request.app.state.auth_service.authenticate(
-            feature="recommend",
+        store = access_store(request)
+        user = await authenticate_identity(
+            request,
+            feature="access_status",
             authorization=authorization,
             legacy_token=legacy_token,
+            # Unchanged legacy semantics: /auth/me behaves like /recommend.
+            auth_feature="recommend",
         )
-    except AuthenticationConfigurationError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "auth_configuration_error", "message": str(exc)},
-        ) from exc
-    except AuthenticationUnavailableError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "auth_verification_unavailable",
-                "message": "로그인 확인 서비스를 일시적으로 사용할 수 없습니다.",
-            },
-        ) from exc
-    except AuthenticationDeniedError as exc:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "auth_account_denied", "message": str(exc)},
-        ) from exc
-    except AuthenticationError as exc:
-        raise HTTPException(
-            status_code=401,
-            detail={"code": "auth_unauthorized", "message": str(exc)},
-        ) from exc
+        record = await store.get(user.uid) if store is not None else None
+    except AUTHORIZATION_ERRORS as exc:
+        raise http_error(exc) from exc
 
+    if store is None:
+        access_status = "approved"
+    else:
+        access_status = record.status if record is not None else "unregistered"
     return {
         "uid": user.uid,
         "email": user.email,
         "display_name": user.display_name,
+        "access_status": access_status,
+        "access_requested_at": isoformat(record.requested_at) if record else None,
+        "access_store": "firestore" if store is not None else "env",
+        # A display hint only. Every administration call re-checks the server
+        # administrator list.
+        "can_manage_access": bool(
+            store is not None and user.uid in request.app.state.admin_uids
+        ),
     }

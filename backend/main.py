@@ -10,13 +10,15 @@ import pylast
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import get_settings
+from app.config import Settings, get_settings, validate_access_configuration
+from app.routers.access import router as access_router
 from app.routers.auth import router as auth_router
 from app.routers.genre_classification import (
     router as genre_classification_router,
 )
 from app.routers.recommend import router as recommend_router
 from app.routers.youtube_export import router as youtube_export_router
+from app.services.access import FirestoreAccessStore
 from app.services.auth import (
     AuthenticationService,
     FeatureRateLimiter,
@@ -24,6 +26,7 @@ from app.services.auth import (
 )
 from app.services.inference_client import InferenceClient, InferenceConfigurationError
 from app.services.youtube import YouTubeMatcher, YouTubeSearchClient
+from app.utils.body_limit import BodySizeLimitMiddleware
 from preview import router as preview_router
 
 logging.basicConfig(
@@ -36,9 +39,97 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+def build_rate_limiter(settings: Settings) -> FeatureRateLimiter:
+    return FeatureRateLimiter(
+        user_limits={
+            "recommend": settings.recommend_requests_per_minute,
+            "genre": settings.genre_requests_per_minute,
+            "youtube_export": settings.youtube_export_requests_per_minute,
+            "preview": settings.preview_requests_per_minute,
+            "access_status": settings.access_status_requests_per_minute,
+            "access_lookup": settings.access_lookup_requests_per_minute,
+            "access_request": settings.access_request_requests_per_minute,
+            "admin_read": settings.admin_read_requests_per_minute,
+            "admin_write": settings.admin_write_requests_per_minute,
+        },
+        aggregate_limits={
+            "recommend": settings.recommend_aggregate_requests_per_minute,
+            "genre": settings.genre_aggregate_requests_per_minute,
+            "youtube_export": settings.youtube_export_aggregate_requests_per_minute,
+            "preview": settings.preview_aggregate_requests_per_minute,
+            "access_status": settings.access_status_aggregate_requests_per_minute,
+            "access_lookup": settings.access_lookup_aggregate_requests_per_minute,
+            "access_request": settings.access_request_aggregate_requests_per_minute,
+            "admin_read": settings.admin_read_aggregate_requests_per_minute,
+            "admin_write": settings.admin_write_aggregate_requests_per_minute,
+        },
+        inactive_ttl_seconds=settings.authenticated_user_bucket_ttl_seconds,
+        max_user_buckets=settings.authenticated_user_bucket_limit,
+    )
+
+
+def configure_access(app: FastAPI, settings: Settings) -> None:
+    """Install identity verification and the configured approval source.
+
+    Raises ``AccessConfigurationError`` for unsafe Firestore settings so the
+    revision never starts serving with a fallback approval path.
+    """
+    for warning in validate_access_configuration(settings):
+        logger.warning(warning)
+    firestore = settings.access_store == "firestore"
+    unauthenticated = (
+        settings.auth_mode == "legacy"
+        and settings.allow_unauthenticated_recommend
+        and not settings.backend_access_token
+    )
+    verifier = FirebaseTokenVerifier(
+        settings.firebase_project_id,
+        verify_timeout_seconds=settings.firebase_verify_timeout_seconds,
+        http_timeout_seconds=settings.firebase_http_timeout_seconds,
+        max_concurrency=settings.firebase_verify_concurrency,
+    )
+    if firestore:
+        # Identity only. The env allowlists and the shared token never apply.
+        app.state.auth_service = AuthenticationService(
+            mode="firebase",
+            legacy_token=None,
+            firebase_verifier=verifier,
+            enforce_allowlist=False,
+        )
+        app.state.admin_uids = settings.admin_uid_set
+        app.state.access_store = FirestoreAccessStore(
+            project_id=settings.effective_firestore_project_id,
+            database=settings.firestore_database,
+            admin_uids=settings.admin_uid_set,
+            request_daily_limit=settings.access_request_daily_limit,
+            operation_timeout_seconds=settings.access_store_timeout_seconds,
+            max_concurrency=settings.access_store_concurrency,
+        )
+    else:
+        app.state.auth_service = AuthenticationService(
+            mode=settings.auth_mode,
+            legacy_token=settings.backend_access_token,
+            firebase_verifier=verifier,
+            allowed_uids=settings.firebase_uid_allowlist,
+            allowed_emails=settings.firebase_email_allowlist,
+            unauthenticated_legacy_features=(
+                frozenset({"recommend", "genre"}) if unauthenticated else frozenset()
+            ),
+        )
+        app.state.admin_uids = frozenset()
+        app.state.access_store = None
+    app.state.feature_rate_limiter = build_rate_limiter(settings)
+    logger.info(
+        "Access approval source: %s (auth mode %s)",
+        settings.access_store,
+        app.state.auth_service.mode,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    configure_access(app, settings)
     http = httpx.AsyncClient(
         timeout=httpx.Timeout(settings.http_timeout_seconds),
         limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
@@ -55,40 +146,6 @@ async def lifespan(app: FastAPI):
         ),
         threshold=settings.youtube_match_threshold,
         concurrency=settings.youtube_search_concurrency,
-    )
-    unauthenticated = (
-        settings.auth_mode == "legacy"
-        and settings.allow_unauthenticated_recommend
-        and not settings.backend_access_token
-    )
-    app.state.auth_service = AuthenticationService(
-        mode=settings.auth_mode,
-        legacy_token=settings.backend_access_token,
-        firebase_verifier=FirebaseTokenVerifier(
-            settings.firebase_project_id,
-            verify_timeout_seconds=settings.firebase_verify_timeout_seconds,
-            http_timeout_seconds=settings.firebase_http_timeout_seconds,
-            max_concurrency=settings.firebase_verify_concurrency,
-        ),
-        allowed_uids=settings.firebase_uid_allowlist,
-        allowed_emails=settings.firebase_email_allowlist,
-        unauthenticated_legacy_features=(
-            frozenset({"recommend", "genre"}) if unauthenticated else frozenset()
-        ),
-    )
-    app.state.feature_rate_limiter = FeatureRateLimiter(
-        user_limits={
-            "recommend": settings.recommend_requests_per_minute,
-            "genre": settings.genre_requests_per_minute,
-            "youtube_export": settings.youtube_export_requests_per_minute,
-        },
-        aggregate_limits={
-            "recommend": settings.recommend_aggregate_requests_per_minute,
-            "genre": settings.genre_aggregate_requests_per_minute,
-            "youtube_export": settings.youtube_export_aggregate_requests_per_minute,
-        },
-        inactive_ttl_seconds=settings.authenticated_user_bucket_ttl_seconds,
-        max_user_buckets=settings.authenticated_user_bucket_limit,
     )
     app.state.lastfm_pylast = pylast.LastFMNetwork(
         api_key=settings.lastfm_api_key or "",
@@ -139,6 +196,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Music Discovery API", lifespan=lifespan)
 
 app.add_middleware(
+    BodySizeLimitMiddleware,
+    path_prefixes=("/access/", "/admin/"),
+    max_bytes=4_096,
+)
+app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origin_allowlist,
     allow_methods=["GET", "POST"],
@@ -153,6 +215,7 @@ app.add_middleware(
 # router 설정 fetch하면 아래의 기능들 불러옴. 실제 기능들이 수행되는 곳
 app.include_router(preview_router)
 app.include_router(auth_router)
+app.include_router(access_router)
 app.include_router(recommend_router)
 app.include_router(youtube_export_router)
 app.include_router(genre_classification_router)

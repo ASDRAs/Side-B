@@ -6,7 +6,8 @@ async function installAuthFixture(worker, { blank = false } = {}) {
     let observer;
     const auth = { currentUser: null };
     const user = { uid: "fixture-user", email: "listener@example.com", displayName: "Listener" };
-    globalThis.authFixture = { scopes: [], user, meStatus: 200, pendingGoogle: false };
+    // access: null mimics an allowlist server; a status mimics the Firestore approval store.
+    globalThis.authFixture = { scopes: [], user, meStatus: 200, pendingGoogle: false, access: null };
     const manager = SideBAuthBundle.createAuthManager({
       chromeApi: {
         runtime: chrome.runtime,
@@ -29,7 +30,11 @@ async function installAuthFixture(worker, { blank = false } = {}) {
       },
       fetchImpl: async (url) => {
         if (url.endsWith("/auth/config")) return new Response(JSON.stringify({ mode: "firebase", firebase_project_id: "fixture" }));
-        if (url.endsWith("/auth/me")) return new Response(JSON.stringify(user), { status: authFixture.meStatus });
+        if (url.endsWith("/auth/me")) {
+          const body = authFixture.access ? { ...user, access_status: authFixture.access,
+            access_store: "firestore", can_manage_access: false } : user;
+          return new Response(JSON.stringify(body), { status: authFixture.meStatus });
+        }
         throw new Error(`Unexpected auth transport ${url}`);
       },
     });
@@ -270,5 +275,23 @@ test("reopening restores only the signed-in account's persisted playlist result"
       else await expect(reopened.locator("#youtubeExportPanel")).toBeHidden();
       await reopened.close();
     }
+  } finally { await context.close(); }
+});
+
+test("a pending account keeps its session on the access screen until approved", async ({}, testInfo) => {
+  const { context, page } = await launchExtensionPage(testInfo, { setupWorker: installAuthFixture });
+  const [worker] = context.serviceWorkers();
+  try {
+    await worker.evaluate(() => { authFixture.access = "pending"; });
+    await page.locator("#authGateSignInButton").click();
+    await expect(page.locator("#accessPanel")).toBeVisible();
+    await expect(page.locator("#authGateTitle")).toHaveText("관리자 승인 대기 중");
+    await expect(page.locator("#authGateSignInButton")).toBeHidden();
+    await expect(page.locator(".search-bar")).toBeHidden();
+    await worker.evaluate(() => { authFixture.access = "approved"; });
+    await page.locator("#accessRefreshButton").click();
+    await expect(page.locator("#authGate")).toBeHidden();
+    await expect(page.locator(".search-bar")).toBeVisible();
+    expect(await worker.evaluate(() => authFixture.scopes.length)).toBe(1);
   } finally { await context.close(); }
 });

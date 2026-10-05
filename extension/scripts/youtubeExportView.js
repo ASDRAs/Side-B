@@ -102,12 +102,16 @@ export async function fetchYouTubeMatches(
     if (!response.ok) {
       const fallback = `HTTP ${response.status}`;
       let message = fallback;
+      let payload = null;
       try {
-        message = apiErrorMessage(await response.json(), fallback);
+        payload = await response.json();
+        message = apiErrorMessage(payload, fallback);
       } catch {
         // The status is sufficient when the backend did not return JSON.
       }
-      throw new Error(message);
+      // Callers distinguish an approval denial (403 access_not_approved) from
+      // other failures without parsing the message.
+      throw Object.assign(new Error(message), { status: response.status, payload });
     }
     return await response.json();
   } finally {

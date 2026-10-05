@@ -390,7 +390,10 @@ function queueCommand(action) {
 async function handleMessage(message) {
   switch (message.type) {
     case "AUTH_STATE_CHANGED":
-      if (["signed_out", "denied", "error", "signing_in"].includes(message.state?.status)) {
+      if (["signed_out", "denied", "error", "signing_in"].includes(message.state?.status) ||
+          // A managed session without confirmed approval may not run analysis.
+          (["firebase", "dual"].includes(message.state?.mode) && message.state?.status === "signed_in" &&
+            message.state?.access?.status !== "approved")) {
         authSessionGeneration = message.state.sessionGeneration;
         SideBEqProvider.resetCache();
         return stopEq();

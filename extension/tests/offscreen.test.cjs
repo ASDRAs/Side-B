@@ -412,3 +412,19 @@ test("missing metadata removes a previously applied AI preset", async () => {
   assert.equal(h.context.getState().status, "waiting_track");
   assert.equal(activeFilters(h.graph).length, 0);
 });
+
+test("a managed session without approval stops capture and analysis", async () => {
+  const h = await startAuto({ track: song("A"), provider: async () => cut(1000) });
+  const send = (state) => h.context.handleMessage({ type: "AUTH_STATE_CHANGED", state });
+  await send({ mode: "firebase", status: "signed_in", sessionGeneration: "g1", access: { status: "approved" } });
+  assert.equal(h.context.getState().active, true);
+  await send({ mode: "firebase", status: "signed_in", sessionGeneration: "g2", access: { status: "pending" } });
+  assert.equal(h.context.getState().capturing, false);
+  assert.equal(h.intervals.size, 0);
+});
+
+test("legacy sessions are unaffected by approval states", async () => {
+  const h = await startAuto({ track: song("A"), provider: async () => cut(1000) });
+  await h.context.handleMessage({ type: "AUTH_STATE_CHANGED", state: { mode: "legacy", status: "legacy", sessionGeneration: "g" } });
+  assert.equal(h.context.getState().active, true);
+});

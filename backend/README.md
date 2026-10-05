@@ -70,7 +70,7 @@ Chrome Extension
 3. `/preview`는 재생 정보를, `/preview/stream`은 백엔드를 거친 오디오를 반환한다.
 4. 공급자 CDN에서 직접 재생하지 못하면 클라이언트가 스트림 경로로 전환한다.
 
-두 엔드포인트는 인증 없이 열려 있다.
+승인 저장소가 `env`이면 두 엔드포인트는 기존처럼 인증 없이 열려 있다. `SIDE_B_ACCESS_STORE=firestore`이면 승인된 계정의 Bearer 인증이 필요하고, `/preview/stream`은 최대 8 MiB까지만 중계한다. 확장은 인증 fetch로 받은 바이트를 Blob으로 재생하며 토큰을 URL에 넣지 않는다.
 
 ## YouTube 내보내기 흐름
 
@@ -102,11 +102,14 @@ Chrome Extension
 |---|---|---|
 | `GET /health`, `GET /api/health` | 서비스 상태 확인 | 없음 |
 | `GET /auth/config` | 인증 모드와 Firebase 프로젝트 확인 | 없음 |
-| `GET /auth/me` | 로그인 계정 허용 여부 확인 | 필요 |
-| `POST /recommend` | 곡·분위기 추천 | 필요 |
-| `GET /preview`, `GET /preview/stream` | 미리듣기 탐색·중계 | 없음 |
-| `POST /exports/youtube/matches` | YouTube 영상 후보 매칭 | 필요 |
-| `POST /genre-classification` | 미리듣기 기반 장르 분류 | 필요 |
+| `GET /auth/me` | 로그인 신원, 승인 상태(`access_status`), 관리자 메뉴 표시 여부 | 신원 |
+| `POST /access/request` | 본인 사용 신청 (Firestore 모드) | 신원 |
+| `GET /admin/access-users` | 상태별 계정 목록, 25개 기본·최대 50, 커서 (Firestore 모드) | 서버 관리자 UID |
+| `POST /admin/access-users/{uid}/decision` | 승인·거절·차단·차단 해제·재심사 (Firestore 모드) | 서버 관리자 UID |
+| `POST /recommend` | 곡·분위기 추천 | 필요 (Firestore 모드는 approved) |
+| `GET /preview`, `GET /preview/stream` | 미리듣기 탐색·중계 | env 모드 없음, Firestore 모드 approved |
+| `POST /exports/youtube/matches` | YouTube 영상 후보 매칭 | 필요 (Firestore 모드는 approved) |
+| `POST /genre-classification` | 미리듣기 기반 장르 분류 | 필요 (Firestore 모드는 approved) |
 
 세부 요청·응답 스키마는 실행 중인 서버의 `/docs`에서 확인할 수 있다.
 
@@ -146,6 +149,17 @@ Python 3.12 이상과 Poetry 2.x가 필요하다. 설정은 루트 `.env`와 `ba
 ```
 
 `/auth/config`는 클라이언트에 현재 인증 방식과 공개 설정을 알려 준다. 필요한 변수 이름과 기본값은 [`.env.example`](../.env.example)과 `app/config/`에 정리돼 있다.
+
+### 신원 확인과 사용 승인
+
+`SIDE_B_ACCESS_STORE`가 사용 승인의 근거를 고른다.
+
+- `env`(기본값): 기존 동작. `FIREBASE_ALLOWED_UIDS`/`FIREBASE_ALLOWED_EMAILS` 또는 legacy 공유 토큰이 허용 여부를 정한다.
+- `firestore`: Firebase 신원(서명·프로젝트·만료·취소·Google 제공자·인증된 이메일)만 확인하고, 사용 승인은 Firestore `access_users/{uid}`에서 읽는다. 미승인 계정도 `/auth/me`는 200으로 상태를 받고, 기능 API는 403 `access_not_approved`를 받는다. DB 장애는 503이며 허용 목록이나 공유 토큰으로 대체하지 않는다. `SIDE_B_AUTH_MODE=firebase`와 `SIDE_B_ADMIN_UIDS`가 없으면 기동하지 않는다.
+
+관리자는 서버 설정 `SIDE_B_ADMIN_UIDS`로만 정하며, 관리 API는 매 요청 토큰 UID를 이 목록과 대조한다. 결정은 `expected_revision`과 요청자별 `operation_id`(UUID)로 충돌·재전송을 막고, 상태 변경과 감사 기록을 한 트랜잭션으로 저장한다. 설정, IAM, 규칙 배포, 부트스트랩(`scripts/bootstrap_access.py`), 태그 정리, 롤백, 비용 한계는 [운영 절차](../docs/auth-approval-operations.md)에 있다.
+
+Firestore 에뮬레이터 통합 테스트(`tests/integration`)는 `FIRESTORE_EMULATOR_HOST`가 있을 때만 실행되고, 없으면 건너뛴다.
 
 ## 확인 흐름
 
