@@ -120,6 +120,17 @@ test("untrusted origins are rejected before discovery or credential access", asy
   assert.equal(h.calls.length, 0);
 });
 
+test("denied login identifies the actual account and server without exposing tokens", async () => {
+  const h = harness({ meStatus: 403 });
+  const state = await h.login();
+  assert.equal(state.status, "denied");
+  assert.match(state.error, /a@example\.com/);
+  assert.ok(state.error.includes(ORIGIN));
+  assert.equal(state.account, null);
+  assert.equal(h.auth.currentUser, null);
+  assert.doesNotMatch(JSON.stringify(h.messages), /firebase-a|google-signin/);
+});
+
 test("logout while Google consent is pending never exchanges the late token", async () => {
   const google = deferred();
   const h = harness({ google });

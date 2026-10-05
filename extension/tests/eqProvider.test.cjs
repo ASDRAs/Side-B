@@ -50,7 +50,7 @@ test("real provider sends the track with its managed credential, never a YouTube
   const preset = await h.run();
   assert.equal(preset.genre, "dance");
   assert.equal(preset.bands[0].gain, 2);
-  assert.equal(h.calls[0].url, "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app/genre-classification");
+  assert.equal(h.calls[0].url, "https://side-b-backend-1073342688292.asia-northeast3.run.app/genre-classification");
   assert.deepEqual(JSON.parse(h.calls[0].init.body), { track_name: track.title, artist: track.artist });
   assert.equal(h.calls[0].init.headers.Authorization, "Bearer fixture-id-token");
   assert.equal(h.calls[0].init.headers["X-Side-B-Access-Token"], undefined);
@@ -287,4 +287,43 @@ test("cancelling while unconfigured rejects immediately", async () => {
   const request = h.run();
   h.controller.abort();
   await assert.rejects(request, { name: "AbortError" });
+});
+
+test("an approval denial clears cached genres and reports its credential scope", async () => {
+  const messages = [];
+  let denied = false;
+  const h = await harness({
+    message: async (message) => {
+      messages.push(message);
+      if (message.type === "AUTH_REPORT_DENIAL") return { ok: true };
+      return { ok: true, settings: {}, credential: { mode: "firebase", sessionGeneration: "a", headers: { Authorization: "Bearer t" } } };
+    },
+    fetch: async () => denied
+      ? new Response(JSON.stringify({ detail: { code: "access_not_approved", access_status: "blocked" } }), { status: 403 })
+      : new Response(JSON.stringify(result), { status: 200 }),
+  });
+  await h.run();
+  denied = true;
+  await assert.rejects(h.run({ title: "Other", artist: "BoA" }), /승인/);
+  const reports = messages.filter((message) => message.type === "AUTH_REPORT_DENIAL");
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].sessionGeneration, "a");
+  assert.equal(reports[0].purpose, "feature");
+  assert.equal(reports[0].code, "access_not_approved");
+  // The cached genre for the first track is gone: it is requested again.
+  await assert.rejects(h.run());
+  assert.equal(h.calls.length, 3);
+});
+
+test("allowlist and identity 403s do not trigger an access refresh", async () => {
+  const messages = [];
+  const h = await harness({
+    message: async (message) => {
+      messages.push(message.type);
+      return { ok: true, settings: {}, credential: { mode: "firebase", sessionGeneration: "a", headers: { Authorization: "Bearer t" } } };
+    },
+    fetch: async () => new Response(JSON.stringify({ detail: { code: "auth_account_denied", message: "This account is not approved" } }), { status: 403 }),
+  });
+  await assert.rejects(h.run(), /This account is not approved/);
+  assert.deepEqual(messages, ["GET_EQ_SETTINGS"]);
 });

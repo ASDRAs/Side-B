@@ -10,8 +10,40 @@ from typing import Any, Literal
 
 from fastapi import Header, HTTPException, Request
 
+from app.services.access import (
+    AccessConflictError,
+    AccessRequestQuotaExceededError,
+    AccessStoreUnavailableError,
+    AccessTargetProtectedError,
+    AccessUserNotFoundError,
+    InvalidAccessInputError,
+)
+
 AuthMode = Literal["legacy", "dual", "firebase"]
-AuthFeature = Literal["recommend", "genre", "youtube_export"]
+AuthFeature = Literal[
+    "recommend",
+    "genre",
+    "youtube_export",
+    "preview",
+    # Approval store reads/writes have their own budgets so that status checks
+    # and administration cannot drain feature limits, and vice versa.
+    "access_status",
+    "access_lookup",
+    "access_request",
+    "admin_read",
+    "admin_write",
+]
+RATE_LIMITED_FEATURES: tuple[AuthFeature, ...] = (
+    "recommend",
+    "genre",
+    "youtube_export",
+    "preview",
+    "access_status",
+    "access_lookup",
+    "access_request",
+    "admin_read",
+    "admin_write",
+)
 
 
 class AuthenticationError(Exception):
@@ -27,6 +59,24 @@ class AuthenticationUnavailableError(Exception):
 
 
 class AuthenticationDeniedError(Exception):
+    """The environment allowlist (legacy approval mode) rejected the account."""
+
+
+class IdentityRejectedError(AuthenticationDeniedError):
+    """The token is valid but is not a verified Google account."""
+
+
+class AccessNotApprovedError(Exception):
+    def __init__(self, status: str) -> None:
+        super().__init__("This account is not approved for Side-B")
+        self.status = status
+
+
+class AdminRequiredError(Exception):
+    pass
+
+
+class AccessManagementDisabledError(Exception):
     pass
 
 
@@ -157,6 +207,14 @@ class FirebaseTokenVerifier:
 
 
 class AuthenticationService:
+    """Identity verification, plus the legacy environment allowlist.
+
+    With ``enforce_allowlist=False`` the service answers only "who is this?";
+    approval then comes from the Firestore access store. That combination is
+    restricted to Firebase-only mode so neither the shared legacy token nor an
+    environment allowlist can stand in for a stored approval.
+    """
+
     def __init__(
         self,
         *,
@@ -166,7 +224,17 @@ class AuthenticationService:
         allowed_uids: frozenset[str] = frozenset(),
         allowed_emails: frozenset[str] = frozenset(),
         unauthenticated_legacy_features: frozenset[str] = frozenset(),
+        enforce_allowlist: bool = True,
     ) -> None:
+        if not enforce_allowlist and (
+            mode != "firebase"
+            or allowed_uids
+            or allowed_emails
+            or unauthenticated_legacy_features
+        ):
+            raise ValueError(
+                "External approval requires Firebase-only mode without allowlists"
+            )
         self.mode = mode
         self.firebase_project_id = firebase_verifier.project_id
         self._legacy_token = str(legacy_token or "").strip()
@@ -174,6 +242,7 @@ class AuthenticationService:
         self._allowed_uids = allowed_uids
         self._allowed_emails = frozenset(email.casefold() for email in allowed_emails)
         self._unauthenticated_legacy_features = unauthenticated_legacy_features
+        self.enforce_allowlist = enforce_allowlist
 
     @property
     def config(self) -> dict[str, Any]:
@@ -215,8 +284,8 @@ class AuthenticationService:
             or provider != "google.com"
             or claims.get("email_verified") is not True
         ):
-            raise AuthenticationDeniedError("A verified Google account is required")
-        if not (
+            raise IdentityRejectedError("A verified Google account is required")
+        if self.enforce_allowlist and not (
             uid in self._allowed_uids
             or (email and email.casefold() in self._allowed_emails)
         ):
@@ -340,6 +409,150 @@ class FeatureRateLimiter:
         return len(self._user_buckets)
 
 
+AUTHORIZATION_ERRORS = (
+    AuthenticationConfigurationError,
+    AuthenticationUnavailableError,
+    AuthenticationDeniedError,
+    AuthenticationError,
+    FeatureRateLimitError,
+    AccessNotApprovedError,
+    AccessStoreUnavailableError,
+    AdminRequiredError,
+    AccessManagementDisabledError,
+    AccessTargetProtectedError,
+    AccessUserNotFoundError,
+    AccessConflictError,
+    AccessRequestQuotaExceededError,
+    InvalidAccessInputError,
+)
+
+
+def _error(
+    status_code: int,
+    code: str,
+    message: str,
+    headers: dict[str, str] | None = None,
+    **extra: Any,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message, **extra},
+        headers=headers,
+    )
+
+
+def http_error(exc: Exception) -> HTTPException:
+    """Map auth and approval outcomes to the documented status/code contract."""
+    if isinstance(exc, AuthenticationConfigurationError):
+        return _error(503, "auth_configuration_error", str(exc))
+    if isinstance(exc, AuthenticationUnavailableError):
+        return _error(
+            503,
+            "auth_verification_unavailable",
+            "로그인 확인 서비스를 일시적으로 사용할 수 없습니다.",
+        )
+    if isinstance(exc, IdentityRejectedError):
+        return _error(403, "auth_identity_unverified", str(exc))
+    if isinstance(exc, AuthenticationDeniedError):
+        return _error(403, "auth_account_denied", str(exc))
+    if isinstance(exc, AuthenticationError):
+        return _error(401, "auth_unauthorized", str(exc))
+    if isinstance(exc, FeatureRateLimitError):
+        return _error(
+            429,
+            "auth_rate_limited",
+            "요청이 너무 많습니다.",
+            headers={"Retry-After": str(exc.retry_after)},
+        )
+    if isinstance(exc, AccessNotApprovedError):
+        return _error(
+            403,
+            "access_not_approved",
+            "관리자가 승인한 계정만 사용할 수 있습니다.",
+            access_status=exc.status,
+        )
+    if isinstance(exc, AccessStoreUnavailableError):
+        # Never downgrade an outage to "not approved" or to an env allowlist.
+        return _error(
+            503,
+            "access_store_unavailable",
+            "계정 승인 상태를 일시적으로 확인할 수 없습니다.",
+        )
+    if isinstance(exc, AdminRequiredError):
+        return _error(403, "admin_required", "관리자 권한이 필요합니다.")
+    if isinstance(exc, AccessManagementDisabledError):
+        return _error(
+            404,
+            "access_management_disabled",
+            "이 서버는 계정 승인 관리를 사용하지 않습니다.",
+        )
+    if isinstance(exc, AccessTargetProtectedError):
+        return _error(
+            403,
+            "access_admin_target_protected",
+            "관리자 계정의 상태는 서버 설정으로만 변경할 수 있습니다.",
+        )
+    if isinstance(exc, AccessUserNotFoundError):
+        return _error(404, "access_user_not_found", "신청 기록이 없는 계정입니다.")
+    if isinstance(exc, AccessConflictError):
+        return _error(
+            409,
+            exc.code,
+            exc.message,
+            current_status=exc.current_status,
+            current_revision=exc.current_revision,
+        )
+    if isinstance(exc, AccessRequestQuotaExceededError):
+        return _error(
+            429,
+            "access_request_quota_exceeded",
+            "오늘 받을 수 있는 사용 신청 수를 초과했습니다. 내일 다시 신청하세요.",
+            headers={"Retry-After": "3600"},
+        )
+    if isinstance(exc, InvalidAccessInputError):
+        return _error(422, "access_invalid_input", str(exc))
+    raise TypeError(f"Unhandled authorization error: {type(exc).__name__}")
+
+
+def access_store(request: Request):
+    """Return the Firestore approval store, or None for env-allowlist mode.
+
+    A store paired with anything but allowlist-free Firebase-only identity is a
+    configuration error and fails closed instead of mixing approval sources.
+    """
+    store = getattr(request.app.state, "access_store", None)
+    if store is None:
+        return None
+    service = request.app.state.auth_service
+    if service.mode != "firebase" or service.enforce_allowlist:
+        raise AuthenticationConfigurationError(
+            "Firestore approval requires Firebase-only authentication"
+        )
+    return store
+
+
+async def authenticate_identity(
+    request: Request,
+    *,
+    feature: AuthFeature,
+    authorization: str | None,
+    legacy_token: str | None = None,
+    auth_feature: AuthFeature | None = None,
+) -> AuthenticatedUser:
+    """Verify the caller and charge one request to ``feature``'s budget.
+
+    ``auth_feature`` selects the legacy anonymous-development semantics when it
+    differs from the budget, as for ``/auth/me``.
+    """
+    user = await request.app.state.auth_service.authenticate(
+        feature=auth_feature or feature,
+        authorization=authorization,
+        legacy_token=legacy_token,
+    )
+    await request.app.state.feature_rate_limiter.consume(user.uid, feature)
+    return user
+
+
 async def _authorize_feature(
     request: Request,
     feature: AuthFeature,
@@ -347,42 +560,31 @@ async def _authorize_feature(
     legacy_token: str | None,
 ) -> AuthenticatedUser:
     try:
-        user = await request.app.state.auth_service.authenticate(
-            feature=feature,
+        store = access_store(request)
+        if store is None:
+            return await authenticate_identity(
+                request,
+                feature=feature,
+                authorization=authorization,
+                legacy_token=legacy_token,
+            )
+        # The per-user budget before the store read bounds database reads. The
+        # feature budget is charged only to approved users, so unapproved
+        # accounts cannot drain it.
+        user = await authenticate_identity(
+            request,
+            feature="access_lookup",
             authorization=authorization,
             legacy_token=legacy_token,
         )
+        record = await store.get(user.uid)
+        status = record.status if record is not None else "unregistered"
+        if status != "approved":
+            raise AccessNotApprovedError(status)
         await request.app.state.feature_rate_limiter.consume(user.uid, feature)
         return user
-    except AuthenticationConfigurationError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "auth_configuration_error", "message": str(exc)},
-        ) from exc
-    except AuthenticationUnavailableError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "auth_verification_unavailable",
-                "message": "로그인 확인 서비스를 일시적으로 사용할 수 없습니다.",
-            },
-        ) from exc
-    except AuthenticationDeniedError as exc:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "auth_account_denied", "message": str(exc)},
-        ) from exc
-    except AuthenticationError as exc:
-        raise HTTPException(
-            status_code=401,
-            detail={"code": "auth_unauthorized", "message": str(exc)},
-        ) from exc
-    except FeatureRateLimitError as exc:
-        raise HTTPException(
-            status_code=429,
-            detail={"code": "auth_rate_limited", "message": "요청이 너무 많습니다."},
-            headers={"Retry-After": str(exc.retry_after)},
-        ) from exc
+    except AUTHORIZATION_ERRORS as exc:
+        raise http_error(exc) from exc
 
 
 async def authorize_recommend(
@@ -409,3 +611,69 @@ async def authorize_youtube_export(
     return await _authorize_feature(
         request, "youtube_export", authorization, legacy_token
     )
+
+
+async def authorize_preview(
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    legacy_token: str | None = Header(default=None, alias="X-Side-B-Access-Token"),
+) -> AuthenticatedUser | None:
+    """Approved users only when approvals live in Firestore.
+
+    Environment-allowlist deployments keep the historical public preview, so
+    existing legacy clients and local development are unchanged.
+    """
+    try:
+        if access_store(request) is None:
+            return None
+    except AUTHORIZATION_ERRORS as exc:
+        raise http_error(exc) from exc
+    return await _authorize_feature(request, "preview", authorization, legacy_token)
+
+
+async def _authorize_admin(
+    request: Request, feature: AuthFeature, authorization: str | None
+) -> AuthenticatedUser:
+    try:
+        if access_store(request) is None:
+            raise AccessManagementDisabledError()
+        user = await request.app.state.auth_service.authenticate(
+            feature=feature, authorization=authorization, legacy_token=None
+        )
+        # Re-checked on every call, including idempotent replays, against the
+        # server setting and never against anything the client sends.
+        if user.uid not in request.app.state.admin_uids:
+            raise AdminRequiredError()
+        await request.app.state.feature_rate_limiter.consume(user.uid, feature)
+        return user
+    except AUTHORIZATION_ERRORS as exc:
+        raise http_error(exc) from exc
+
+
+async def authorize_admin_read(
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> AuthenticatedUser:
+    return await _authorize_admin(request, "admin_read", authorization)
+
+
+async def authorize_admin_write(
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> AuthenticatedUser:
+    return await _authorize_admin(request, "admin_write", authorization)
+
+
+async def authorize_access_request(
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> AuthenticatedUser:
+    """Any verified Google identity may ask for access, but only for itself."""
+    try:
+        if access_store(request) is None:
+            raise AccessManagementDisabledError()
+        return await authenticate_identity(
+            request, feature="access_request", authorization=authorization
+        )
+    except AUTHORIZATION_ERRORS as exc:
+        raise http_error(exc) from exc

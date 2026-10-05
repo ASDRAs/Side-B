@@ -1,0 +1,13 @@
+rules_version = '2';
+
+// Side-B approval data is read and written only by the backend through the
+// Firestore server SDK (Cloud Run service account, IAM-controlled). Server SDKs
+// bypass these rules, so the backend API performs every authorization check.
+// Browser/extension clients get no direct access to any document.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

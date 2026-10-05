@@ -1,6 +1,6 @@
 export const DEFAULT_API_BASE_URL =
-  "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app";
-export const API_BASE_URL_STORAGE_VERSION = 2;
+  "https://side-b-backend-1073342688292.asia-northeast3.run.app";
+export const API_BASE_URL_STORAGE_VERSION = 3;
 
 const DEFAULT_API_BASE_URLS_BY_VERSION = new Map([
   [
@@ -11,6 +11,7 @@ const DEFAULT_API_BASE_URLS_BY_VERSION = new Map([
     ]),
   ],
   [1, new Set(["https://side-b-backend-7hmhv6htsa-du.a.run.app"])],
+  [2, new Set(["https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app"])],
 ]);
 
 function trimTrailingSlashes(value) {

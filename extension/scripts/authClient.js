@@ -20,12 +20,23 @@ export async function signOut() {
   return (await authMessage("AUTH_SIGN_OUT")).state;
 }
 
+// Re-reads the server's approval state for the signed-in account.
+export async function refreshAccess() {
+  return (await authMessage("AUTH_REFRESH_ACCESS")).state;
+}
+
+// Asks the server to record the signed-in account's own access request.
+export async function requestAccess() {
+  return (await authMessage("AUTH_REQUEST_ACCESS")).state;
+}
+
 export async function backendCredential(
   apiBaseUrl,
   legacyToken,
   forceRefresh = false,
   legacyHeader = "X-Side-B-Access-Token",
   rejectedToken = null,
+  purpose = "feature",
 ) {
   return (await authMessage("AUTH_GET_CREDENTIAL", {
     apiBaseUrl,
@@ -33,6 +44,7 @@ export async function backendCredential(
     forceRefresh,
     legacyHeader,
     rejectedToken,
+    purpose,
   })).credential;
 }
 
@@ -40,7 +52,7 @@ export async function authenticatedFetch(
   fetchImpl,
   url,
   init,
-  { apiBaseUrl, legacyToken = "", legacyHeader = "X-Side-B-Access-Token" },
+  { apiBaseUrl, legacyToken = "", legacyHeader = "X-Side-B-Access-Token", purpose = "feature" },
 ) {
   async function cancellable(promise) {
     const signal = init?.signal;
@@ -66,6 +78,7 @@ export async function authenticatedFetch(
       Boolean(previous),
       legacyHeader,
       previous?.headers?.Authorization?.replace(/^Bearer /, ""),
+      purpose,
     ));
     init?.signal?.throwIfAborted();
     if (previous && credential.sessionGeneration !== previous.sessionGeneration) {
@@ -83,8 +96,23 @@ export async function authenticatedFetch(
     return { response, credential };
   };
   const first = await request();
-  if (first.response.status !== 401 || first.credential.mode !== "firebase") {
-    return first.response;
+  let result = first;
+  if (first.response.status === 401 && first.credential.mode === "firebase") {
+    result = await request(first.credential);
   }
-  return (await request(first.credential)).response;
+  if (result.response.status === 403 && result.credential.mode === "firebase") {
+    let payload;
+    try { payload = await result.response.clone().json(); } catch { payload = null; }
+    const detail = payload?.detail;
+    if ((purpose === "feature" && detail?.code === "access_not_approved") ||
+        (purpose === "admin" && detail?.code === "admin_required")) {
+      // Carry the exact credential scope; a late response cannot revoke a new
+      // account, approval generation, backend or worker instance.
+      await authMessage("AUTH_REPORT_DENIAL", {
+        purpose, code: detail.code, accessStatus: detail.access_status,
+        apiOrigin: target.origin, sessionGeneration: result.credential.sessionGeneration,
+      });
+    }
+  }
+  return result.response;
 }

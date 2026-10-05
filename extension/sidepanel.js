@@ -17,9 +17,30 @@ import { createPlaylistDestination } from "./scripts/playlistDestination.js";
 import {
   authenticatedFetch,
   configureAuth,
+  refreshAccess,
+  requestAccess,
   signIn,
   signOut,
 } from "./scripts/authClient.js";
+import {
+  ACCESS_STATUS_LABELS,
+  AccessDeniedError,
+  accessDenialStatus,
+  accessGateView,
+  formatTimestamp,
+  isAccessGated,
+  isManagedMode,
+} from "./scripts/accessView.js";
+import {
+  ADMIN_PAGE_SIZE,
+  ADMIN_TABS,
+  actionsFor,
+  adminErrorOutcome,
+  decideAccess,
+  decisionDoneText,
+  listAccessUsers,
+} from "./scripts/accessAdmin.js";
+import { createPreviewSession } from "./scripts/previewPlayer.js";
 import {
   API_BASE_URL_STORAGE_VERSION,
   DEFAULT_API_BASE_URL,
@@ -89,6 +110,23 @@ const authGateSignInButton = document.querySelector("#authGateSignInButton");
 const authGateSignOutButton = document.querySelector("#authGateSignOutButton");
 const authGateSettingsButton = document.querySelector("#authGateSettingsButton");
 const authGateStatus = document.querySelector("#authGateStatus");
+const authGateTitle = document.querySelector("#authGateTitle");
+const authGateCopy = document.querySelector("#authGateCopy");
+const accessPanel = document.querySelector("#accessPanel");
+const accessAccount = document.querySelector("#accessAccount");
+const accessServer = document.querySelector("#accessServer");
+const accessRequestedRow = document.querySelector("#accessRequestedRow");
+const accessRequestedAt = document.querySelector("#accessRequestedAt");
+const accessRequestButton = document.querySelector("#accessRequestButton");
+const accessRefreshButton = document.querySelector("#accessRefreshButton");
+const accessSignOutButton = document.querySelector("#accessSignOutButton");
+const accessAdminButton = document.querySelector("#accessAdminButton");
+const adminSettings = document.querySelector("#adminSettings");
+const adminTabs = document.querySelector("#adminTabs");
+const adminStatus = document.querySelector("#adminStatus");
+const adminList = document.querySelector("#adminList");
+const adminMoreButton = document.querySelector("#adminMoreButton");
+const adminReloadButton = document.querySelector("#adminReloadButton");
 const accountSettings = document.querySelector("#accountSettings");
 const legacyAuthSettings = document.querySelector("#legacyAuthSettings");
 const authStatus = document.querySelector("#authStatus");
@@ -111,6 +149,15 @@ const seedArt = document.querySelector("#seedArt");
 const seedPreview = document.querySelector("#seedPreview");
 const seedPlayButton = document.querySelector("#seedPlayButton");
 let seedPlaybackGeneration = 0;
+// The current seed's preview request. Bytes are fetched with the normal
+// backend credential only when the user presses play.
+let seedPreviewSource = null;
+const previewSession = createPreviewSession({
+  fetchPreview: (url, init) => authenticatedFetch(fetch, url, init, {
+    apiBaseUrl: new URL(url).origin,
+    legacyToken: backendAccessTokenInput.value.trim(),
+  }),
+});
 const seedPreviewNote = document.querySelector("#seedPreviewNote");
 const emptyState = document.querySelector("#emptyState");
 const loadingSkeleton = document.querySelector("#loadingSkeleton");
@@ -546,22 +593,29 @@ function renderSeedPreview(payload, apiBaseUrl) {
   seedPreviewNote.textContent = "";
 
   if (!params) {
+    seedPreviewSource = null;
     seedPreview.hidden = true;
     seedPlayButton.hidden = true;
     return;
   }
 
-  // preload="none"이라 재생을 누를 때만 공급자 API를 호출한다.
-  seedPreview.src = `${apiBaseUrl}/preview/stream?${params}`;
+  // 재생을 누를 때만 인증 fetch로 받는다. 토큰은 헤더로만 가고 URL에는
+  // 곡 식별 정보만 들어간다.
+  seedPreviewSource = { url: `${apiBaseUrl}/preview/stream?${params}` };
   seedPreview.hidden = false;
   seedPlayButton.hidden = false;
 }
 
+// 곡 전환·로그아웃·승인 상실 모두 여기를 지난다. 진행 중인 fetch를 끊고
+// Blob URL을 해제해 이전 계정·곡의 음원이 남지 않게 한다.
 function resetSeedMedia() {
   seedPlaybackGeneration += 1;
   seedPreview.pause();
   seedPreview.removeAttribute("src");
   seedPreview.load();
+  previewSession.cancel();
+  seedPreviewSource = null;
+  syncSeedPlayback();
   seedPreview.hidden = true;
   seedPlayButton.hidden = true;
   seedPreviewNote.hidden = true;
@@ -704,29 +758,65 @@ function updateMatchSelectionSummary() {
   youtubeMatchConfirm.textContent = `다음 · ${selected}곡`;
 }
 
+function renderAccessPanel(state, accessGated) {
+  const access = state?.access;
+  const account = state?.account;
+  accessPanel.hidden = !accessGated;
+  authGate.classList.toggle("is-access", accessGated);
+  if (!accessGated) {
+    authGateTitle.textContent = "Side-B에 로그인";
+    authGateCopy.textContent = "내 취향에서 한 걸음 더 나아간 음악을 만나보세요.";
+    return;
+  }
+  const view = accessGateView(access);
+  authGateTitle.textContent = view.title;
+  authGateCopy.textContent = view.copy;
+  // Diagnostics: which verified account and which server were checked.
+  accessAccount.textContent = [account?.displayName, account?.email].filter(Boolean).join(" · ") ||
+    account?.uid || "";
+  accessServer.textContent = state?.apiOrigin || "";
+  accessRequestedRow.hidden = !view.showRequestedAt;
+  accessRequestedAt.textContent = view.showRequestedAt ? formatTimestamp(access.requestedAt) : "";
+  accessRequestButton.hidden = !view.canRequest;
+  accessAdminButton.hidden = access?.canManage !== true;
+}
+
+function adminAllowed(state = authState) {
+  return isManagedMode(state) && state?.status === "signed_in" && state?.access?.canManage === true;
+}
+
 function renderAuthState(state) {
   const mode = state?.mode;
-  const managed = mode === "firebase" || mode === "dual";
+  const managed = isManagedMode(state);
+  const accessGated = isAccessGated(state);
   const gateRequired = state?.status === "initializing" ||
     state?.status === "configuration_unavailable" ||
-    (managed && state?.status !== "signed_in");
+    (managed && state?.status !== "signed_in") || accessGated;
   document.body.classList.toggle("auth-gated", gateRequired);
   authGate.hidden = !gateRequired;
+  renderAccessPanel(state, accessGated);
   accountSettings.hidden = !managed && state?.status !== "configuration_unavailable";
   legacyAuthSettings.hidden = mode !== "legacy";
+  adminSettings.hidden = !adminAllowed(state);
   const statusText = {
     initializing: "로그인 상태 확인 중",
     signing_in: "Google 로그인 중",
     signed_out: "로그인되지 않음",
     signed_in: "로그인됨",
     configuration_unavailable: "로그인 설정을 사용할 수 없음",
-    denied: "승인되지 않은 계정",
+    denied: "로그인이 거부된 계정",
     error: "로그인 상태 확인 실패",
     legacy: state?.compatibility === "legacy_server" ? "이전 서버 호환 모드" : "이전 인증 모드",
   }[state?.status] || "로그인 상태 확인 중";
-  authStatus.textContent = state?.error ? `${statusText}: ${state.error}` : statusText;
-  authStatus.dataset.error = String(["configuration_unavailable", "denied", "error"].includes(state?.status));
-  authGateStatus.textContent = state?.error ? `${statusText}: ${state.error}` : statusText;
+  // Allowlist servers have no separate approval step to report.
+  const accessLabel = managed && state?.status === "signed_in" && state?.access?.store === "firestore"
+    ? ACCESS_STATUS_LABELS[state.access.status] || ACCESS_STATUS_LABELS.unavailable : "";
+  const fullStatus = accessLabel ? `${statusText} · ${accessLabel}` : statusText;
+  const error = state?.error || (accessGated ? state?.access?.error : "") || "";
+  authStatus.textContent = error ? `${fullStatus}: ${error}` : fullStatus;
+  authStatus.dataset.error = String(["configuration_unavailable", "denied", "error"].includes(state?.status) ||
+    Boolean(accessGated && state?.access?.error));
+  authGateStatus.textContent = accessGated ? error : (error ? `${statusText}: ${error}` : statusText);
   authGateStatus.dataset.error = authStatus.dataset.error;
   const account = state?.account;
   const accountSummary = account?.displayName || account?.email || "";
@@ -740,7 +830,7 @@ function renderAuthState(state) {
   signInButton.hidden = !managed || state?.status === "signed_in";
   signInButton.disabled = state?.status === "signing_in" || state?.status === "initializing" ||
     state?.status === "configuration_unavailable";
-  authGateSignInButton.hidden = !managed;
+  authGateSignInButton.hidden = !managed || accessGated;
   authGateSignInButton.disabled = signInButton.disabled;
   authGateSignInButton.querySelector("span:last-child").textContent =
     state?.status === "signing_in" ? "로그인 중" : "Google로 계속하기";
@@ -773,22 +863,76 @@ function clearAccountScopedState() {
   bucketDescription.hidden = true;
   seedSection.hidden = true;
   showView("empty");
+  resetAdminView();
   void removeLocal(["youtubeLastDestination"]);
   void stopEq().catch(() => {});
 }
 
+// The worker bumps sessionGeneration on account change, logout, worker restart
+// and loss of approval; all of them discard account-scoped work and caches.
+const retiredAuthWorkers = new Set();
 function acceptAuthState(nextState) {
+  // A status-check reply can arrive after a newer broadcast from the same
+  // worker. Its publication revision must never restore withdrawn rights.
+  const worker = (state) => state?.sessionGeneration?.split(":").slice(0, -1).join(":");
+  if (Number.isInteger(authState?.stateRevision) && Number.isInteger(nextState?.stateRevision)) {
+    const previousWorker = worker(authState), nextWorker = worker(nextState);
+    if (retiredAuthWorkers.has(nextWorker) ||
+        (previousWorker === nextWorker && nextState.stateRevision < authState.stateRevision)) return;
+    if (previousWorker !== nextWorker) retiredAuthWorkers.add(previousWorker);
+  }
   const previousGeneration = authState?.sessionGeneration;
   authState = nextState;
   renderAuthState(authState);
   if (authStateInitialized && previousGeneration !== authState?.sessionGeneration) {
     clearAccountScopedState();
+  } else if (!adminAllowed()) {
+    resetAdminView();
   }
   authStateInitialized = true;
 }
 
+// Only a current admin 401 needs this fallback. Explicit permission 403s are
+// reported by authenticatedFetch with the credential scope, before returning.
+let accessDeniedRefresh = null;
+function handleAccessDenied() {
+  if (!accessDeniedRefresh) {
+    accessDeniedRefresh = refreshAccess()
+      .then((state) => acceptAuthState(state))
+      .catch((error) => setStatus(error.message, true))
+      .finally(() => { accessDeniedRefresh = null; });
+  }
+  return accessDeniedRefresh;
+}
+
+async function runAccessAction(button, action) {
+  button.disabled = true;
+  authGateStatus.dataset.error = "false";
+  try {
+    acceptAuthState(await action());
+  } catch (error) {
+    authGateStatus.textContent = error.message;
+    authGateStatus.dataset.error = "true";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+accessRequestButton.addEventListener("click", () => runAccessAction(accessRequestButton, requestAccess));
+accessRefreshButton.addEventListener("click", () => runAccessAction(accessRefreshButton, refreshAccess));
+accessAdminButton.addEventListener("click", () => {
+  document.body.classList.add("settings-view");
+  openSettings();
+  adminSettings.scrollIntoView({ block: "nearest" });
+  if (!admin.loaded) void loadAdminPage();
+});
+
 async function requestSignIn() {
   try {
+    const apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput.value);
+    const state = await ensureAuth(apiBaseUrl);
+    if (state?.status === "configuration_unavailable") return;
+    await storeApiBaseUrl(apiBaseUrl);
     acceptAuthState(await signIn());
   } catch (error) {
     authStatus.textContent = error.message;
@@ -812,6 +956,211 @@ async function requestSignOut() {
 
 signOutButton.addEventListener("click", requestSignOut);
 authGateSignOutButton.addEventListener("click", requestSignOut);
+accessSignOutButton.addEventListener("click", requestSignOut);
+
+// ── 계정 관리 ─────────────────────────────────────────────────────
+// Visible only for can_manage_access=true. Every list/decision request is
+// re-authorized by the server; this state is discarded on account change,
+// logout, worker restart or loss of the administrator flag.
+const admin = {
+  generation: 0,
+  status: "pending",
+  items: [],
+  cursor: null,
+  loaded: false,
+  busy: false,
+  controller: null,
+  retry: null,
+};
+
+function adminFetch(url, init) {
+  return authenticatedFetch(fetch, url, init, {
+    apiBaseUrl: new URL(url).origin,
+    purpose: "admin",
+  });
+}
+
+function setAdminStatus(message, isError = false) {
+  adminStatus.textContent = message;
+  adminStatus.dataset.error = String(isError);
+}
+
+function resetAdminView() {
+  admin.generation += 1;
+  admin.controller?.abort();
+  admin.controller = null;
+  admin.items = [];
+  admin.cursor = null;
+  admin.loaded = false;
+  admin.busy = false;
+  admin.retry = null;
+  adminList.replaceChildren();
+  adminMoreButton.hidden = true;
+  setAdminStatus("");
+  renderAdminTabs();
+}
+
+function renderAdminTabs() {
+  adminTabs.replaceChildren(...ADMIN_TABS.map(({ status, label }) => {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", String(status === admin.status));
+    tab.textContent = label;
+    tab.disabled = admin.busy;
+    tab.addEventListener("click", () => {
+      if (admin.busy || admin.status === status) return;
+      admin.status = status;
+      admin.retry = null;
+      renderAdminTabs();
+      void loadAdminPage();
+    });
+    return tab;
+  }));
+}
+
+function adminItemLabel(item) {
+  return [item.display_name, item.email].filter(Boolean).join(" · ") || item.uid;
+}
+
+function renderAdminList() {
+  adminList.replaceChildren(...admin.items.map((item) => {
+    const row = document.createElement("li");
+    row.className = "admin-item";
+    const name = document.createElement("span");
+    name.className = "admin-item-name";
+    name.textContent = adminItemLabel(item);
+    const meta = document.createElement("span");
+    meta.className = "admin-item-meta";
+    const requested = formatTimestamp(item.requested_at);
+    meta.textContent = [
+      `UID ${item.uid}`,
+      requested ? `신청 ${requested}` : "",
+      item.is_admin ? "관리자 계정(서버 설정으로만 변경)" : "",
+    ].filter(Boolean).join(" · ");
+    const actions = document.createElement("div");
+    actions.className = "admin-item-actions";
+    const retry = admin.retry?.uid === item.uid ? admin.retry : null;
+    for (const { action, label } of actionsFor(item)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = action === "approve" || action === "unblock" ? "" : "secondary-button";
+      button.textContent = retry?.action === action ? `${label} 다시 시도` : label;
+      button.disabled = admin.busy;
+      button.setAttribute("aria-label", `${adminItemLabel(item)} ${label}`);
+      button.addEventListener("click", () => void runAdminDecision(item, action));
+      actions.append(button);
+    }
+    row.append(name, meta, actions);
+    return row;
+  }));
+  adminMoreButton.hidden = !admin.cursor;
+  adminMoreButton.disabled = admin.busy;
+}
+
+async function loadAdminPage({ append = false } = {}) {
+  if (!adminAllowed()) return;
+  const generation = ++admin.generation;
+  admin.controller?.abort();
+  const controller = new AbortController();
+  admin.controller = controller;
+  admin.busy = true;
+  renderAdminTabs();
+  renderAdminList();
+  setAdminStatus("계정 목록을 불러오는 중입니다.");
+  try {
+    const apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput.value);
+    const page = await listAccessUsers(adminFetch, apiBaseUrl, {
+      status: admin.status,
+      cursor: append ? admin.cursor : null,
+      limit: ADMIN_PAGE_SIZE,
+      signal: controller.signal,
+    });
+    if (generation !== admin.generation) return;
+    admin.items = append ? [...admin.items, ...page.items] : page.items;
+    admin.cursor = page.nextCursor;
+    admin.loaded = true;
+    setAdminStatus(admin.items.length ? `${admin.items.length}개 계정` : "해당 상태의 계정이 없습니다.");
+  } catch (error) {
+    if (generation !== admin.generation || error?.name === "AbortError") return;
+    const outcome = adminErrorOutcome(error);
+    setAdminStatus(outcome.message, true);
+    if (outcome.revoke) {
+      resetAdminView();
+      if (error.status === 401) void handleAccessDenied();
+    }
+  } finally {
+    if (generation === admin.generation) {
+      admin.busy = false;
+      admin.controller = null;
+      renderAdminTabs();
+      renderAdminList();
+    }
+  }
+}
+
+async function runAdminDecision(item, action) {
+  if (admin.busy || !adminAllowed()) return;
+  // Retrying a failed request reuses its operation ID and revision so a
+  // decision that did commit is replayed rather than applied twice.
+  const previous = admin.retry?.uid === item.uid && admin.retry.action === action &&
+    admin.retry.expectedRevision === item.revision ? admin.retry : null;
+  const operation = previous || {
+    uid: item.uid, action, expectedRevision: item.revision, operationId: crypto.randomUUID(),
+  };
+  const generation = ++admin.generation;
+  const controller = new AbortController();
+  admin.controller = controller;
+  admin.busy = true;
+  renderAdminTabs();
+  renderAdminList();
+  setAdminStatus("처리 중입니다.");
+  let reload = false;
+  try {
+    const apiBaseUrl = normalizeApiBaseUrl(apiBaseUrlInput.value);
+    const result = await decideAccess(adminFetch, apiBaseUrl, { ...operation, signal: controller.signal });
+    if (generation !== admin.generation) return;
+    admin.retry = null;
+    setAdminStatus(`${adminItemLabel(item)}: ${decisionDoneText(result?.action || action)}`);
+    reload = true;
+  } catch (error) {
+    if (generation !== admin.generation || error?.name === "AbortError") return;
+    const outcome = adminErrorOutcome(error);
+    admin.retry = outcome.retry ? operation : null;
+    setAdminStatus(outcome.message, true);
+    if (outcome.revoke) {
+      resetAdminView();
+      if (error.status === 401) void handleAccessDenied();
+      return;
+    }
+    reload = outcome.reload;
+  } finally {
+    if (generation === admin.generation) {
+      admin.busy = false;
+      admin.controller = null;
+      renderAdminTabs();
+      renderAdminList();
+    }
+  }
+  if (reload) {
+    const message = adminStatus.textContent;
+    const isError = adminStatus.dataset.error === "true";
+    await loadAdminPage();
+    // Keep the decision outcome visible after the refreshed list arrives.
+    if (adminAllowed() && admin.loaded) setAdminStatus(message, isError);
+  }
+}
+
+adminReloadButton.addEventListener("click", () => {
+  if (!admin.busy) void loadAdminPage();
+});
+adminMoreButton.addEventListener("click", () => {
+  if (!admin.busy && admin.cursor) void loadAdminPage({ append: true });
+});
+settingsPanel.addEventListener("toggle", () => {
+  if (settingsPanel.open && adminAllowed() && !admin.loaded && !admin.busy) void loadAdminPage();
+});
+renderAdminTabs();
 
 function reviewYouTubeMatches(matches, title) {
   destinationPicker.reset(title);
@@ -958,28 +1307,58 @@ seedPreview.addEventListener("playing", () => {
 });
 
 function syncSeedPlayback() {
+  const loading = previewSession.loading;
   const playing = !seedPreview.paused && !seedPreview.ended;
-  seedPlayButton.title = playing ? "미리 듣기 일시정지" : "미리 듣기";
+  seedPlayButton.title = loading ? "미리 듣기 불러오기 취소" : playing ? "미리 듣기 일시정지" : "미리 듣기";
   seedPlayButton.setAttribute("aria-label", seedPlayButton.title);
-  seedPlayButton.querySelector(".icon").className = `icon ${playing ? "icon-pause" : "icon-play"}`;
+  seedPlayButton.setAttribute("aria-busy", String(loading));
+  seedPlayButton.querySelector(".icon").className = `icon ${loading || playing ? "icon-pause" : "icon-play"}`;
 }
+
 for (const event of ["play", "playing", "pause", "ended", "emptied", "error"]) {
   seedPreview.addEventListener(event, syncSeedPlayback);
 }
+
+function showPreviewFailure() {
+  seedPreviewNote.textContent = "미리 듣기를 불러오지 못했습니다.";
+  seedPreviewNote.hidden = false;
+}
+
 seedPlayButton.addEventListener("click", async () => {
-  const source = seedPreview.getAttribute("src");
-  if (!source) return;
+  // Pressing again while bytes are loading cancels that request.
+  if (previewSession.loading) {
+    seedPlaybackGeneration += 1;
+    previewSession.cancel();
+    syncSeedPlayback();
+    return;
+  }
+  let source = seedPreview.getAttribute("src");
   const generation = ++seedPlaybackGeneration;
-  if (!seedPreview.paused) { seedPreview.pause(); return; }
-  try { await seedPreview.play(); }
-  catch (error) {
-    // Pausing or replacing a source rejects play(); only the current attempt
-    // may report a real playback failure.
-    if (error?.name !== "AbortError" && generation === seedPlaybackGeneration &&
-        seedPreview.getAttribute("src") === source) {
-      seedPreviewNote.textContent = "미리 듣기를 불러오지 못했습니다.";
-      seedPreviewNote.hidden = false;
+  if (source && !seedPreview.paused) { seedPreview.pause(); return; }
+  try {
+    if (!source) {
+      const target = seedPreviewSource;
+      if (!target) return;
+      seedPreviewNote.hidden = true;
+      const loading = previewSession.load(target.url);
+      syncSeedPlayback();
+      const objectUrl = await loading;
+      if (generation !== seedPlaybackGeneration || seedPreviewSource !== target) return;
+      seedPreview.src = objectUrl;
+      source = objectUrl;
+      syncSeedPlayback();
     }
+    await seedPreview.play();
+  } catch (error) {
+    if (generation !== seedPlaybackGeneration) return;
+    syncSeedPlayback();
+    // Cancelling, pausing or replacing a source rejects with AbortError; only
+    // the current attempt may report a real failure.
+    if (error?.name === "AbortError") return;
+    if (accessDenialStatus(error?.status, error?.payload)) {
+      return;
+    }
+    if (!source || seedPreview.getAttribute("src") === source) showPreviewFailure();
   }
 });
 
@@ -1296,6 +1675,8 @@ async function requestRecommendations(
       } catch {
         // JSON이 아니면 status만으로 안내한다.
       }
+      const denied = accessDenialStatus(response.status, payload);
+      if (denied) throw new AccessDeniedError(denied, apiErrorMessage(payload, undefined));
       throw new Error(
         backendErrorMessage(
           response.status,
@@ -1360,6 +1741,9 @@ async function runRecommendation(query, loadingMessage) {
     }
 
     await ensureAuth(apiBaseUrl);
+    if (isAccessGated(authState)) {
+      throw new PreflightError("관리자 승인 후 사용할 수 있습니다.");
+    }
     if (authState?.mode === "legacy" &&
         !accessToken && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(apiBaseUrl).hostname)) {
       openSettings();
@@ -1428,6 +1812,7 @@ async function runRecommendation(query, loadingMessage) {
       return;
     }
     setState("error", requestErrorMessage(error));
+    // authenticatedFetch already reported explicit 403s for this credential.
   } finally {
     if (isCurrent()) {
       activeRequest = null;

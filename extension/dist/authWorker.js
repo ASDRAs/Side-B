@@ -20,7 +20,9 @@ var SideBAuthBundle = (() => {
   // scripts/authWorker.entry.js
   var authWorker_entry_exports = {};
   __export(authWorker_entry_exports, {
+    ACCESS_STATUSES: () => ACCESS_STATUSES,
     SIGN_IN_SCOPES: () => SIGN_IN_SCOPES,
+    accessFromPayload: () => accessFromPayload,
     createAuthManager: () => createAuthManager,
     resolveApiBaseUrlSetting: () => resolveApiBaseUrlSetting
   });
@@ -1891,8 +1893,8 @@ var SideBAuthBundle = (() => {
   registerVersion(name2, version2, "app");
 
   // scripts/apiConfig.js
-  var DEFAULT_API_BASE_URL = "https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app";
-  var API_BASE_URL_STORAGE_VERSION = 2;
+  var DEFAULT_API_BASE_URL = "https://side-b-backend-1073342688292.asia-northeast3.run.app";
+  var API_BASE_URL_STORAGE_VERSION = 3;
   var DEFAULT_API_BASE_URLS_BY_VERSION = /* @__PURE__ */ new Map([
     [
       0,
@@ -1901,7 +1903,8 @@ var SideBAuthBundle = (() => {
         "https://side-b-backend-7hmhv6htsa-du.a.run.app"
       ])
     ],
-    [1, /* @__PURE__ */ new Set(["https://side-b-backend-7hmhv6htsa-du.a.run.app"])]
+    [1, /* @__PURE__ */ new Set(["https://side-b-backend-7hmhv6htsa-du.a.run.app"])],
+    [2, /* @__PURE__ */ new Set(["https://auth-20260915-011056---side-b-backend-7hmhv6htsa-du.a.run.app"])]
   ]);
   function trimTrailingSlashes(value) {
     return String(value || "").trim().replace(/\/+$/, "");
@@ -6146,6 +6149,8 @@ var SideBAuthBundle = (() => {
 
   // scripts/authWorker.entry.js
   var SIGN_IN_SCOPES = Object.freeze(["openid", "email", "profile"]);
+  var ACCESS_STATUSES = Object.freeze(["unregistered", "pending", "approved", "rejected", "blocked"]);
+  var CREDENTIAL_PURPOSES = /* @__PURE__ */ new Set(["feature", "access", "admin"]);
   var TIMEOUT_MS = 8e3;
   async function bounded(promise, milliseconds = TIMEOUT_MS) {
     let timer;
@@ -6156,6 +6161,21 @@ var SideBAuthBundle = (() => {
     } finally {
       clearTimeout(timer);
     }
+  }
+  function errorDetail(payload) {
+    const detail = payload?.detail;
+    return detail && typeof detail === "object" && !Array.isArray(detail) ? detail : {};
+  }
+  function accessFromPayload(payload) {
+    const raw = payload?.access_status;
+    const status = raw === void 0 ? "approved" : ACCESS_STATUSES.includes(raw) ? raw : "unavailable";
+    return {
+      status,
+      canManage: payload?.can_manage_access === true,
+      requestedAt: typeof payload?.access_requested_at === "string" ? payload.access_requested_at : null,
+      store: payload?.access_store === "firestore" ? "firestore" : "env",
+      error: null
+    };
   }
   function createAuthManager({
     chromeApi = chrome,
@@ -6170,35 +6190,56 @@ var SideBAuthBundle = (() => {
       signOut,
       onIdTokenChanged,
       getIdToken
-    }
+    },
+    onChange = null
   } = {}) {
     const instance = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
     let sequence = 0;
     let epoch = 0;
-    let observation = 0;
+    let accessOrder = 0;
+    let observedUser;
+    let validatedUser = null;
     let blocked = false;
     let auth = null;
     let authProject = null;
     let ready = null;
     let login = null;
     let exchange = null;
+    let logout = null;
     let refresh = null;
     let configuring = null;
+    let accessRefresh = null;
+    let accessSubmit = null;
+    let accessTokenCheck = null;
     let state = {
       status: "initializing",
       mode: null,
       apiOrigin: null,
       firebaseProjectId: null,
       account: null,
+      access: null,
       error: null,
       compatibility: null,
-      sessionGeneration: `${instance}:0`
+      sessionGeneration: `${instance}:0`,
+      stateRevision: 0
     };
-    const snapshot = () => ({ ...state, account: state.account && { ...state.account } });
+    const snapshot = () => ({
+      ...state,
+      account: state.account && { ...state.account },
+      access: state.access && { ...state.access }
+    });
     const managed = () => ["firebase", "dual"].includes(state.mode);
+    const losesApproval = (next) => state.access?.status === "approved" && next?.status !== "approved";
     function publish(patch, invalidate = false) {
-      state = { ...state, ...patch };
-      if (invalidate) state.sessionGeneration = `${instance}:${++sequence}`;
+      const previous = snapshot();
+      state = { ...state, ...patch, stateRevision: state.stateRevision + 1 };
+      if (patch.account === null) validatedUser = null;
+      if (invalidate) {
+        state.sessionGeneration = `${instance}:${++sequence}`;
+        refresh = null;
+        accessRefresh = null;
+        accessSubmit = null;
+      }
       for (const target of ["auth-ui", "offscreen"]) {
         Promise.resolve(chromeApi.runtime.sendMessage({
           target,
@@ -6207,7 +6248,79 @@ var SideBAuthBundle = (() => {
         })).catch(() => {
         });
       }
+      try {
+        onChange?.(snapshot(), previous);
+      } catch {
+      }
       return snapshot();
+    }
+    function synchronizeAccount() {
+      if (!auth || !managed()) return;
+      const user = auth?.currentUser || null;
+      if (observedUser === user) return;
+      observedUser = user;
+      ++accessOrder;
+      refresh = null;
+      accessRefresh = null;
+      accessSubmit = null;
+      publish({
+        status: blocked ? state.status === "denied" ? "denied" : "signed_out" : login ? "signing_in" : user ? "initializing" : "signed_out",
+        account: null,
+        access: null,
+        error: blocked ? state.error : null
+      }, true);
+    }
+    const captureSession = (user, origin) => ({
+      user,
+      uid: user?.uid,
+      origin,
+      revision: epoch,
+      generation: state.sessionGeneration
+    });
+    const sessionCurrent = (session) => session.revision === epoch && session.generation === state.sessionGeneration && session.user === auth?.currentUser && session.uid === auth?.currentUser?.uid && session.origin === state.apiOrigin && !blocked;
+    const beginAccessCheck = (user, origin) => ({ ...captureSession(user, origin), order: ++accessOrder });
+    const accessCurrent = (session) => sessionCurrent(session) && session.order === accessOrder;
+    const accountChanged = () => new Error("\uB85C\uADF8\uC778 \uACC4\uC815\uC774 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC694\uCCAD\uD558\uC138\uC694.");
+    async function sessionToken(session, forceRefresh = false, rejectedToken = null) {
+      if (!sessionCurrent(session)) throw accountChanged();
+      let token = await bounded(sdk.getIdToken(session.user, false));
+      if (!sessionCurrent(session)) throw accountChanged();
+      if (forceRefresh && (!rejectedToken || rejectedToken === token)) {
+        if (!refresh || refresh.user !== session.user || refresh.uid !== session.uid || refresh.generation !== session.generation || refresh.revision !== session.revision || refresh.origin !== session.origin) {
+          const promise = bounded(sdk.getIdToken(session.user, true));
+          const owner = { ...session, promise };
+          refresh = owner;
+          void promise.finally(() => {
+            if (refresh === owner) refresh = null;
+          }).catch(() => {
+          });
+        }
+        token = await refresh.promise;
+      }
+      if (!sessionCurrent(session)) throw accountChanged();
+      return token;
+    }
+    async function accessToken(session, forceRefresh = false, rejectedToken = null) {
+      const owner = { session };
+      accessTokenCheck = owner;
+      try {
+        const token = await sessionToken(session, forceRefresh, rejectedToken);
+        if (!accessCurrent(session)) throw accountChanged();
+        return token;
+      } finally {
+        if (accessTokenCheck === owner) accessTokenCheck = null;
+      }
+    }
+    function signOutFirebase() {
+      if (!logout) {
+        const promise = sdk.signOut(auth);
+        logout = promise;
+        void promise.finally(() => {
+          if (logout === promise) logout = null;
+        }).catch(() => {
+        });
+      }
+      return bounded(logout);
     }
     function trustedOrigin(value) {
       let url;
@@ -6243,38 +6356,75 @@ var SideBAuthBundle = (() => {
         controller.abort();
       }
     }
-    async function validate(user, origin) {
-      const token = await bounded(sdk.getIdToken(user, false));
+    async function validate(user, origin, forceRefresh = false, rejectedToken = null, accessSession = null) {
+      const token = await (accessSession ? accessToken(accessSession, forceRefresh, rejectedToken) : sessionToken(captureSession(user, origin), forceRefresh, rejectedToken));
       const { response, payload } = await jsonRequest(`${origin}/auth/me`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      if (!response.ok || payload?.uid !== user.uid) {
-        const error = new Error(response.status === 403 ? "\uC2B9\uC778\uB418\uC9C0 \uC54A\uC740 \uACC4\uC815\uC785\uB2C8\uB2E4." : "\uB85C\uADF8\uC778 \uC0C1\uD0DC\uB97C \uD655\uC778\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
-        error.status = response.status;
-        throw error;
+      if (response.ok && payload?.uid === user.uid) {
+        return {
+          account: {
+            uid: payload.uid,
+            email: payload.email || user.email || null,
+            displayName: payload.display_name || user.displayName || null
+          },
+          access: accessFromPayload(payload)
+        };
       }
-      return {
-        uid: payload.uid,
-        email: payload.email || user.email || null,
-        displayName: payload.display_name || user.displayName || null
-      };
+      const detail = errorDetail(payload);
+      if (response.status === 503 && detail.code === "access_store_unavailable") {
+        return {
+          account: { uid: user.uid, email: user.email || null, displayName: user.displayName || null },
+          access: {
+            status: "unavailable",
+            canManage: false,
+            requestedAt: null,
+            store: "firestore",
+            error: "\uACC4\uC815 \uC2B9\uC778 \uC0C1\uD0DC\uB97C \uC77C\uC2DC\uC801\uC73C\uB85C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
+          }
+        };
+      }
+      let message = "\uB85C\uADF8\uC778 \uC0C1\uD0DC\uB97C \uD655\uC778\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.";
+      if (response.status === 403) {
+        const reason = detail.code === "auth_identity_unverified" ? "\uC778\uC99D\uB41C Google \uACC4\uC815\uB9CC \uC0AC\uC6A9\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4." : "\uC2B9\uC778\uB418\uC9C0 \uC54A\uC740 \uACC4\uC815\uC785\uB2C8\uB2E4.";
+        message = `${reason} \uC778\uC99D \uACC4\uC815: ${user.email || "\uC774\uBA54\uC77C \uD655\uC778 \uBD88\uAC00"}. \uC694\uCCAD \uC11C\uBC84: ${origin}.` + (typeof detail.code === "string" ? ` (${detail.code})` : "");
+      } else if (response.status === 429) {
+        message = "\uC694\uCCAD\uC774 \uB108\uBB34 \uB9CE\uC2B5\uB2C8\uB2E4. \uC7A0\uC2DC \uD6C4 \uB2E4\uC2DC \uD655\uC778\uD558\uC138\uC694.";
+      }
+      const error = new Error(message);
+      error.status = response.status;
+      error.code = detail.code;
+      error.rejectedToken = token;
+      throw error;
     }
     async function reconcile(user) {
+      if (auth?.currentUser !== user) return;
+      synchronizeAccount();
       if (!managed() || login || blocked) return;
-      const version4 = ++observation;
-      const revision = epoch;
-      const current = () => revision === epoch && version4 === observation && !blocked && !login && auth.currentUser === user;
+      if (accessTokenCheck && accessCurrent(accessTokenCheck.session)) return;
+      const session = beginAccessCheck(user, state.apiOrigin);
+      const current = () => accessCurrent(session) && !login;
       if (!user) {
-        publish({ status: "signed_out", account: null, error: null }, Boolean(state.account));
+        publish({ status: "signed_out", account: null, access: null, error: null }, Boolean(state.account));
         return;
       }
       try {
-        const account = await validate(user, state.apiOrigin);
-        if (current()) publish({ status: "signed_in", account, error: null }, state.account?.uid !== user.uid);
+        const { account, access } = await validate(user, state.apiOrigin);
+        if (current()) {
+          validatedUser = user;
+          publish(
+            { status: "signed_in", account, access, error: null },
+            state.account?.uid !== user.uid || losesApproval(access)
+          );
+        }
       } catch (error) {
-        if (current()) publish({
+        if (!current()) return;
+        if (error.status !== 401 && error.status !== 403 && state.status === "signed_in" && validatedUser === user && state.account?.uid === user.uid) {
+          publish({ access: { ...state.access, error: error.message } });
+        } else publish({
           status: error.status === 403 ? "denied" : "error",
           account: null,
+          access: null,
           error: error.message
         }, true);
       }
@@ -6299,16 +6449,19 @@ var SideBAuthBundle = (() => {
     }
     function configure(apiBaseUrl) {
       const origin = trustedOrigin(apiBaseUrl);
+      if (managed()) synchronizeAccount();
       if (configuring?.origin === origin) return configuring.promise;
       if (state.apiOrigin === origin && ["legacy", "signed_in", "signed_out"].includes(state.status)) {
         return Promise.resolve(snapshot());
       }
       const revision = ++epoch;
+      ++accessOrder;
       publish({
         status: "initializing",
         mode: null,
         apiOrigin: origin,
         account: null,
+        access: null,
         error: null,
         compatibility: null
       }, state.apiOrigin !== null);
@@ -6337,7 +6490,7 @@ var SideBAuthBundle = (() => {
           return snapshot();
         } catch (error) {
           if (revision !== epoch) return snapshot();
-          return publish({ status: "configuration_unavailable", account: null, error: error.message });
+          return publish({ status: "configuration_unavailable", account: null, access: null, error: error.message });
         }
       })();
       configuring = { origin, promise };
@@ -6353,107 +6506,271 @@ var SideBAuthBundle = (() => {
         return Promise.reject(new Error("Google \uB85C\uADF8\uC778 \uC124\uC815\uC744 \uBA3C\uC800 \uD655\uC778\uD558\uC138\uC694."));
       }
       const revision = ++epoch;
+      ++accessOrder;
       blocked = false;
-      publish({ status: "signing_in", account: null, error: null }, true);
+      publish({ status: "signing_in", account: null, access: null, error: null }, true);
       const promise = Promise.resolve().then(async () => {
+        let validationSession;
         try {
+          if (logout) await bounded(logout);
+          if (revision !== epoch) return snapshot();
           const result = await bounded(chromeApi.identity.getAuthToken({
             interactive: true,
             enableGranularPermissions: true,
             scopes: [...SIGN_IN_SCOPES]
           }), 12e4);
           if (revision !== epoch) return snapshot();
-          const accessToken = typeof result === "string" ? result : result?.token;
-          if (!accessToken) throw new Error("Google \uB85C\uADF8\uC778 \uD1A0\uD070\uC744 \uBC1B\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
-          const signing = sdk.signInWithCredential(auth, sdk.GoogleAuthProvider.credential(null, accessToken));
+          const accessToken2 = typeof result === "string" ? result : result?.token;
+          if (!accessToken2) throw new Error("Google \uB85C\uADF8\uC778 \uD1A0\uD070\uC744 \uBC1B\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.");
+          const signing = sdk.signInWithCredential(auth, sdk.GoogleAuthProvider.credential(null, accessToken2));
           exchange = signing;
           void signing.then(() => {
-            if (revision !== epoch) return sdk.signOut(auth);
+            if (revision !== epoch) return signOutFirebase();
           }).finally(() => {
             if (exchange === signing) exchange = null;
           }).catch(() => {
           });
           const signed = await bounded(signing);
           if (revision !== epoch) return snapshot();
-          const account = await validate(signed.user, state.apiOrigin);
-          if (revision !== epoch) return snapshot();
-          return publish({ status: "signed_in", account, error: null }, true);
+          synchronizeAccount();
+          validationSession = beginAccessCheck(signed.user, state.apiOrigin);
+          const { account, access } = await validate(signed.user, state.apiOrigin);
+          if (!accessCurrent(validationSession)) return snapshot();
+          validatedUser = signed.user;
+          return publish({ status: "signed_in", account, access, error: null }, true);
         } catch (error) {
-          if (revision !== epoch) return snapshot();
+          if (revision !== epoch || validationSession && !accessCurrent(validationSession)) return snapshot();
           ++epoch;
           blocked = true;
-          await bounded(sdk.signOut(auth)).catch(() => {
-          });
-          return publish({
+          publish({
             status: error.status === 403 ? "denied" : "signed_out",
             account: null,
-            error: error.status === 403 ? "\uC2B9\uC778\uB418\uC9C0 \uC54A\uC740 \uACC4\uC815\uC785\uB2C8\uB2E4." : "Google \uB85C\uADF8\uC778\uC744 \uC644\uB8CC\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694."
+            access: null,
+            error: error.status === 403 ? error.message : "Google \uB85C\uADF8\uC778\uC744 \uC644\uB8CC\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694."
           }, true);
+          await signOutFirebase().catch(() => {
+          });
+          return snapshot();
         }
       });
       login = promise;
       void promise.finally(() => {
-        if (login === promise) login = null;
+        if (login === promise) {
+          login = null;
+          if (state.status === "signing_in" && !blocked) void reconcile(auth.currentUser);
+        }
+      });
+      return promise;
+    }
+    function requireSession() {
+      synchronizeAccount();
+      if (!managed() || !auth || state.status !== "signed_in" || blocked || !auth.currentUser) {
+        throw new Error("Side-B\uC5D0 Google \uB85C\uADF8\uC778\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.");
+      }
+      if (validatedUser !== auth.currentUser || state.account?.uid !== auth.currentUser.uid) throw accountChanged();
+      return captureSession(auth.currentUser, state.apiOrigin);
+    }
+    function refreshAccess() {
+      let session;
+      try {
+        session = requireSession();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      if (accessRefresh && accessCurrent(accessRefresh.session)) return accessRefresh.promise;
+      session = beginAccessCheck(session.user, session.origin);
+      const current = () => accessCurrent(session) && state.status === "signed_in";
+      const promise = (async () => {
+        let result;
+        try {
+          try {
+            result = await validate(session.user, session.origin, false, null, session);
+          } catch (error) {
+            if (error.status !== 401 || !current()) throw error;
+            result = await validate(session.user, session.origin, true, error.rejectedToken, session);
+          }
+        } catch (error) {
+          if (!current()) return snapshot();
+          if (error.status === 403) {
+            ++epoch;
+            blocked = true;
+            publish({ status: "denied", account: null, access: null, error: error.message }, true);
+            await signOutFirebase().catch(() => {
+            });
+            return snapshot();
+          }
+          if (error.status === 401) {
+            return publish({ status: "error", account: null, access: null, error: error.message }, true);
+          }
+          return publish({ access: { ...state.access || {}, error: error.message } });
+        }
+        if (!current()) return snapshot();
+        validatedUser = session.user;
+        return publish(
+          { account: result.account, access: result.access, error: null },
+          losesApproval(result.access) || state.account?.uid !== result.account.uid
+        );
+      })();
+      const owner = { session, promise };
+      accessRefresh = owner;
+      void promise.finally(() => {
+        if (accessRefresh === owner) accessRefresh = null;
+      }).catch(() => {
+      });
+      return promise;
+    }
+    function requestAccess() {
+      let session;
+      try {
+        session = requireSession();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      if (state.access?.store !== "firestore") {
+        return Promise.reject(new Error("\uC774 \uC11C\uBC84\uB294 \uC0AC\uC6A9 \uC2E0\uCCAD\uC744 \uBC1B\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4."));
+      }
+      if (accessSubmit && accessCurrent(accessSubmit.session)) return accessSubmit.promise;
+      session = beginAccessCheck(session.user, session.origin);
+      const current = () => accessCurrent(session) && state.status === "signed_in";
+      const promise = (async () => {
+        const token = await accessToken(session);
+        if (!current()) return snapshot();
+        const { response, payload } = await jsonRequest(`${session.origin}/access/request`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: "{}"
+        });
+        if (!current()) return snapshot();
+        if (!response.ok) {
+          const detail = errorDetail(payload);
+          throw new Error(typeof detail.message === "string" && detail.message ? detail.message : `\uC0AC\uC6A9 \uC2E0\uCCAD\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4. (HTTP ${response.status})`);
+        }
+        const status = ACCESS_STATUSES.includes(payload?.access_status) ? payload.access_status : "unavailable";
+        const access = {
+          ...state.access || {},
+          status,
+          error: null,
+          requestedAt: typeof payload?.access_requested_at === "string" ? payload.access_requested_at : null
+        };
+        return publish({ access }, losesApproval(access));
+      })();
+      const owner = { session, promise };
+      accessSubmit = owner;
+      void promise.finally(() => {
+        if (accessSubmit === owner) accessSubmit = null;
+      }).catch(() => {
       });
       return promise;
     }
     async function localSignOut() {
       ++epoch;
-      ++observation;
+      ++accessOrder;
       blocked = true;
       refresh = null;
+      accessRefresh = null;
+      accessSubmit = null;
       publish({
         status: state.mode === "legacy" ? "legacy" : "signed_out",
         account: null,
+        access: null,
         error: null
       }, true);
-      if (auth) await bounded(sdk.signOut(auth));
+      if (auth) await signOutFirebase();
       return snapshot();
+    }
+    function purposeAllowed(purpose) {
+      if (purpose === "access") return true;
+      if (purpose === "admin") return state.access?.canManage === true;
+      return state.access?.status === "approved";
+    }
+    function purposeError(purpose) {
+      const error = new Error(purpose === "admin" ? "\uAD00\uB9AC\uC790 \uAD8C\uD55C\uC774 \uC5C6\uB294 \uACC4\uC815\uC785\uB2C8\uB2E4." : "\uAD00\uB9AC\uC790 \uC2B9\uC778 \uD6C4 \uC0AC\uC6A9\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.");
+      error.code = purpose === "admin" ? "admin_required" : "access_not_approved";
+      return error;
+    }
+    function reportDenial({ purpose, code, accessStatus, apiOrigin, sessionGeneration } = {}) {
+      if (!(purpose === "feature" && code === "access_not_approved" || purpose === "admin" && code === "admin_required")) {
+        throw new Error("\uD5C8\uC6A9\uB418\uC9C0 \uC54A\uC740 \uAD8C\uD55C \uAC70\uBD80 \uBCF4\uACE0\uC785\uB2C8\uB2E4.");
+      }
+      const origin = trustedOrigin(apiOrigin);
+      if (apiOrigin !== origin) throw new Error("\uBC31\uC5D4\uB4DC origin\uC774 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.");
+      synchronizeAccount();
+      if (!managed() || state.status !== "signed_in" || blocked || validatedUser !== auth?.currentUser || !state.account || state.account.uid !== auth?.currentUser?.uid || sessionGeneration !== state.sessionGeneration || origin !== state.apiOrigin) {
+        return { applied: false, state: snapshot() };
+      }
+      ++accessOrder;
+      accessRefresh = null;
+      accessSubmit = null;
+      const access = { ...state.access, error: purposeError(purpose).message };
+      if (purpose === "admin") access.canManage = false;
+      else access.status = ACCESS_STATUSES.includes(accessStatus) && accessStatus !== "approved" ? accessStatus : "unavailable";
+      return { applied: true, state: publish({ access }, purpose === "feature") };
     }
     async function credential({
       apiBaseUrl,
       legacyToken = "",
       legacyHeader = "X-Side-B-Access-Token",
       forceRefresh = false,
-      rejectedToken = null
+      rejectedToken = null,
+      purpose = "feature"
     } = {}) {
+      if (!CREDENTIAL_PURPOSES.has(purpose)) throw new Error("\uD5C8\uC6A9\uB418\uC9C0 \uC54A\uC740 \uC778\uC99D \uC6A9\uB3C4\uC785\uB2C8\uB2E4.");
       const origin = trustedOrigin(apiBaseUrl);
       if (!state.apiOrigin) await configure(origin);
       if (configuring?.origin === origin) await configuring.promise;
       if (origin !== state.apiOrigin) throw new Error("\uBC31\uC5D4\uB4DC \uC778\uC99D \uC124\uC815\uC744 \uB2E4\uC2DC \uD655\uC778\uD558\uC138\uC694.");
-      const generation = state.sessionGeneration;
-      const revision = epoch;
       if (managed()) {
-        const user = auth?.currentUser;
-        if (!user || state.status !== "signed_in" || blocked) throw new Error("Side-B\uC5D0 Google \uB85C\uADF8\uC778\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.");
-        let token2 = await bounded(sdk.getIdToken(user, false));
-        if (forceRefresh && (!rejectedToken || rejectedToken === token2)) {
-          if (!refresh) {
-            const promise = bounded(sdk.getIdToken(user, true));
-            refresh = promise;
-            void promise.finally(() => {
-              if (refresh === promise) refresh = null;
-            }).catch(() => {
-            });
-          }
-          token2 = await refresh;
+        const session = requireSession();
+        if (!purposeAllowed(purpose)) throw purposeError(purpose);
+        const token2 = await sessionToken(session, forceRefresh, rejectedToken);
+        if (!sessionCurrent(session) || validatedUser !== session.user || state.account?.uid !== session.uid || state.status !== "signed_in" || !purposeAllowed(purpose)) {
+          throw accountChanged();
         }
-        if (revision !== epoch || generation !== state.sessionGeneration || user !== auth.currentUser || state.status !== "signed_in" || blocked) throw new Error("\uB85C\uADF8\uC778 \uACC4\uC815\uC774 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC694\uCCAD\uD558\uC138\uC694.");
-        return { mode: "firebase", sessionGeneration: generation, headers: { Authorization: `Bearer ${token2}` } };
+        return {
+          mode: "firebase",
+          apiOrigin: origin,
+          sessionGeneration: session.generation,
+          headers: { Authorization: `Bearer ${token2}` }
+        };
       }
       if (state.mode !== "legacy" || state.status !== "legacy") throw new Error("\uBC31\uC5D4\uB4DC \uC778\uC99D \uC124\uC815\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      if (purpose === "admin") throw purposeError(purpose);
       if (!["X-Side-B-Access-Token", "X-Side-B-Export-Token"].includes(legacyHeader)) throw new Error("\uD5C8\uC6A9\uB418\uC9C0 \uC54A\uC740 \uC778\uC99D \uD5E4\uB354\uC785\uB2C8\uB2E4.");
       const token = String(legacyToken || "").trim();
       if (!token && !["http://127.0.0.1:8000", "http://localhost:8000"].includes(origin)) {
         throw new Error("\uC124\uC815\uC5D0\uC11C \uD300 \uBC31\uC5D4\uB4DC \uD1A0\uD070\uC744 \uC785\uB825\uD558\uC138\uC694.");
       }
-      return { mode: "legacy", sessionGeneration: generation, headers: token ? { [legacyHeader]: token } : {} };
+      return {
+        mode: "legacy",
+        apiOrigin: origin,
+        sessionGeneration: state.sessionGeneration,
+        headers: token ? { [legacyHeader]: token } : {}
+      };
     }
-    return { configure, signIn, signOut: localSignOut, credential, state: snapshot };
+    return { configure, signIn, signOut: localSignOut, credential, refreshAccess, requestAccess, reportDenial, state: snapshot };
   }
   return __toCommonJS(authWorker_entry_exports);
 })();
 /*! Bundled license information:
+
+@firebase/util/dist/postinstall.mjs:
+@firebase/util/dist/index.esm.js:
+  (**
+   * @license
+   * Copyright 2025 Google LLC
+   *
+   * Licensed under the Apache License, Version 2.0 (the "License");
+   * you may not use this file except in compliance with the License.
+   * You may obtain a copy of the License at
+   *
+   *   http://www.apache.org/licenses/LICENSE-2.0
+   *
+   * Unless required by applicable law or agreed to in writing, software
+   * distributed under the License is distributed on an "AS IS" BASIS,
+   * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   * See the License for the specific language governing permissions and
+   * limitations under the License.
+   *)
 
 @firebase/util/dist/index.esm.js:
 @firebase/util/dist/index.esm.js:
@@ -6631,24 +6948,6 @@ firebase/app/dist/esm/index.esm.js:
    * See the License for the specific language governing permissions and
    * limitations under the License.
    *)
-  (**
-   * @license
-   * Copyright 2025 Google LLC
-   *
-   * Licensed under the Apache License, Version 2.0 (the "License");
-   * you may not use this file except in compliance with the License.
-   * You may obtain a copy of the License at
-   *
-   *   http://www.apache.org/licenses/LICENSE-2.0
-   *
-   * Unless required by applicable law or agreed to in writing, software
-   * distributed under the License is distributed on an "AS IS" BASIS,
-   * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   * See the License for the specific language governing permissions and
-   * limitations under the License.
-   *)
-
-@firebase/util/dist/index.esm.js:
   (**
    * @license
    * Copyright 2025 Google LLC

@@ -23,8 +23,10 @@ from urllib.parse import quote
 
 import httpx
 from async_lru import alru_cache
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+
+from app.services.auth import AuthenticatedUser, authorize_preview
 
 # 공급자 게이트(자리·회로차단기)는 추천·장르 분석 경로와 공유한다.
 # 각자 따로 두면 한쪽이 받은 429를 다른 쪽이 모른다.
@@ -66,6 +68,16 @@ _PROVIDER_MEDIA: dict[str, tuple[str, str]] = {
     "itunes": ("audio/x-m4p", "m4a"),
     "deezer": ("audio/mpeg", "mp3"),
 }
+
+# 30초 미리 듣기는 실측 1MB 안팎이다. 중계 바이트에 상한을 둬 비정상 상류
+# 응답이 서버 메모리·대역폭과 확장의 Blob 버퍼를 무한히 쓰지 못하게 한다.
+# 확장(scripts/previewPlayer.js)도 같은 상한으로 다시 자른다.
+PREVIEW_MAX_BYTES = 8 * 1024 * 1024
+
+
+class PreviewTooLargeError(Exception):
+    """상류 미리 듣기가 상한을 넘었다. 이미 보낸 응답은 중단된다."""
+
 
 # 후보를 채택하는 최소 기준. fixture와 실 Deezer 응답으로 검증한 정책값이다.
 # 아티스트 0.8은 _artist_ratio 기준이다. 정상 표기는 구분자 분리로 1.0을 받고
@@ -699,8 +711,12 @@ async def get_preview_url(
     artist: ArtistQuery = "",
     provider: ProviderQuery = "",
     provider_track_id: ProviderTrackIdQuery = "",
+    _user: AuthenticatedUser | None = Depends(authorize_preview),
 ):
     """검증된 30초 미리 듣기 정보를 반환합니다.
+
+    Firestore 승인 저장소를 쓰는 서버에서는 승인된 계정의 Bearer 인증이
+    필요하다. 인증 토큰은 헤더로만 받고 URL 쿼리로는 받지 않는다.
 
     추천 응답의 `source_id`를 `provider`와 `provider_track_id`로 쪼개 넘기면
     공급자 검색 없이 그 곡을 바로 조회합니다. 표기가 카탈로그와 달라도 정확히
@@ -749,6 +765,33 @@ async def get_preview_url(
 # ── GET /preview/stream ──────────────────────────────────────────
 
 
+async def _limited_stream(
+    preview_url: str,
+    max_bytes: int,
+    client_factory=lambda: httpx.AsyncClient(timeout=httpx.Timeout(30.0)),
+):
+    """상류 미리 듣기를 상한까지만 중계한다.
+
+    응답 헤더를 보낸 뒤라 상태 코드를 바꿀 수 없다. 상한을 넘으면 잘린 음원을
+    정상처럼 끝내지 않고 예외로 연결을 끊어, 클라이언트가 실패로 받게 한다.
+    """
+    # 공유 클라이언트가 아닌 별도 스트림 클라이언트 사용
+    async with client_factory() as stream_client:
+        async with stream_client.stream("GET", preview_url) as resp:
+            resp.raise_for_status()
+            declared = resp.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > max_bytes:
+                logger.warning("[Preview] 상류 크기 상한 초과: %s bytes", declared)
+                raise PreviewTooLargeError()
+            sent = 0
+            async for chunk in resp.aiter_bytes(chunk_size=8192):
+                sent += len(chunk)
+                if sent > max_bytes:
+                    logger.warning("[Preview] 중계 크기 상한 초과")
+                    raise PreviewTooLargeError()
+                yield chunk
+
+
 @router.get("/preview/stream")
 async def stream_preview(
     request: Request,
@@ -756,8 +799,13 @@ async def stream_preview(
     artist: ArtistQuery = "",
     provider: ProviderQuery = "",
     provider_track_id: ProviderTrackIdQuery = "",
+    _user: AuthenticatedUser | None = Depends(authorize_preview),
 ):
     """30초 오디오를 서버 경유로 스트리밍합니다.
+
+    승인 저장소 모드에서는 승인된 계정만 쓸 수 있다. `<audio src>`는 인증
+    헤더를 붙일 수 없으므로 확장은 인증 fetch로 받은 바이트를 Blob으로 재생한다.
+    응답은 `PREVIEW_MAX_BYTES`까지만 중계한다.
 
     `/preview`와 같은 조회 규칙을 씁니다. `provider`와 `provider_track_id`를
     넘기면 공급자 검색 없이 그 곡을 재생합니다.
@@ -781,16 +829,8 @@ async def stream_preview(
             detail=f"'{track or provider_track_id}'의 미리 듣기를 찾을 수 없습니다.",
         )
 
-    async def _generate():
-        # 공유 클라이언트가 아닌 별도 스트림 클라이언트 사용
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as stream_client:
-            async with stream_client.stream("GET", match.preview_url) as resp:
-                resp.raise_for_status()
-                async for chunk in resp.aiter_bytes(chunk_size=8192):
-                    yield chunk
-
     return StreamingResponse(
-        _generate(),
+        _limited_stream(match.preview_url, PREVIEW_MAX_BYTES),
         media_type=match.content_type,
         headers={
             "Cache-Control": "no-cache",

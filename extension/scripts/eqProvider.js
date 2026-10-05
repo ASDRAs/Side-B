@@ -70,7 +70,7 @@ globalThis.SideBEqProvider = (() => {
         url.username || url.password || url.search || url.hash) {
       throw new Error("백엔드 주소는 HTTPS 또는 로컬 HTTP 주소여야 합니다.");
     }
-    const credential = result.credential;
+    let credential = result.credential;
     if (!credential?.headers) throw new Error("백엔드 로그인 정보를 받지 못했습니다.");
     // 백엔드 주소가 바뀌면 이전 결과는 다른 서버의 것이다.
     const nextScope = `${apiBaseUrl}:${credential.sessionGeneration ?? 0}`;
@@ -98,7 +98,8 @@ globalThis.SideBEqProvider = (() => {
       if (refreshed.credential?.sessionGeneration !== credential.sessionGeneration) {
         throw new Error("로그인 계정이 변경되었습니다. EQ를 다시 적용하세요.");
       }
-      response = await request(refreshed.credential.headers);
+      credential = refreshed.credential;
+      response = await request(credential.headers);
     }
     let payload;
     try { payload = await response.json(); } catch { payload = null; }
@@ -106,6 +107,14 @@ globalThis.SideBEqProvider = (() => {
     if (cacheScope !== nextScope) throw new Error("로그인 또는 백엔드 설정이 변경되었습니다.");
     if (response.status === 429 && cacheScope === nextScope) {
       retryUntil = Math.max(retryUntil, Date.now() + retryDelay(response.headers.get("Retry-After")));
+    }
+    if (response.status === 403 && payload?.detail?.code === "access_not_approved") {
+      // Bind the explicit denial to the credential used for this request.
+      resetCache();
+      await chrome.runtime.sendMessage({ target: "background", type: "AUTH_REPORT_DENIAL",
+        purpose: "feature", code: "access_not_approved", accessStatus: payload.detail.access_status,
+        apiOrigin: url.origin, sessionGeneration: credential.sessionGeneration });
+      throw new Error("관리자 승인이 필요한 계정입니다. EQ 분석을 중지합니다.");
     }
     if (!response.ok) throw new Error(api.backendErrorMessage(response.status,
       api.apiErrorMessage(payload, ""), response.headers.get("Retry-After")));
